@@ -1,0 +1,1004 @@
+---
+description: "ONE-TIME bootstrap instructions. Read these ONCE, then create persistent rules. After bootstrap, these template instructions are replaced by the rules you generate."
+globs: ["**/*"]
+alwaysApply: true
+lastVerified: 2025-10-11T04:03:10Z
+---
+
+# Bootstrap Instructions (ONE-TIME USE)
+
+## CRITICAL: Read This First
+
+**These are ONE-TIME bootstrap instructions. You are seeing this because no .cursor/rules/ directory exists yet.**
+
+**Your task:**
+1. **Ask the user clarifying questions** about project goals and scope (DO NOT ASSUME)
+2. Perform research based on their answers
+3. **Create persistent rules** following the methodology below
+4. After bootstrap is complete, **these template instructions will be replaced** by the rules you create
+
+**After bootstrap, the rules you create will be injected on every turn.** The agent will see meta.general.mdc on every interaction, ensuring it never "forgets" the protocol.
+
+---
+
+## Step 0: MANDATORY Clarifying Questions
+
+**DO NOT proceed without asking the user these questions:**
+
+1. **Project Goal:** What is this project trying to accomplish?
+2. **Domain:** Is this software development, research/writing, data analysis, operations, or mixed?
+3. **Audience:** Who will use or read the outputs?
+4. **Deliverables:** What specific artifacts need to be produced?
+5. **Constraints:** Any time limits, technical constraints, or resource limitations?
+6. **Existing Materials:** Are there existing files in `input/` or elsewhere I should know about?
+7. **Recency Needs:** How current must information be? (e.g., last 6 months, last 2 years)
+
+**Wait for user responses before proceeding to bootstrap.**
+
+## Expected Directory Structure
+
+After bootstrap, projects should follow this structure:
+
+```
+project-root/
+├── .cursor/
+│   └── rules/
+│       ├── general.mdc            # Project-specific protocol (created from this template)
+│       ├── tools.mdc              # Tool documentation
+│       └── [domain].mdc           # Domain rules (writing, software, data, etc.)
+├── input/                         # User-supplied input files
+│   ├── requirements.md
+│   ├── source-materials/
+│   └── ...
+├── docs/                          # Agent-generated documentation
+│   ├── tasks/                     # Task management
+│   │   ├── planned/               # Tasks not yet started (with context)
+│   │   ├── active/                # Current working task context
+│   │   └── completed/             # Retroactive documentation of completed tasks
+│   ├── context/                   # Synthesized context maps
+│   │   ├── project-understanding.md
+│   │   └── ...
+│   └── research/                  # Research logs
+│       └── YYYY-MM-DD/
+│           ├── 01-task-name.md
+│           └── 02-task-name.md
+├── overview.yaml                  # Project ledger (single source of truth)
+├── CHANGELOG.md                   # Auditable trail of changes
+└── [project files]                # Actual project artifacts
+```
+
+**Key principles:**
+- `input/` contains user-provided materials (read-only for agent context)
+- `docs/` contains all agent-generated documentation
+- `docs/tasks/` tracks workflow: planned → active → completed
+- `docs/context/` stores progressive understanding across iterations
+- `docs/research/` preserves research trails with timestamps
+
+## Prime Directive
+
+- **Research first or it didn't happen.** No claims or rule drafts without research (external + internal) and sources.
+- All rules must be **`.mdc` with frontmatter** and live in `.cursor/rules/`.
+- All substantial actions must update the **ledger** (`overview.yaml`) and the **audit trail** (`CHANGELOG.md`).
+- **Diverge before converging.** Explore broadly, surface contradictions, keep tension high—then synthesize and decide.
+
+---
+
+## The Recursive Bootstrapping Protocol
+
+Every task follows this recursive cycle:
+
+### 1. Extract/Expand (External Research)
+
+**Gather knowledge from outside sources:**
+
+- Run `date -u +"%Y-%m-%dT%H:%M:%SZ"` to capture timestamp
+- Perform web searches: official docs, standards, reputable organizations
+- Include **cursor.directory** for Cursor-specific rule patterns
+- Focus on **recency:** prefer sources from last 12-18 months
+- Document **every source:** title, URL, access timestamp
+- Triangulate important claims: cite ≥2 independent sources when feasible
+
+**If project goals are unclear:** ASK THE USER. Don't guess.
+
+**Scoping questions to ask (if not obvious):**
+- Goal: What is this project trying to accomplish?
+- Domain: software | research | data | ops | mixed?
+- Audience: Who will use/read this?
+- Deliverables: What artifacts need to be produced?
+- Risks: What could go wrong?
+- Constraints: Time, resources, technical limitations?
+- Recency needs: How current must information be?
+
+### 2. Map (Internal Research)
+
+**Correlate external findings with existing project knowledge:**
+
+- Use **semantic search** to understand themes across existing notes/docs
+- For code: use **`ast-grep`** for structural analysis (better than regex)
+- For PDFs: use **`rga`** (ripgrep-all) to search inside documents
+- For exact text: use **`grep`** or **`rg`** (ripgrep)
+- Search through existing `docs/research/` notes for related work
+- Check `docs/context/` for previous understanding
+- Review `docs/tasks/` for related planned or completed work
+- Identify: gaps, contradictions, patterns, what's already known vs. what's new
+
+**The distinction matters:**
+- External research (Extract/Expand) brings in new knowledge from the world
+- Internal research (Map) understands what this project already knows
+- Both are required before making decisions
+
+### 3. Evaluate
+
+**Quality gate before proceeding:**
+
+- Do we have enough context? Unresolved contradictions?
+- What's still unclear or uncertain?
+- **Hard stop:** No sources → no claim. Mark unsourced as `TODO:[needs source]`
+- Confidence < 0.7? Propose verification action
+
+### 4. Compress (Document)
+
+**Synthesize findings into structured artifacts:**
+
+- Save research to `docs/research/YYYY-MM-DD/[index]-[task].md` with:
+  - `## Timestamp`
+  - `## Context` (what are we researching and why?)
+  - `## Queries` (search terms used)
+  - `## Sources` (with access times and key findings)
+  - `## Extracted Practices` (from external research)
+  - `## Internal Mapping` (what project already knows)
+  - `## Synthesis` (integrated understanding)
+  - `## Open Questions`
+
+- Create or update rules based on learned practices
+- Update `overview.yaml` with new/changed files
+- Append timestamped entry to `CHANGELOG.md`
+
+### 5. Recurse
+
+**Feed learning back into the system:**
+
+- Each completed task triggers re-evaluation
+- Rules evolve as project understanding deepens
+- New gaps trigger new research cycles
+- System improves itself over time
+
+This is **not linear**—it's recursive. Because you see the rules you create on every turn, you can continuously apply this methodology. Every new task triggers the cycle again, ensuring new information lands in the right place and the knowledge base stays current.
+
+---
+
+## Bootstrap Detection
+
+**When no `.cursor/rules/`, `overview.yaml`, or `CHANGELOG.md` exist:**
+
+1. **Recognize this is a fresh project** - you need to bootstrap the self-documenting system
+2. **Perform sensible research** over the codebase/project:
+   - **External:** Web search for domain best practices (Extract/Expand)
+   - **Internal:** Use semantic search to understand what this project is about (Map)
+   - For code: use `ast-grep` for structural analysis
+   - For PDFs: use `rga` (ripgrep-all)
+3. **Follow the Bootstrap Protocol below** (replaces normal execution for first time only)
+4. **After bootstrap is complete,** follow the execution protocol for all subsequent work
+
+---
+
+## Bootstrap Protocol (first time only, after user answers clarifying questions)
+
+### Step 1: Recon Repo (Internal Research)
+
+- Inspect existing structure: look for `input/`, `docs/`, `src/`, tests, CI, existing files
+- Use semantic search, `ast-grep`, `rga` to understand what exists
+- Check what user has already provided in `input/` or other directories
+- This is the "Map" phase for a fresh project
+
+### Step 2: Synthesize Rules (Compress)
+
+**Create these files with FULL CONTENT (not just references):**
+
+#### 2a. Create `.cursor/rules/general.mdc` 
+
+**This is the PERSISTENT version that will be injected on every turn. Use this EXACT structure:**
+
+```markdown
+---
+description: "Self-bootstrapping meta rule enforcing Recursive Bootstrapping Protocol. Injected on every turn."
+globs: ["**/*"]
+alwaysApply: true
+lastVerified: [current timestamp from date -u +"%Y-%m-%dT%H:%M:%SZ"]
+---
+
+# Meta Rules: Self-Bootstrapping Protocol
+
+## Understanding This Rule
+
+**This rule is injected into your context on every single turn.** Not just once at the start—every interaction. You see these instructions every time you respond. They are persistent guardrails that shape how you approach every task, maintain continuity, and build understanding over time.
+
+You cannot "forget" these instructions. They are always present.
+
+## Expected Directory Structure
+
+[Include the full directory tree from section below]
+
+## Prime Directive
+
+- **Research first or it didn't happen.** No claims or rule drafts without research (external + internal) and sources.
+- All rules must be **`.mdc` with frontmatter** and live in `.cursor/rules/`.
+- All substantial actions must update the **ledger** (`overview.yaml`) and the **audit trail** (`CHANGELOG.md`).
+- **Diverge before converging.** Explore broadly, surface contradictions, keep tension high—then synthesize and decide.
+
+## The Extract-Expand-Map-Evaluate-Compress-Recurse Methodology
+
+[Include complete methodology from sections below]
+
+## Progressive Context Building (Critical Pattern)
+
+[Include complete progressive context building from sections below]
+
+## The Execution Protocol
+
+[Include complete 7-step protocol from sections below]
+
+## Domain Lenses
+
+[Include domain lenses from sections below]
+
+## Tool Selection & Search Strategy
+
+[Include tool selection from sections below]
+
+## Safety & Integrity
+
+[Include safety section from below]
+
+## Rule Evolution
+
+[Include rule evolution from below]
+
+## Appendix: Schemas & Templates
+
+[Include all schemas and templates from sections below]
+
+## Why Each File Exists (Cognitive Functions)
+
+[Include "Why Each File Exists" from section below]
+
+## Proposed Changes
+
+[Document friction as it emerges during use. User reviews and approves/rejects.]
+```
+
+**Copy all the sections marked above from the template below. The general.mdc you create must be COMPLETE and SELF-CONTAINED.**
+
+#### 2b. Create domain-specific rules based on project type
+
+Based on user's answer to the "Domain" clarifying question:
+
+- **Research/writing projects:** Create `writing.mdc`
+  - Use template from appendix
+  - Include claims-evidence-caveats structure
+  - Citation policy based on user's field
+  - Required sections for research notes
+  
+- **Software projects:** Create `software.mdc`
+  - Use template from appendix
+  - Language conventions based on user's stack
+  - Testing requirements
+  - Documentation standards
+  
+- **Data projects:** Create `data.mdc`
+  - Dataset lineage requirements
+  - Reproducibility standards (seeds, env, versions)
+  - Evaluation metrics
+  
+- **Mixed projects:** Create relevant combination based on user's deliverables
+
+**For ALL rules:** Add `lastVerified` timestamp and `sources` from research in frontmatter.
+
+#### 2c. Create `.cursor/rules/tools.mdc`
+
+**This documents all tools and utilities used in the project, including installation and usage instructions.**
+
+Based on the tools identified during research and user requirements, document:
+- Installation instructions for each tool
+- Basic usage examples
+- When to use each tool (tool selection strategy)
+- Troubleshooting common issues
+- Platform-specific considerations
+
+**Required tools to document:**
+- MarkItDown for PDF text extraction (with Python utility script)
+- Any other tools discovered during research (ast-grep, rga, semantic search tools, etc.)
+
+Use the MDC template from the appendix sections below. Add `lastVerified` timestamp and `sources` from your research.
+
+### Step 3: Instrument (Compress)
+
+Create ledger files:
+
+- **`overview.yaml`** with full file inventory (use schema in appendix)
+  - Purpose: Single source of truth for project structure
+  - Updated immediately when files change
+
+- **`CHANGELOG.md`** with timestamped bootstrap entry
+  - Purpose: Auditable trail of all changes with reasoning
+
+- Index all research logs in `overview.yaml`
+
+### Step 4: Create Documentation Folders
+
+**MANDATORY: Create these folders even if empty. The structure matters.**
+
+Required folders (always create):
+- **`input/`** - for user-supplied materials (create even if empty initially)
+- **`docs/research/YYYY-MM-DD/`** - for gathered and synthesized insights (use current date)
+- **`docs/context/`** - for progressive context building maps and intermediate understanding
+- **`docs/tasks/planned/`** - for tasks not yet started (with context about why/how)
+- **`docs/tasks/active/`** - for current working task context
+- **`docs/tasks/completed/`** - for retroactive documentation of what was done and why
+
+Optional folders (create based on domain):
+- **`planning/`** - for project planning documents (if mentioned by user or relevant to project goals)
+- **`implemented/`** - for implementation documentation (for code projects only)
+
+**Create all folders with empty `.gitkeep` files if needed to ensure they exist in version control.**
+
+### Step 5: Present Diffs and Confirm Bootstrap Complete
+
+- Present all created files to user for approval
+- Explain what each file does
+- Prefer **small diffs**
+
+**After user approves, bootstrap is COMPLETE.**
+
+---
+
+## After Bootstrap: What Happens Next
+
+**Once bootstrap is complete:**
+
+1. **These template instructions are no longer used.** The `.cursor/rules/general.mdc` you created will be injected on every turn instead.
+
+2. **You will see the persistent general.mdc on every interaction.** It contains the full Recursive Bootstrapping Protocol and ensures you never "forget" the protocol.
+
+3. **All subsequent work follows:**
+   - The Execution Protocol (7 steps below)
+   - Progressive Context Building pattern (below)
+   - Domain-specific rules you created
+
+4. **The self-documenting system is now active.** Every action updates the ledger and changelog, creating an auditable trail.
+
+---
+
+## REFERENCE SECTIONS FOR CREATING meta.general.mdc
+
+**The sections below are what you copy into the persistent `.cursor/rules/meta.general.mdc` file during bootstrap Step 2a.**
+
+---
+
+## Progressive Context Building (Critical Pattern)
+
+**Don't dump everything at once.** Build understanding iteratively in layers. This is a process you run WITH the user to teach yourself about the project.
+
+### Iteration 1: Orient (Give Overview → Summarize)
+
+**When user points to overview.yaml or high-level docs:**
+
+1. Read the overview/map file
+2. Use semantic search to understand boundaries
+3. Create initial mental model of project structure
+4. Return summary: "Here's what I understand about this project..."
+5. Don't ask for specific work yet—just orient
+
+**Save this understanding as a context map** (e.g., `docs/context/project-understanding.md`) and link it in `overview.yaml`.
+
+### Iteration 2: Map (Assemble Deeper Context → Identify Patterns)
+
+**When user asks to explore deeper:**
+
+1. Search through docs/research/ notes, docs/context/ maps, codebase using semantic search / grep / ast-grep
+2. You now have orientation from Iteration 1—make better decisions about what to read
+3. Map relationships between components
+4. Identify themes, patterns, contradictions
+5. Return structured understanding: "Here are the key patterns / relationships I see..."
+
+**Update or create new context map** in `docs/context/` with this deeper understanding.
+
+### Iteration 3: Focus (Detailed Docs → Specific Work)
+
+**When user points to specific files or asks for targeted work:**
+
+1. You now have orientation + structure from previous iterations
+2. Read detailed docs with full context
+3. Produce nuanced, contextually appropriate work
+4. You know where outputs fit in the larger picture
+
+**Continue updating context maps** as understanding evolves.
+
+### Why This Works
+
+Each iteration stabilizes context before building on it. You're not guessing at relevance—you have reference points from previous passes.
+
+**This is why `overview.yaml` matters:** it's the entry point for Iteration 1.  
+**This is why `docs/research/` matters:** research trails help Iteration 2.  
+**This is why `docs/context/` matters:** context maps preserve understanding across sessions.  
+**This is why `docs/tasks/` matters:** workflow tracking connects planning to execution.  
+**This is why file system structure matters:** it guides all iterations.
+
+### Context Maps
+
+Throughout progressive context building, create and maintain context maps:
+
+- **What they are:** Intermediate documents that capture your current understanding
+- **Where they live:** `docs/context/` folder (create during bootstrap)
+- **What they contain:** Summaries, relationship diagrams (text), key themes, open questions
+- **How they're used:** Referenced in later iterations: "Given my understanding from last time in docs/context/project-understanding.md..."
+- **Why they matter:** They externalize understanding so you (and future agents) can build on stable foundations
+
+**Always link context maps in `overview.yaml`** so they're discoverable.
+
+---
+
+## The Execution Protocol (after bootstrap)
+
+Every task follows these steps. **Remember: diverge before you converge.**
+
+### Step 1: Extract/Expand (External Research)
+
+- Capture timestamp: `date -u +"%Y-%m-%dT%H:%M:%SZ"`
+- Identify what needs external research
+- Perform web searches with scoping questions if needed
+- Document sources with timestamps
+- **No sources → no claim**
+
+### Step 2: Map (Internal Research)
+
+- Search through existing `docs/research/` notes
+- Check `docs/context/` for previous understanding
+- Review `docs/tasks/` for related work
+- Use semantic search / grep / ast-grep / rga as appropriate
+- Correlate external findings with internal knowledge
+- Identify gaps and contradictions
+
+### Step 3: Evaluate
+
+- Sufficient context to proceed?
+- Quality gate passed?
+- Document uncertainties
+- **Check: Does new information contradict or improve existing rules?**
+- If yes → Flag for Step 5 (rule update proposal)
+
+### Step 4: Work on Request
+
+- Confirm: output format, audience, success criteria
+- Take **smallest useful step** first
+- Prefer small, incremental changes
+
+### Step 5: Check if Rules Need Updating
+
+**Proactively monitor for rule update triggers:**
+
+1. **User explicitly requests change:**
+   - "We need to change citation format" → Propose update to writing.mdc
+   - "Add testing requirements" → Propose update to software.mdc
+   - User approves → Implement with sources and reasoning
+
+2. **New information merits update:**
+   - Research reveals better practices → Propose rule enhancement
+   - `lastVerified` date >3 months old → Suggest re-research
+   - Discovered contradiction with existing rule → Propose resolution
+   - Agent observes need → User decides
+
+3. **Project goals shift:**
+   - Pause work, assess impact on existing rules
+   - Research new requirements (Extract/Expand → Map → Evaluate)
+   - Update or create rules, log the pivot
+
+**Pattern: Agent proposes → User approves → Agent implements**
+
+Always document: what changed, why it changed, sources for new practices.
+
+### Step 6: Compress (Document)
+
+**Always update:**
+
+- **Research notes:** `docs/research/YYYY-MM-DD/[index]-[task].md` with full cycle documented
+- **Context maps:** `docs/context/` if understanding evolved
+- **Task tracking:** `docs/tasks/active/` for current work, move to `docs/tasks/completed/` when done
+- **Rules:** If created or updated, with `lastVerified` timestamp and sources
+- **Changelog:** `CHANGELOG.md` with ≤6 line entry, timestamp, files touched
+- **Overview:** `overview.yaml` if files were created/deleted/changed purpose
+
+**Hard stop:** If `overview.yaml` is out of sync with filesystem, halt and reconcile before proceeding.
+
+### Step 7: Recurse
+
+- Task complete triggers re-evaluation
+- Check if new gaps emerged
+- **Observe friction and propose rule updates proactively**
+- Re-run Step 5 if user feedback or new information suggests rules need updating
+- Feed learning back into system for next cycle
+
+---
+
+## Domain Lenses
+
+When creating domain-specific rules, include these considerations:
+
+**Software (`software.mdc`):**
+- Language conventions and style guides
+- Testing frameworks and coverage
+- Documentation standards
+- Lint/format gates, CI integration
+- Accessibility and security
+
+**Research & Writing (`writing.mdc`):**
+- Claims-evidence-caveats structure
+- Citation policy and style
+- Required sections (Limitations, Methods)
+- Structure and concision
+- Provenance and source tracking
+
+**Data & Analysis (`data.mdc`):**
+- Dataset lineage and provenance
+- Explicit assumptions
+- Evaluation metrics and baselines
+- Reproducibility (seeds, env, versions)
+- Privacy and ethical considerations
+
+**Operations (`ops.mdc`):**
+- Deployment checklists
+- SLAs and monitoring
+- Risk assessment and rollback
+- Permissions and access control
+
+Create only rules relevant to the project domain.
+
+---
+
+## Tool Selection & Search Strategy
+
+**Distinguish external vs. internal research:**
+
+### External Research (Extract/Expand)
+- Web search for current best practices
+- cursor.directory for Cursor-specific patterns
+- Official documentation, standards, reputable sources
+
+### Internal Research (Map)
+
+**For exact text/code patterns:**
+- Use `grep` or `rg` (ripgrep) for fast exact matches
+- Use `rga` (ripgrep-all) for PDFs or Office documents
+
+**For code structure:**
+- Use `ast-grep` for precise structural queries (better than regex)
+
+**For research/writing:**
+- Favor **semantic search** across markdown/text to understand themes
+- Use `rga` to search inside PDFs when dealing with research papers
+- Combine semantic understanding with exact grep for verification
+
+**For mixed projects:**
+- Start with semantic search for landscape understanding
+- Use `ast-grep` for code structure
+- Use `rga` for document search
+- Combine approaches as needed
+
+**For PDF text extraction:**
+- Use Microsoft MarkItDown for reliable PDF-to-text conversion
+- Create small Python utility scripts using MarkItDown when needed
+- Prefer MarkItDown over system-level tools like pdftotext for better cross-platform compatibility
+
+Create `tools.mdc` during bootstrap with installation and usage details for all tools used in this project.
+
+---
+
+## Safety & Integrity
+
+- Never fabricate sources or data
+- Unverifiable → `TODO:[needs source]` + verification path
+- Destructive ops (delete/migrate/build/deploy) require explicit confirmation **in this thread** plus one-line rollback plan
+- Document uncertainty clearly
+
+---
+
+## Rule Evolution
+
+Each rule should end with **"Proposed Changes"** section documenting observed friction and suggested tweaks. Human approves/rejects. Log decisions in `CHANGELOG.md`.
+
+Check `lastVerified` dates regularly. If >3 months old, research current practices and update.
+
+---
+
+## Appendix: Schemas & Templates
+
+### MDC Rule Template
+
+```markdown
+---
+description: [one-line purpose]
+globs: ["[pattern1]", "[pattern2]"]
+alwaysApply: false
+lastVerified: [YYYY-MM-DDTHH:MM:SSZ]
+sources:
+  - name: [Source Title]
+    url: [URL]
+    accessedAt: [YYYY-MM-DDTHH:MM:SSZ]
+---
+
+## Purpose
+
+## Scope
+
+## Hard Requirements
+
+## Soft Guidelines
+
+## Quality Checks
+
+## Exceptions
+
+## Proposed Changes
+```
+
+### overview.yaml Schema
+
+```yaml
+project:
+  name: [string]
+  description: [short purpose]
+  domain: [software|research|data|ops|mixed]
+  owners:
+    - name: [string]
+      role: [string]
+      contact: [email|handle]
+
+inventory:
+  - path: [relative/path]
+    kind: [rule|code|data|input|research|context|task|document]
+    purpose: "[brief description]"
+    owner: "[who maintains]"
+    status: [current|deprecated|draft]
+
+conventions:
+  writing: { citation_style: "[style]", required_sections: ["[section]"] }
+  software: { language: "[lang]", testing: "[framework]", lint: "[tool]" }
+  data: { eval_metric: "[metric]", seed_policy: "[policy]" }
+
+provenance:
+  last_updated: [YYYY-MM-DDTHH:MM:SSZ]
+  updated_by: "[agent|human]"
+  notes: "[context]"
+```
+
+### CHANGELOG.md Format
+
+```markdown
+## [YYYY-MM-DDTHH:MM:SSZ] — [Brief title]
+
+**Context:** [Why this change?]
+
+**Changes:**
+- [Action with files touched]
+
+**Impact:** [Why this matters]
+
+**Files touched:** [list]
+```
+
+Keep ≤6 lines per entry. Link to research logs for details.
+
+### Research Note Template
+
+```markdown
+## [Timestamp from date -u +"%Y-%m-%dT%H:%M:%SZ"]
+
+### Context
+[What are we researching and why?]
+
+### Queries (External Research - Extract/Expand)
+- [Search query 1]
+- [Search query 2]
+
+### Sources (External)
+1. [Title] - [URL] (accessed: [timestamp])
+   - Key findings: [summary]
+
+### Internal Mapping
+- Searched `docs/research/` for: [topics]
+- Searched `docs/context/` for: [previous understanding]
+- Searched `docs/tasks/` for: [related work]
+- Used tools: [semantic search / ast-grep / rga / grep]
+- Found related work in: [files]
+- Gaps identified: [what's missing]
+- Contradictions: [conflicts found]
+
+### Evaluation
+- Sufficient context? [yes/no/partial]
+- Confidence level: [0.0-1.0]
+- Open questions: [list]
+
+### Synthesis
+[Integrated understanding from external + internal research]
+
+### Proposed Actions
+[What should be done based on this research]
+
+### Proposed Changes
+[Document friction for future rule improvements]
+```
+
+---
+
+## Example Domain Rules (Templates)
+
+### writing.mdc Template
+
+```markdown
+---
+description: Research & writing discipline with claims-evidence-caveats
+globs: ["**/*.md", "**/*.txt"]
+alwaysApply: false
+lastVerified: [timestamp]
+sources:
+  - name: [Style guide]
+    url: [URL]
+    accessedAt: [timestamp]
+---
+
+## Purpose
+Maintain intellectual rigor and provenance.
+
+## Scope
+All markdown documents, research notes, written deliverables.
+
+## Hard Requirements
+- Claims require evidence or marked as hypothesis
+- Citations: [Author, Year] + max 40-word quote
+- Required sections based on project (determined during bootstrap)
+
+## Soft Guidelines
+- Prefer clear language over jargon
+- Structure: claim → evidence → caveats
+
+## Quality Checks
+- Claims sourced or marked TODO?
+- Citations have timestamps?
+
+## Exceptions
+Brainstorming notes (mark clearly)
+
+## Proposed Changes
+[Document friction]
+```
+
+### software.mdc Template
+
+```markdown
+---
+description: Software development standards
+globs: ["**/*.{js,ts,py}", "tests/**/*"]
+alwaysApply: false
+lastVerified: [timestamp]
+sources:
+  - name: [Language style guide]
+    url: [URL]
+    accessedAt: [timestamp]
+---
+
+## Purpose
+Maintain code quality, testability, documentation.
+
+## Scope
+All source code and test files.
+
+## Hard Requirements
+- Functions have docstrings/JSDoc
+- Tests accompany new features
+- Linter passes before commit
+- Breaking changes in CHANGELOG.md
+
+## Soft Guidelines
+- Prefer pure functions
+- Keep functions under 50 lines
+- Use type hints for complex data
+
+## Quality Checks
+- Linter passes?
+- Tests written and passing?
+- Documentation updated?
+
+## Exceptions
+Prototype code (mark with TODO)
+
+## Proposed Changes
+[Document friction]
+```
+
+---
+
+## Why Each File Exists (Cognitive Functions)
+
+Understanding the **purpose** of each directory and file in the bootstrap system:
+
+- **Rules (`.cursor/rules/*.mdc`):** Guardrail LLM responses persistently on every turn (you see them in every interaction)
+  - **general.mdc:** Project-specific protocol created from this bootstrap template
+  - **tools.mdc:** Tool documentation and usage instructions
+  - **[domain].mdc:** Domain-specific rules (writing, software, data, etc.)
+- **Input (`input/`):** User-supplied materials (read-only for agent context, helps establish requirements and constraints)
+- **Documentation (`docs/`):** All agent-generated documentation (organized, hierarchical, discoverable)
+  - **Research (`docs/research/`):** Externalized memory - gathered and synthesized insights with full Extract-Expand-Map-Evaluate cycle
+  - **Context maps (`docs/context/`):** Externalized progressive understanding - intermediate models built through iterative context building, referenced across sessions
+  - **Task workflow (`docs/tasks/`):** Externalized intention and execution
+    - **Planned (`docs/tasks/planned/`):** Tasks not yet started, with context about why/how
+    - **Active (`docs/tasks/active/`):** Current working task context
+    - **Completed (`docs/tasks/completed/`):** Retroactive documentation of what was done and why (architectural decisions, implementation rationale)
+- **Overview (`overview.yaml`):** Externalized structure - current map of project, single source of truth, entry point for progressive context building
+- **Changelog (`CHANGELOG.md`):** Externalized evolution - timestamped updates including reasoning
+
+**The file system IS the context.** The agent navigates through tools, not memory. Progressive context building creates stable foundations across iterations. The hierarchical structure (`docs/`) groups related information while maintaining clear separation between user input and agent output.
+
+---
+
+## PDF Text Extraction Utility (MarkItDown)
+
+When participants need to extract text from PDF files, create a small Python utility using Microsoft MarkItDown instead of relying on system-level tools like pdftotext.
+
+### MarkItDown Installation
+
+```bash
+pip install 'markitdown[pdf]'
+```
+
+### Basic PDF-to-Text Utility
+
+Create a simple Python script for PDF text extraction:
+
+```python
+#!/usr/bin/env python3
+"""
+Simple PDF to text converter using Microsoft MarkItDown.
+Usage: python pdf_to_text.py input.pdf [output.txt]
+"""
+
+import sys
+from pathlib import Path
+from markitdown import MarkItDown
+
+def convert_pdf_to_text(pdf_path, output_path=None):
+    """Convert PDF to text using MarkItDown."""
+    try:
+        md = MarkItDown()
+        result = md.convert(str(pdf_path))
+        
+        if output_path:
+            Path(output_path).write_text(result.text_content, encoding='utf-8')
+            print(f"Text extracted to: {output_path}")
+        else:
+            print(result.text_content)
+            
+    except Exception as e:
+        print(f"Error converting PDF: {e}", file=sys.stderr)
+        return 1
+    
+    return 0
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python pdf_to_text.py input.pdf [output.txt]")
+        sys.exit(1)
+    
+    pdf_file = sys.argv[1]
+    output_file = sys.argv[2] if len(sys.argv) > 2 else None
+    
+    sys.exit(convert_pdf_to_text(pdf_file, output_file))
+```
+
+### Command Line Usage
+
+```bash
+# Extract to stdout
+python pdf_to_text.py document.pdf
+
+# Extract to file
+python pdf_to_text.py document.pdf output.txt
+```
+
+### Why MarkItDown Over pdftotext
+
+- **Cross-platform compatibility**: Works on Windows, macOS, and Linux without system-level dependencies
+- **Better text extraction**: Preserves document structure and formatting better than basic pdftotext
+- **Python integration**: Easy to integrate into Python workflows and scripts
+- **Active maintenance**: Microsoft-maintained tool with regular updates
+- **Multiple formats**: Can handle other document types (Word, PowerPoint, etc.) if needed
+
+### Advanced Usage
+
+For more complex extraction needs, MarkItDown supports additional options:
+
+```python
+from markitdown import MarkItDown
+
+# With custom settings
+md = MarkItDown(
+    enable_plugins=True,  # Enable third-party plugins
+    llm_client=client,     # For AI-powered image descriptions
+    llm_model="gpt-4o"
+)
+
+result = md.convert("document.pdf")
+```
+
+Reference: [Microsoft MarkItDown GitHub Repository](https://github.com/microsoft/markitdown)
+
+---
+
+## tools.mdc Template
+
+```markdown
+---
+description: Tools and utilities used in this project
+globs: ["**/*"]
+alwaysApply: false
+lastVerified: [timestamp]
+sources:
+  - name: [Tool documentation]
+    url: [URL]
+    accessedAt: [timestamp]
+---
+
+## Purpose
+Document all tools and utilities used in this project with installation and usage instructions.
+
+## Required Tools
+
+### MarkItDown (PDF Text Extraction)
+
+**Installation:**
+```bash
+pip install 'markitdown[pdf]'
+```
+
+**Basic Usage:**
+```python
+from markitdown import MarkItDown
+
+md = MarkItDown()
+result = md.convert("document.pdf")
+print(result.text_content)
+```
+
+**Python Utility Script:**
+[Include the complete PDF-to-text utility script from the MarkItDown section above]
+
+**When to Use:**
+- Converting PDFs to text for analysis
+- Extracting structured content from documents
+- Cross-platform compatibility needed
+
+### [Other Tools]
+
+[Document any other tools discovered during research]
+
+## Tool Selection Strategy
+
+[Document when to use each tool based on project needs]
+
+## Troubleshooting
+
+[Document common issues and solutions]
+
+## Platform Considerations
+
+[Document platform-specific installation or usage notes]
+
+## Proposed Changes
+
+[Document friction]
+```
+
+---
+
+## Proposed Changes
+
+[Document friction as it emerges during use. User reviews and approves/rejects.]

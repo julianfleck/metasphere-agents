@@ -1,0 +1,78 @@
+project:
+  name: "Metasphere Agents"
+  description: "Lightweight OpenClaw replacement using Claude Code with shared knowledge substrates, SPIRAL agentic loop, and ~/.metasphere runtime"
+  domain: software
+  repository: "https://github.com/julianfleck/metasphere-agents"
+  runtime: "~/.metasphere/"
+  owners:
+    - name: Julian
+      role: Lead
+      contact: julian
+
+inventory:
+  # Core specification
+  - path: claude.md
+    kind: rule
+    purpose: "Project-level Claude Code instructions and architecture spec"
+    owner: "julian"
+    status: current
+
+  # Documentation
+  - path: docs/research/2026-04-06/01-initial-research.md
+    kind: research
+    purpose: "Bootstrap research for MVP architecture"
+    owner: "claude"
+    status: current
+
+  - path: docs/context/
+    kind: context
+    purpose: "Progressive context maps for understanding"
+    owner: "agent"
+    status: draft
+
+  - path: docs/tasks/planned/
+    kind: task
+    purpose: "Tasks not yet started"
+    owner: "orchestrator"
+    status: current
+
+  - path: docs/tasks/active/
+    kind: task
+    purpose: "Currently active task context"
+    owner: "agent"
+    status: current
+
+  - path: docs/tasks/completed/
+    kind: task
+    purpose: "Completed task documentation"
+    owner: "agent"
+    status: current
+
+  # Input materials
+  - path: input/
+    kind: input
+    purpose: "User-supplied materials"
+    owner: "julian"
+    status: current
+
+  # Configuration (to be created)
+  - path: .claude/settings.json
+    kind: config
+    purpose: "Claude Code hooks configuration"
+    owner: "system"
+    status: draft
+
+conventions:
+  software:
+    language: "TypeScript/Python"
+    testing: "pytest/vitest"
+    lint: "ruff/eslint"
+
+  writing:
+    citation_style: "URL with access timestamp"
+    required_sections: ["Context", "Sources", "Synthesis"]
+
+provenance:
+  last_updated: "2026-04-06T23:30:00Z"
+  updated_by: "claude"
+  notes: "Renamed to Metasphere Agents, ready for development"
