@@ -726,20 +726,20 @@ cmd_cleanup() {
             local hours=$((age / 3600))
             echo -e "  ${RED}!${NC} $agent: spawned ${hours}h ago, never activated"
             echo "    Consider: metasphere agent sunset $agent --reason \"stale spawn\""
-            ((issues++))
+            issues=$((issues + 1))
         fi
 
         # Check for agents with no task and no scope (likely orphaned)
         if [[ -z "$task" && -z "$scope" && "$agent" != "@orchestrator" ]]; then
             echo -e "  ${YELLOW}!${NC} $agent: no task or scope defined"
             echo "    Consider: metasphere agent sunset $agent --reason \"no task\""
-            ((warnings++))
+            warnings=$((warnings + 1))
         fi
 
         # Check for agents with scope pointing to non-existent directory
         if [[ -n "$scope" && ! -d "$scope" ]]; then
             echo -e "  ${YELLOW}!${NC} $agent: scope directory does not exist: $scope"
-            ((warnings++))
+            warnings=$((warnings + 1))
         fi
 
         # Check for orphaned children (parent no longer exists)
@@ -747,7 +747,7 @@ cmd_cleanup() {
             local parent=$(cat "$agent_dir/parent")
             if [[ ! -d "$AGENTS_DIR/$parent" ]]; then
                 echo -e "  ${RED}!${NC} $agent: parent $parent no longer exists (orphaned)"
-                ((issues++))
+                issues=$((issues + 1))
             fi
         fi
 
@@ -756,7 +756,7 @@ cmd_cleanup() {
             local hours=$((age / 3600))
             echo -e "  ${YELLOW}!${NC} $agent: status='$status' but no activity for ${hours}h"
             echo "    Consider updating status or sunsetting"
-            ((warnings++))
+            warnings=$((warnings + 1))
         fi
 
         # Check for agents with tmux sessions but sunset/complete status
@@ -765,7 +765,7 @@ cmd_cleanup() {
             if command -v tmux &>/dev/null && tmux has-session -t "$session_name" 2>/dev/null; then
                 echo -e "  ${YELLOW}!${NC} $agent: has active tmux session but status='$status'"
                 echo "    Consider: metasphere session stop $agent"
-                ((warnings++))
+                warnings=$((warnings + 1))
             fi
         fi
     done
@@ -932,12 +932,12 @@ cmd_view() {
     collect_subtree_stats() {
         local a="$1"
         local ad="$AGENTS_DIR/$a"
-        ((total++))
+        total=$((total + 1))
 
         local s=$(cat "$ad/status" 2>/dev/null || echo "")
         case "$s" in
-            active*|working:*) ((active++)) ;;
-            blocked:*) ((blocked++)) ;;
+            active*|working:*) active=$((active + 1)) ;;
+            blocked:*) blocked=$((blocked + 1)) ;;
         esac
 
         if [[ -f "$ad/children" ]]; then
