@@ -213,3 +213,71 @@ def set_message_reaction(chat_id: int | str, message_id: int, emoji: str = "👀
 
 def get_me() -> dict:
     return call("getMe")
+
+
+def _http_post_multipart(url: str, fields: dict, file_field: str, file_path: str,
+                         filename: str, timeout: float = DEFAULT_TIMEOUT) -> dict:
+    """Multipart/form-data POST. Used by sendDocument; everything else
+    routes through ``_http_post``. Stdlib only — no requests dependency.
+    """
+    import os
+    import uuid
+
+    boundary = f"----metasphere-{uuid.uuid4().hex}"
+    body = bytearray()
+    for k, v in fields.items():
+        if v is None:
+            continue
+        body += f"--{boundary}\r\n".encode()
+        body += f'Content-Disposition: form-data; name="{k}"\r\n\r\n'.encode()
+        body += f"{v}\r\n".encode()
+    with open(file_path, "rb") as f:
+        file_bytes = f.read()
+    body += f"--{boundary}\r\n".encode()
+    body += (
+        f'Content-Disposition: form-data; name="{file_field}"; '
+        f'filename="{os.path.basename(filename)}"\r\n'
+    ).encode()
+    body += b"Content-Type: application/octet-stream\r\n\r\n"
+    body += file_bytes
+    body += f"\r\n--{boundary}--\r\n".encode()
+
+    req = urllib.request.Request(
+        url,
+        data=bytes(body),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        payload = e.read().decode("utf-8", errors="replace")
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError as e:
+        raise TelegramAPIError("sendDocument", f"non-JSON response: {payload[:200]}", {}) from e
+
+
+def send_document(chat_id: int | str, file_path: str,
+                  caption: Optional[str] = None,
+                  filename: Optional[str] = None) -> dict:
+    """Upload ``file_path`` to ``chat_id`` via sendDocument.
+
+    Args:
+        chat_id: target chat.
+        file_path: local path to the file to upload.
+        caption: optional message caption shown beneath the file.
+        filename: override the filename Telegram displays. Defaults to
+            the basename of ``file_path``.
+    """
+    cfg = _config()
+    url = f"{cfg.api_base}/sendDocument"
+    name = filename or file_path.rsplit("/", 1)[-1]
+    fields = {"chat_id": str(chat_id)}
+    if caption:
+        fields["caption"] = caption
+    resp = _http_post_multipart(url, fields, "document", file_path, name)
+    if not resp.get("ok"):
+        raise TelegramAPIError("sendDocument", resp.get("description", "unknown error"), resp)
+    return resp

@@ -130,6 +130,33 @@ def cmd_getme(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_send_document(args: argparse.Namespace) -> int:
+    chat_id = args.chat_id or _load_chat_id()
+    if chat_id is None:
+        print("Error: no chat id. Pass --chat-id or have the user /start the bot first.", file=sys.stderr)
+        return 2
+    if not os.path.exists(args.path):
+        print(f"Error: file not found: {args.path}", file=sys.stderr)
+        return 2
+    agent = os.environ.get("METASPHERE_AGENT_ID", "@orchestrator")
+    caption = args.caption
+    if agent != "@orchestrator" and caption:
+        caption = f"[{agent.lstrip('@')}] {caption}"
+    resp = api.send_document(chat_id, args.path, caption=caption, filename=args.filename)
+    # Same dedupe-marker treatment as text sends — the user already got the
+    # file, so the Stop hook should not also forward the assistant text.
+    if agent == "@orchestrator":
+        try:
+            from metasphere import paths as _paths
+            from metasphere.posthook import mark_orchestrator_explicit_send
+
+            mark_orchestrator_explicit_send(_paths.resolve())
+        except Exception:  # noqa: BLE001
+            pass
+    print(f"Sent {args.path} to {chat_id} via {agent} (file_id={resp.get('result',{}).get('document',{}).get('file_id','?')})")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="telegram", description="metasphere telegram CLI (rewrite)")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -148,6 +175,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_me = sub.add_parser("getme", help="print bot info")
     p_me.set_defaults(func=cmd_getme)
+
+    p_doc = sub.add_parser("send-document", help="upload a file to the chat via sendDocument")
+    p_doc.add_argument("path", help="local path to the file")
+    p_doc.add_argument("--caption", default=None, help="optional caption shown beneath the file")
+    p_doc.add_argument("--filename", default=None, help="override the displayed filename")
+    p_doc.add_argument("--chat-id", type=int, default=None)
+    p_doc.set_defaults(func=cmd_send_document)
 
     return p
 
