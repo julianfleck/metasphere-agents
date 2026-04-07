@@ -672,7 +672,10 @@ case "${1:-}" in
         # 3. Common install locations under $HOME
         # 4. Walk up from the script's resolved path (handles symlinks
         #    pointing into a checkout)
-        local install_source=""
+        # NOTE: cannot use `local` here — this case branch lives at the
+        # top-level dispatch, not inside a function. Bash on Linux
+        # rejects `local` outside functions; macOS bash silently allows.
+        install_source=""
         if [[ -n "$METASPHERE_REPO_ROOT" && -d "$METASPHERE_REPO_ROOT/.git" ]]; then
             install_source="$METASPHERE_REPO_ROOT"
         elif [[ -d "$PWD/.git" && -d "$PWD/scripts" && -f "$PWD/scripts/metasphere" ]]; then
@@ -687,8 +690,8 @@ case "${1:-}" in
         fi
         if [[ -z "$install_source" ]]; then
             # Last resort: walk up from the script's resolved path
-            local script_path=$(readlink -f "$0" 2>/dev/null || echo "$0")
-            local script_dir=$(dirname "$script_path")
+            script_path=$(readlink -f "$0" 2>/dev/null || echo "$0")
+            script_dir=$(dirname "$script_path")
             if [[ -d "$script_dir/../.git" && -f "$script_dir/../scripts/metasphere" ]]; then
                 install_source=$(cd "$script_dir/.." && pwd)
             fi
