@@ -109,6 +109,18 @@ def cmd_send(args: argparse.Namespace) -> int:
         text = f"[{agent.lstrip('@')}]\n\n{text}"
     api.send_message(chat_id, text)
     archiver.archive_outgoing(agent, text, chat_id)
+    # Suppress the next Stop-hook auto-forward of the assistant text:
+    # the user already got this content explicitly. Without this, every
+    # turn that calls `metasphere-telegram send` produces a duplicate
+    # message in chat (the explicit send + the posthook recap).
+    if agent == "@orchestrator":
+        try:
+            from metasphere import paths as _paths
+            from metasphere.posthook import mark_orchestrator_explicit_send
+
+            mark_orchestrator_explicit_send(_paths.resolve())
+        except Exception:  # noqa: BLE001 — never break send on a marker failure
+            pass
     print(f"Sent to {chat_id} via {agent}")
     return 0
 

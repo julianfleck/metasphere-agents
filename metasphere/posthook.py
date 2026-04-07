@@ -112,6 +112,45 @@ def _telegram_error_log(paths: Paths) -> Path:
     return paths.state / "posthook_telegram_errors.log"
 
 
+def _explicit_send_marker_path(paths: Paths) -> Path:
+    """Marker touched by ``metasphere-telegram send`` when the sender is
+    @orchestrator. Posthook reads its mtime to decide whether to suppress
+    the auto-forward of the final assistant text.
+    """
+    return paths.state / "orchestrator_explicit_send_at"
+
+
+# Window inside which an explicit @orchestrator send suppresses the
+# Stop-hook auto-forward. Long enough to span the gap between the CLI
+# call and the assistant text being finalized; short enough that a stale
+# marker from an earlier turn does not silence a genuinely new message.
+EXPLICIT_SEND_SUPPRESS_WINDOW_SECONDS = 120
+
+
+def _explicit_send_marker_fresh(paths: Paths) -> bool:
+    marker = _explicit_send_marker_path(paths)
+    try:
+        if not marker.exists():
+            return False
+        age = _dt.datetime.now(_dt.timezone.utc).timestamp() - marker.stat().st_mtime
+        return 0 <= age <= EXPLICIT_SEND_SUPPRESS_WINDOW_SECONDS
+    except OSError:
+        return False
+
+
+def mark_orchestrator_explicit_send(paths: Paths) -> None:
+    """Touch the explicit-send marker. Called by metasphere-telegram CLI
+    after a successful @orchestrator send so the next Stop-hook tick
+    knows to suppress the duplicate auto-forward.
+    """
+    marker = _explicit_send_marker_path(paths)
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    except OSError:
+        pass
+
+
 def route_to_telegram(text: str, paths: Paths) -> None:
     """Send ``text`` to Telegram via the parallel-track bot, deduping
     against the last-sent hash. Failures are logged, never raised.
@@ -285,7 +324,13 @@ def run_posthook(stdin_bytes: bytes, paths: Paths | None = None) -> int:
             if transcript:
                 text = extract_last_assistant_text(Path(transcript))
                 if not should_skip_silent_tick(text):
-                    route_to_telegram(text or "", paths)
+                    # Suppress if @orchestrator already sent something via
+                    # `metasphere-telegram send` during this turn — the
+                    # final assistant text is almost certainly a recap and
+                    # the user gets the same content twice. The CLI drops a
+                    # marker file with mtime=now on every explicit send.
+                    if not _explicit_send_marker_fresh(paths):
+                        route_to_telegram(text or "", paths)
 
         track_turn_completion(agent, paths)
     except Exception:  # noqa: BLE001 — Stop hook must never break the host
