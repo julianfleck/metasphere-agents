@@ -16,6 +16,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -176,9 +177,19 @@ def _format_scalar(v: Any) -> str:
     if isinstance(v, (int, float)):
         return str(v)
     s = str(v)
+    # ISO-8601 timestamps contain ':' but bash callers expect them
+    # unquoted. Emit them bare so the on-disk frontmatter stays
+    # byte-compatible with the legacy bash writers.
+    if _ISO8601_RE.match(s):
+        return s
     if any(c in s for c in ":#\n") or s != s.strip():
         return json.dumps(s)
     return s
+
+
+_ISO8601_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$"
+)
 
 
 def serialize_frontmatter(fm: Frontmatter) -> str:

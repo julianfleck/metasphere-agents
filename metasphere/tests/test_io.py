@@ -65,3 +65,15 @@ def test_frontmatter_no_fence():
     fm = io.parse_frontmatter("just text")
     assert fm.meta == {}
     assert fm.body == "just text"
+
+
+def test_frontmatter_iso8601_unquoted(tmp_path):
+    """ISO-8601 timestamp values must round-trip without quotes (bash compat)."""
+    p = tmp_path / "msg.md"
+    fm = io.Frontmatter(meta={"created": "2026-04-07T20:43:23Z"}, body="hi\n")
+    io.write_frontmatter_file(p, fm)
+    raw = p.read_text()
+    assert "created: 2026-04-07T20:43:23Z" in raw
+    assert '"2026-04-07T20:43:23Z"' not in raw
+    fm2 = io.read_frontmatter_file(p)
+    assert fm2.meta["created"] == "2026-04-07T20:43:23Z"
