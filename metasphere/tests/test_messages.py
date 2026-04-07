@@ -81,6 +81,30 @@ def test_collect_inbox_walks_parent_scopes(tmp_paths, monkeypatch):
     assert {x.label for x in msgs_mid} == {"!root", "!mid"}
 
 
+def test_send_to_absolute_path_target(tmp_paths, tmp_path):
+    """@/abs/path/ resolves to absolute filesystem path, not repo-joined.
+
+    Regression: previously ``@/tmp/foo/`` was joined to scope/repo_root,
+    producing ``<repo_root>/tmp/foo`` and doubled-prefix paths.
+    """
+    abs_target = tmp_path / "elsewhere" / "scope"
+    abs_target.mkdir(parents=True)
+
+    msg = m.send_message(
+        f"@/{abs_target}/",
+        "!info",
+        "absolute target",
+        "@sender",
+        paths=tmp_paths,
+        wake=False,
+    )
+    expected_inbox = abs_target / ".messages" / "inbox" / f"{msg.id}.msg"
+    assert expected_inbox.exists(), f"message not in abs inbox: {expected_inbox}"
+    # Must NOT have been written under repo_root.
+    doubled = tmp_paths.repo / str(abs_target).lstrip("/")
+    assert not (doubled / ".messages" / "inbox" / f"{msg.id}.msg").exists()
+
+
 # ---------------------------------------------------------------------------
 # Frontmatter integrity
 # ---------------------------------------------------------------------------

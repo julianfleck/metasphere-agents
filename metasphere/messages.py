@@ -207,7 +207,9 @@ def resolve_target(target: str, scope: Path, repo_root: Path, paths: Paths | Non
 
       * ``@.``     -> current scope
       * ``@..``    -> parent of scope
-      * ``@/p/``   -> ``<repo_root>/p``
+      * ``@/p/``   -> absolute filesystem path ``/p`` if that directory
+                      exists; otherwise ``<repo_root>/p`` (legacy
+                      repo-relative form).
       * ``@name``  -> ``<metasphere>/agents/@name/scope`` if registered,
                       else repo root.
     """
@@ -220,7 +222,12 @@ def resolve_target(target: str, scope: Path, repo_root: Path, paths: Paths | Non
     if target == "@..":
         return scope.parent
     if target.startswith("@/"):
-        return repo_root / target[2:].lstrip("/")
+        rest = target[2:]
+        if rest:
+            abs_candidate = Path("/" + rest)
+            if abs_candidate != Path("/") and abs_candidate.is_dir():
+                return abs_candidate
+        return repo_root / rest.lstrip("/")
     if target.startswith("@"):
         paths = paths or resolve()
         scope_file = paths.agents / target / "scope"
