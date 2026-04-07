@@ -227,6 +227,47 @@ You are @orchestrator in a persistent session. You will receive user messages an
 
 Ready for messages.
 CONTEXT
+
+    # Persona / identity / openclaw workspace files are NOT inlined.
+    # We list them as @-paths so claude-code reads them lazily on demand
+    # via its native @file mention handling. Inlining was a mistake — it
+    # blasted ~50KB of literal-mode keystrokes into the pane on every
+    # session start, dominated context, and on a slow tmux paste loop
+    # took over a minute to type.
+    local openclaw_ws=""
+    if [[ -f "$METASPHERE_DIR/config/openclaw_workspace" ]]; then
+        openclaw_ws=$(cat "$METASPHERE_DIR/config/openclaw_workspace" 2>/dev/null)
+    elif [[ -d "$HOME/.openclaw/workspace" ]]; then
+        openclaw_ws="$HOME/.openclaw/workspace"
+    fi
+
+    local agent_dir="$METASPHERE_DIR/agents/${METASPHERE_AGENT_ID:-@orchestrator}"
+
+    echo
+    echo "## Identity & persona files (read on demand)"
+    echo
+    echo "Below are file paths to read with the Read tool when you need them."
+    echo "Do NOT read them all up-front — only what's relevant to the current task."
+    echo
+
+    if [[ -n "$openclaw_ws" && -d "$openclaw_ws" ]]; then
+        echo "**OpenClaw workspace** (\`$openclaw_ws\`):"
+        for f in SOUL IDENTITY USER TOOLS AGENTS MEMORY; do
+            [[ -f "$openclaw_ws/$f.md" ]] && echo "- $openclaw_ws/$f.md"
+        done
+        echo
+    fi
+
+    if [[ -d "$agent_dir" ]]; then
+        echo "**Agent identity** (${METASPHERE_AGENT_ID:-@orchestrator}):"
+        for f in MISSION HEARTBEAT LEARNINGS SOUL; do
+            [[ -f "$agent_dir/$f.md" ]] && echo "- $agent_dir/$f.md"
+        done
+        echo
+    fi
+
+    echo "Tip: when a user's request touches your persona or operating rules,"
+    echo "Read the relevant file. Otherwise leave them on disk."
 }
 
 # Start new orchestrator session
@@ -240,14 +281,32 @@ start_session() {
     $TMUX_CMD set-option -t "$SESSION_NAME" mouse on
     $TMUX_CMD set-option -t "$SESSION_NAME" history-limit 100000
 
-    # Start claude in the session
-    $TMUX_CMD send-keys -t "$SESSION_NAME" "claude --allowedTools 'Read,Write,Edit,Bash,Glob,Grep'" Enter
+    # Record harness hash baseline so the per-turn context hook can detect
+    # stale-context drift and surface it to the agent (which then decides
+    # whether to /exit and self-reload).
+    write_harness_hash_baseline
+
+    # Start claude inside a self-respawning loop. When the agent runs /exit
+    # (because it noticed its baked-in CLAUDE.md / hook is stale, or because
+    # it explicitly wants a fresh context), claude returns to bash, the loop
+    # sleeps a tick, and a brand-new claude REPL starts — picking up the
+    # latest harness automatically. The host gateway is OUT of the cognition
+    # control loop. tmux pane stays alive across REPL respawns, so external
+    # attachers (spot-chat, mosh, etc) don't drop.
+    $TMUX_CMD send-keys -t "$SESSION_NAME" \
+      "exec bash -c 'while true; do claude --allowedTools \"Read,Write,Edit,Bash,Glob,Grep\"; ec=\$?; echo \"[gateway] claude exited (\$ec), respawning in 1s...\"; sleep 1; done'" Enter
 
     sleep 3  # Wait for claude to initialize
 
-    # Send initial context
-    local context=$(build_initial_context)
-    inject_to_session "$context"
+    # NOTE: We deliberately do NOT inject build_initial_context into the
+    # pane any more. claude-code auto-loads CLAUDE.md from the project
+    # root on startup, which already contains the orchestrator role,
+    # command reference, and persona file pointers. The per-turn
+    # metasphere-context hook fills in deltas (messages, tasks, events)
+    # before each turn. Inlining a multi-KB blob into the REPL via
+    # literal-mode tmux typing locked the pane for over a minute and
+    # immediately exhausted context. The agent can Read persona files
+    # on demand using the @-paths CLAUDE.md lists.
 
     # Update agent status
     echo "active: persistent session" > "$METASPHERE_DIR/agents/@orchestrator/status"
@@ -484,16 +543,76 @@ poll_telegram() {
 }
 
 # =============================================================================
-# Supervisor: config-change + stuck-prompt detection
+# Harness hash — content (not mtime) of the files the agent's REPL bakes in
+# at startup. The per-turn context hook (metasphere-context) compares the
+# live hash to the baseline file written here and surfaces "your harness is
+# stale, /exit to reload" to the agent if they differ. The agent decides
+# whether to act. The host NEVER kills the REPL.
+# =============================================================================
+
+HARNESS_HASH_FILE="$METASPHERE_DIR/state/harness_hash_baseline"
+
+# Files whose content is baked into a fresh claude REPL on startup.
+# Listed via dynamic resolution so spot/laptop/etc all work.
+harness_hash_files() {
+    local files=(
+        "$REPO_ROOT/CLAUDE.md"
+        "$REPO_ROOT/.claude/settings.json"
+        "$REPO_ROOT/.claude/settings.local.json"
+        "$REPO_ROOT/scripts/metasphere-context"
+    )
+    for f in "${files[@]}"; do
+        [[ -f "$f" ]] && echo "$f"
+    done
+}
+
+compute_harness_hash() {
+    local hash_cmd
+    if command -v sha256sum >/dev/null 2>&1; then
+        hash_cmd="sha256sum"
+    elif command -v shasum >/dev/null 2>&1; then
+        hash_cmd="shasum -a 256"
+    else
+        # Last-resort fallback: cksum (weaker but always present)
+        hash_cmd="cksum"
+    fi
+    # Hash the concatenated CONTENT, not paths or mtimes. Sort the file
+    # list so the result is stable across hosts.
+    harness_hash_files | sort | xargs cat 2>/dev/null | $hash_cmd | awk '{print $1}'
+}
+
+write_harness_hash_baseline() {
+    mkdir -p "$(dirname "$HARNESS_HASH_FILE")"
+    compute_harness_hash > "$HARNESS_HASH_FILE"
+}
+
+# =============================================================================
+# Supervisor: stuck-prompt detection only (lifecycle is the agent's job)
 # =============================================================================
 
 # Compute a stable signature of all watched config file mtimes.
+#
+# CAREFUL: stat syntax differs between BSD/macOS and Linux/GNU.
+#   - macOS:  stat -f %m <file>   (-f = format)
+#   - Linux:  stat -c %Y <file>   (-c = format; -f means "filesystem", which
+#                                  silently returns garbage including free
+#                                  block counts that change every tick)
+# The previous version chained `stat -f %m ... || stat -c %Y` and on Linux
+# the BSD form returned exit 0 with garbage output, so the fallback never
+# fired and the signature thrashed on each watchdog tick — causing a
+# perpetual "config changed" reboot loop.
 compute_config_signature() {
     local sig=""
+    local stat_cmd
+    if [[ "$(uname)" == "Darwin" ]]; then
+        stat_cmd="stat -f %m"
+    else
+        stat_cmd="stat -c %Y"
+    fi
     for f in "${WATCHED_CONFIG_FILES[@]}"; do
         if [[ -f "$f" ]]; then
             local mt
-            mt=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)
+            mt=$($stat_cmd "$f" 2>/dev/null || echo 0)
             sig+="$f:$mt;"
         else
             sig+="$f:missing;"
@@ -532,13 +651,15 @@ restart_claude_in_session() {
     fi
     sleep 0.5
 
-    # Relaunch claude
-    $TMUX_CMD send-keys -t "$SESSION_NAME" "claude --allowedTools 'Read,Write,Edit,Bash,Glob,Grep'" Enter
+    # NOTE: this CLI-only restart path used to relaunch claude bare and
+    # then inject build_initial_context (33KB+ of persona files) via slow
+    # literal-mode tmux typing — locked the pane and exhausted context.
+    # The respawn loop in start_session means a /exit alone is enough,
+    # but if we're nuking claude from outside we relaunch the loop too.
+    # No context is injected; CLAUDE.md auto-loads on startup.
+    $TMUX_CMD send-keys -t "$SESSION_NAME" \
+      "exec bash -c 'while true; do claude --allowedTools \"Read,Write,Edit,Bash,Glob,Grep\"; ec=\$?; echo \"[gateway] claude exited (\$ec), respawning in 1s...\"; sleep 1; done'" Enter
     sleep 3
-
-    local context
-    context=$(build_initial_context)
-    inject_to_session "$context" || true
 
     supervisor_log "Claude restart sequence complete in $SESSION_NAME"
 }
@@ -636,8 +757,10 @@ run_watchdog() {
             "$SCRIPT_DIR/metasphere-events" log watchdog.stuck_paste "Stuck [Pasted text] placeholder" --agent @watchdog 2>/dev/null || true
         fi
 
-        # Supervisor behaviors
-        check_config_changes
+        # Supervisor behaviors — cognitive lifecycle is the AGENT's job
+        # now (it self-/exits via the respawn loop). Only stuck-prompt
+        # recovery stays here, because that's "agent is frozen, unstick
+        # it" not "agent's harness is stale, reload it".
         check_stuck_prompts
     fi
 }
@@ -667,15 +790,16 @@ daemon_mode() {
     # Ensure session on startup
     [[ "$SESSION_MODE" == "persistent" ]] && ensure_session
 
-    # Force a fresh Claude REPL on daemon boot. Project files (CLAUDE.md,
-    # .claude/settings.json, the UserPromptSubmit hook script) are loaded
-    # once at REPL start, so an existing REPL will keep using its baked-in
-    # harness even after we ship updates. Killing and respawning here
-    # guarantees daemon restart == fresh harness pickup. The tmux session
-    # itself stays alive so spot-chat / external attachers don't drop.
-    if [[ "$SESSION_MODE" == "persistent" ]] && session_alive; then
-        restart_claude_in_session "daemon startup"
-    fi
+    # NOTE: We deliberately do NOT restart the claude REPL on daemon boot.
+    # The agent owns its own lifecycle now (see task-20260407-6611). If a
+    # harness update needs to be picked up, the per-turn metasphere-context
+    # hook surfaces a STALE warning and the agent decides to /exit; the
+    # tmux pane's respawn loop then launches a fresh REPL with the latest
+    # harness. The host does not control cognition.
+    #
+    # Refresh the baseline so an existing-on-startup session uses the
+    # latest harness as its reference point.
+    write_harness_hash_baseline
 
     while true; do
         poll_telegram 2>/dev/null || true

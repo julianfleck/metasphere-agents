@@ -332,6 +332,9 @@ cmd_daemon() {
         status)
             cmd_gateway_status
             ;;
+        restart-orchestrator|restart-claude)
+            "$SCRIPT_DIR/metasphere-gateway" restart-orchestrator
+            ;;
         logs)
             if [[ -f "$METASPHERE_DIR/logs/metasphere.log" ]]; then
                 tail -f "$METASPHERE_DIR/logs/metasphere.log"
@@ -342,7 +345,7 @@ cmd_daemon() {
             fi
             ;;
         *)
-            echo "Usage: metasphere daemon {start|stop|restart|status|logs}"
+            echo "Usage: metasphere daemon {start|stop|restart|restart-orchestrator|status|logs}"
             exit 1
             ;;
     esac

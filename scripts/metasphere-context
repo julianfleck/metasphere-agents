@@ -23,125 +23,66 @@ export METASPHERE_REPO_ROOT="$REPO_ROOT"
 export METASPHERE_SCOPE="$SCOPE"
 export METASPHERE_AGENT_ID="$AGENT"
 
-# Tiny header
-echo "# Metasphere Context ($AGENT)"
+# Lightweight per-turn header. The heavy persona/identity context (SOUL,
+# IDENTITY, USER, TOOLS, AGENTS, MEMORY, MISSION, LEARNINGS) is injected
+# ONCE at session start by metasphere-gateway's build_initial_context.
+# This hook only carries deltas: new messages, new tasks, recent events.
+# Restart the gateway service to refresh the heavy context.
+echo "# Metasphere Delta ($AGENT)"
 echo ""
 
-# =============================================================================
-# 0. Legacy openclaw workspace (read live, never copied)
-# =============================================================================
-# If the host previously ran openclaw, the user's authoritative SOUL/IDENTITY/
-# AGENTS/USER/TOOLS/MEMORY files live in ~/.openclaw/workspace/. We register
-# that path during install (via metasphere-migrate) and inject the relevant
-# files here on every turn so the agent inherits the openclaw persona and
-# operating rules without us copying them. This keeps openclaw and metasphere
-# in lockstep if the user keeps editing the workspace files.
-OPENCLAW_WS=""
-if [[ -f "$METASPHERE_DIR/config/openclaw_workspace" ]]; then
-    OPENCLAW_WS=$(cat "$METASPHERE_DIR/config/openclaw_workspace" 2>/dev/null)
-elif [[ -d "$HOME/.openclaw/workspace" ]]; then
-    OPENCLAW_WS="$HOME/.openclaw/workspace"
-fi
-
-if [[ -n "$OPENCLAW_WS" && -d "$OPENCLAW_WS" ]]; then
-    echo "## OpenClaw Workspace (legacy harness)"
-    echo ""
-    echo "_Source: \`$OPENCLAW_WS\` — edits to these files are picked up live._"
-    echo ""
-
-    # SOUL: who you are. Always inject in full if reasonable size.
-    if [[ -f "$OPENCLAW_WS/SOUL.md" ]]; then
-        echo "### SOUL"
-        head -60 "$OPENCLAW_WS/SOUL.md"
-        echo ""
-    fi
-
-    # IDENTITY: name, role, ID metadata.
-    if [[ -f "$OPENCLAW_WS/IDENTITY.md" ]]; then
-        echo "### IDENTITY"
-        head -30 "$OPENCLAW_WS/IDENTITY.md"
-        echo ""
-    fi
-
-    # USER: who the human is.
-    if [[ -f "$OPENCLAW_WS/USER.md" ]]; then
-        echo "### USER"
-        head -40 "$OPENCLAW_WS/USER.md"
-        echo ""
-    fi
-
-    # TOOLS: local conventions, channel IDs, device nicknames.
-    if [[ -f "$OPENCLAW_WS/TOOLS.md" ]]; then
-        echo "### TOOLS / local conventions"
-        head -40 "$OPENCLAW_WS/TOOLS.md"
-        echo ""
-    fi
-
-    # AGENTS: procedural rules. This is the largest workspace file (~17K on
-    # the reference install). Inject as a header pointer with first 50 lines
-    # so the agent knows it exists and can Read it in full when relevant.
-    if [[ -f "$OPENCLAW_WS/AGENTS.md" ]]; then
-        echo "### AGENTS (operational rules — first 50 lines, full file at \`$OPENCLAW_WS/AGENTS.md\`)"
-        head -50 "$OPENCLAW_WS/AGENTS.md"
-        echo ""
-    fi
-
-    # MEMORY: curated long-term memory. Inject in full if short.
-    if [[ -f "$OPENCLAW_WS/MEMORY.md" ]]; then
-        local mem_lines
-        mem_lines=$(wc -l < "$OPENCLAW_WS/MEMORY.md" | tr -d ' ')
-        echo "### MEMORY"
-        if [[ $mem_lines -le 60 ]]; then
-            cat "$OPENCLAW_WS/MEMORY.md"
-        else
-            tail -40 "$OPENCLAW_WS/MEMORY.md"
-            echo ""
-            echo "_(truncated to last 40 lines of $mem_lines; full at \`$OPENCLAW_WS/MEMORY.md\`)_"
-        fi
-        echo ""
-    fi
-fi
-
-# =============================================================================
-# 1. Agent Identity - who you are and what you're doing
-# =============================================================================
+# Current status only (one line)
 if [[ -d "$AGENT_DIR" ]]; then
-    echo "## Agent Identity ($AGENT)"
-    echo ""
-
-    # Current status and task
     agent_status=$(cat "$AGENT_DIR/status" 2>/dev/null || echo "unknown")
-    agent_task=$(cat "$AGENT_DIR/task" 2>/dev/null || echo "")
-    echo "**Status:** $agent_status"
-    [[ -n "$agent_task" ]] && echo "**Task:** $agent_task"
+    echo "_Status: $agent_status_"
     echo ""
+fi
 
-    # Mission (if exists and short enough)
-    if [[ -f "$AGENT_DIR/MISSION.md" ]]; then
-        echo "### Mission"
-        head -30 "$AGENT_DIR/MISSION.md" | tail -n +2  # Skip # header
-        echo ""
-    fi
-
-    # Recent learnings (just section headers or last few entries)
-    if [[ -f "$AGENT_DIR/LEARNINGS.md" ]]; then
-        learnings_lines=$(wc -l < "$AGENT_DIR/LEARNINGS.md" | tr -d ' ')
-        if [[ $learnings_lines -gt 0 && $learnings_lines -le 50 ]]; then
-            echo "### Recent Learnings"
-            cat "$AGENT_DIR/LEARNINGS.md"
+# =============================================================================
+# 0. Stale-harness detection. The gateway writes a content-hash baseline of
+# the files baked into the REPL on startup (CLAUDE.md, .claude/settings*.json,
+# scripts/metasphere-context). If the live hash differs, the agent's baked
+# context is out of date — surface a hint so the agent can decide whether to
+# /exit (the tmux respawn loop will then launch a fresh REPL with the latest
+# harness). The host never kills the REPL itself; this is the agent's call.
+# =============================================================================
+HARNESS_HASH_FILE="$METASPHERE_DIR/state/harness_hash_baseline"
+if [[ -f "$HARNESS_HASH_FILE" ]]; then
+    _harness_files=(
+        "$REPO_ROOT/CLAUDE.md"
+        "$REPO_ROOT/.claude/settings.json"
+        "$REPO_ROOT/.claude/settings.local.json"
+        "$REPO_ROOT/scripts/metasphere-context"
+    )
+    _existing=()
+    for _f in "${_harness_files[@]}"; do
+        [[ -f "$_f" ]] && _existing+=("$_f")
+    done
+    if (( ${#_existing[@]} > 0 )); then
+        if command -v sha256sum >/dev/null 2>&1; then
+            _hash_cmd="sha256sum"
+        elif command -v shasum >/dev/null 2>&1; then
+            _hash_cmd="shasum -a 256"
+        else
+            _hash_cmd="cksum"
+        fi
+        _live_hash=$(printf '%s\n' "${_existing[@]}" | sort | xargs cat 2>/dev/null | $_hash_cmd | awk '{print $1}')
+        _baseline_hash=$(cat "$HARNESS_HASH_FILE" 2>/dev/null || echo "")
+        if [[ -n "$_live_hash" && -n "$_baseline_hash" && "$_live_hash" != "$_baseline_hash" ]]; then
+            echo "## ⚠ Harness drift detected"
             echo ""
-        elif [[ $learnings_lines -gt 50 ]]; then
-            echo "### Recent Learnings (last 20 lines)"
-            tail -20 "$AGENT_DIR/LEARNINGS.md"
+            echo "Your baked-in CLAUDE.md / .claude/settings / metasphere-context has changed"
+            echo "since this REPL started. The new content is on disk but you're still running"
+            echo "the old version in memory."
+            echo ""
+            echo "If the change is relevant to what you're doing (e.g. updated workflow,"
+            echo "new slash command, new safety rule), run \`/exit\` — the tmux pane will"
+            echo "respawn a fresh REPL with the latest harness. Otherwise ignore this and"
+            echo "the warning will keep appearing until you reload."
+            echo ""
+            echo "_(suppress: \`echo \$_live_hash > $HARNESS_HASH_FILE\` to silence without reloading)_"
             echo ""
         fi
-    fi
-
-    # Heartbeat (current operational state)
-    if [[ -f "$AGENT_DIR/HEARTBEAT.md" ]]; then
-        echo "### Heartbeat"
-        cat "$AGENT_DIR/HEARTBEAT.md"
-        echo ""
     fi
 fi
 
