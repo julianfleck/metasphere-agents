@@ -168,7 +168,7 @@ cmd_inbox() {
 
     # Count unread
     for msg in "${messages[@]}"; do
-        [[ -f "$msg" ]] && [[ "$(msg_field "$msg" status)" == "unread" ]] && ((unread++))
+        [[ -f "$msg" ]] && [[ "$(msg_field "$msg" status)" == "unread" ]] && unread=$((unread + 1))
     done
 
     if [[ $total -eq 0 ]]; then
@@ -263,6 +263,86 @@ cmd_send() {
 
     echo "Sent $msg_id to $target ($(rel_path "$target_path"))"
     echo "  Label: $label"
+
+    # Wake the recipient if it has a live tmux session. Without this, a
+    # parent agent sitting idle in its REPL never sees that a child sent
+    # a !done message — the message lands in the inbox but no turn fires
+    # to read it. The whole "fractal coordination" story depends on this.
+    #
+    # EXCEPTION: when the sender is @user, the wake is already handled
+    # by metasphere-telegram-stream's inject_to_orchestrator (which runs
+    # before the messages CLI even gets called via the bot's process
+    # path). Calling submit_to_tmux a second time produces double-wakes
+    # (Julian observed this). Skip when AGENT==@user.
+    if [[ "$AGENT" != "@user" ]]; then
+        wake_recipient_if_live "$target" "$label" "$AGENT" "$message" || true
+    fi
+}
+
+# Resolve a recipient address to its tmux session name (if any), then
+# inject a brief wake notice into that session via submit_to_tmux.
+#
+# Convention: every persistent agent in tmux gets a session named
+# "metasphere-<agent-name>" (without the @). The orchestrator is at
+# "metasphere-orchestrator". @.., @/path/, @name all eventually resolve
+# to either an agent name or a scope path; we wake the agent we can find.
+wake_recipient_if_live() {
+    local target="$1"
+    local label="$2"
+    local from="$3"
+    local body="$4"
+
+    local script_dir
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+
+    # Resolve target to an agent name when possible.
+    local agent_name=""
+    case "$target" in
+        @..)
+            # Parent scope — most common case is @orchestrator at repo root.
+            local parent_scope; parent_scope=$(dirname "$SCOPE")
+            if [[ "$parent_scope" == "$REPO_ROOT" || "$SCOPE" == "$REPO_ROOT" ]]; then
+                agent_name="orchestrator"
+            fi
+            ;;
+        @.|@/*|"")
+            # Scope-targeted, not agent-targeted. Try to wake the orchestrator
+            # if the scope is the repo root, since that's where it lives.
+            local resolved; resolved=$(resolve_target "$target")
+            if [[ "$resolved" == "$REPO_ROOT" ]]; then
+                agent_name="orchestrator"
+            fi
+            ;;
+        @*)
+            agent_name="${target#@}"
+            ;;
+    esac
+
+    [[ -z "$agent_name" ]] && return 0
+
+    # Find tmux. If not present, nothing to wake.
+    local tmux_bin=""
+    tmux_bin=$(command -v tmux 2>/dev/null) || return 0
+
+    local session="metasphere-${agent_name}"
+    "$tmux_bin" has-session -t "$session" 2>/dev/null || return 0
+
+    # Build a tight, action-imperative wake notice. Truncate body to ~200
+    # chars so we don't dump the full message into the prompt buffer.
+    local body_preview="${body:0:200}"
+    [[ ${#body} -gt 200 ]] && body_preview="${body_preview}..."
+
+    local notice="[wake] new ${label} from ${from}: ${body_preview}"
+
+    # Use submit_to_tmux to inject. Source the helper so we can call it.
+    if [[ -r "$script_dir/metasphere-tmux-submit" ]]; then
+        # shellcheck disable=SC1090
+        source "$script_dir/metasphere-tmux-submit"
+        TMUX_CMD="$tmux_bin" submit_to_tmux "$session" "$notice" >/dev/null 2>&1 || true
+    fi
+
+    # Log the wake so it shows up in events
+    "$script_dir/metasphere-events" log agent.wake "@${agent_name} woken by ${from} (${label})" --agent "$from" >/dev/null 2>&1 || true
 }
 
 cmd_reply() {

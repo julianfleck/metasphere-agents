@@ -49,16 +49,27 @@ tg_api() {
     curl -s -X POST "$API_BASE/$method" "$@"
 }
 
-# Send a message
+# Send a message.
+# parse_mode defaults to empty (plain text). Plain text avoids the entire
+# class of "Bad Request: can't parse entities" errors that bite when callers
+# include parens, asterisks, backticks, etc. Pass "Markdown" or "MarkdownV2"
+# explicitly when the caller has actually escaped its content.
+# Always uses --data-urlencode so special chars in `text` survive transit.
 send_message() {
     local chat_id="$1"
     local text="$2"
-    local parse_mode="${3:-Markdown}"
+    local parse_mode="${3:-}"
 
-    tg_api "sendMessage" \
-        -d "chat_id=$chat_id" \
-        -d "text=$text" \
-        -d "parse_mode=$parse_mode"
+    if [[ -n "$parse_mode" ]]; then
+        tg_api "sendMessage" \
+            -d "chat_id=$chat_id" \
+            --data-urlencode "text=$text" \
+            -d "parse_mode=$parse_mode"
+    else
+        tg_api "sendMessage" \
+            -d "chat_id=$chat_id" \
+            --data-urlencode "text=$text"
+    fi
 }
 
 # Get updates (long polling)
@@ -323,10 +334,12 @@ Or chat directly with @orchestrator"
             ;;
 
         *)
-            # Default: route to @orchestrator
-            local result
-            result=$(METASPHERE_AGENT_ID="@user" "$SCRIPT_DIR/messages" send "@orchestrator" "!query" "$text" 2>&1)
-            reply "Routed to @orchestrator"
+            # Default: route to @orchestrator silently. The bot used to
+            # echo "Routed to @orchestrator" as an ack, but the user
+            # finds it noisy — receipt is now signalled by an emoji
+            # reaction (set in telegram-stream's poll_once), and the
+            # actual reply lands when the orchestrator finishes its turn.
+            METASPHERE_AGENT_ID="@user" "$SCRIPT_DIR/messages" send "@orchestrator" "!query" "$text" >/dev/null 2>&1 || true
             ;;
     esac
 }

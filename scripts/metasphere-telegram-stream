@@ -88,6 +88,41 @@ save_latest() {
     }' > "$LATEST_FILE"
 }
 
+# Send a single chunk to Telegram and return non-zero on API failure.
+_tg_stream_send_chunk() {
+    local chat_id="$1"
+    local text="$2"
+    local response
+    response=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d "chat_id=$chat_id" \
+        --data-urlencode "text=$text")
+    local ok
+    ok=$(echo "$response" | jq -r '.ok' 2>/dev/null)
+    if [[ "$ok" != "true" ]]; then
+        echo "Telegram send FAILED: $(echo "$response" | jq -r '.description // .' 2>/dev/null)" >&2
+        return 1
+    fi
+}
+
+# Inject an incoming user message into the orchestrator's tmux session so
+# the next claude turn fires immediately rather than waiting for a heartbeat.
+# Replaces what the (currently disabled) gateway service used to do.
+inject_to_orchestrator() {
+    local from="$1"
+    local text="$2"
+    local session="metasphere-orchestrator"
+
+    local tmux_bin
+    tmux_bin=$(command -v tmux 2>/dev/null) || return 0
+    "$tmux_bin" has-session -t "$session" 2>/dev/null || return 0
+
+    if [[ -r "$SCRIPT_DIR/metasphere-tmux-submit" ]]; then
+        # shellcheck disable=SC1090
+        source "$SCRIPT_DIR/metasphere-tmux-submit"
+        TMUX_CMD="$tmux_bin" submit_to_tmux "$session" "[telegram from $from] $text" >/dev/null 2>&1 || true
+    fi
+}
+
 # Poll for new messages
 poll_once() {
     [[ -z "$TELEGRAM_BOT_TOKEN" ]] && {
@@ -133,6 +168,26 @@ poll_once() {
             # Process commands (delegate to telegram script)
             if [[ "$text" == /* ]]; then
                 "$SCRIPT_DIR/metasphere-telegram" process "$chat_id" "$text" 2>/dev/null &
+            else
+                # Non-command text → forward to orchestrator session via tmux.
+                # The gateway used to do this, but the gateway service is
+                # disabled (crashes on startup). Without this injection,
+                # incoming user messages would only surface on the next
+                # heartbeat tick (up to 5 min latency). Inject directly.
+                inject_to_orchestrator "@$from" "$text"
+
+                # Acknowledge receipt with an emoji reaction on the user's
+                # message. Replaces the noisy "Routed to @orchestrator"
+                # text reply the bot used to send. The actual reply will
+                # come when the orchestrator finishes its turn.
+                local msg_id_for_react
+                msg_id_for_react=$(echo "$message" | jq -r '.message_id // empty')
+                if [[ -n "$msg_id_for_react" ]]; then
+                    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setMessageReaction" \
+                        -d "chat_id=$chat_id" \
+                        -d "message_id=$msg_id_for_react" \
+                        --data-urlencode 'reaction=[{"type":"emoji","emoji":"👀"}]' > /dev/null 2>&1 || true
+                fi
             fi
         fi
 
@@ -273,10 +328,49 @@ send_message() {
 $text"
     fi
 
-    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-        -d "chat_id=$chat_id" \
-        -d "parse_mode=Markdown" \
-        --data-urlencode "text=$formatted_text" > /dev/null
+    # Default to plain text. Markdown parse_mode rejects any message
+    # containing unbalanced asterisks/brackets/parens — and the posthook
+    # silently swallows the failure, so the user sees nothing in Telegram
+    # while the tmux session looks fine. This was the "missing reply" bug.
+    #
+    # Telegram's hard cap is 4096 characters per message. If formatted_text
+    # exceeds ~3900 (leaving headroom for the chunk marker), split into
+    # multiple messages on paragraph or line boundaries and send them in
+    # order. Without this, long replies (e.g. detailed analyses) fail with
+    # "Bad Request: message is too long" and the user sees nothing.
+    local CHUNK_MAX=3900
+    local total=${#formatted_text}
+
+    if (( total <= CHUNK_MAX )); then
+        _tg_stream_send_chunk "$chat_id" "$formatted_text" || return 1
+    else
+        # Naive split on paragraph boundaries first, then line, then hard.
+        local remaining="$formatted_text"
+        local part=1
+        local total_parts=$(( (total + CHUNK_MAX - 1) / CHUNK_MAX ))
+        while [[ -n "$remaining" ]]; do
+            local chunk
+            if (( ${#remaining} <= CHUNK_MAX )); then
+                chunk="$remaining"
+                remaining=""
+            else
+                # Try to break at last newline within budget
+                local cut=${remaining:0:CHUNK_MAX}
+                local last_nl=${cut%$'\n'*}
+                if [[ "$last_nl" != "$cut" && ${#last_nl} -gt $((CHUNK_MAX / 2)) ]]; then
+                    chunk="$last_nl"
+                    remaining="${remaining:${#last_nl}}"
+                    remaining="${remaining#$'\n'}"
+                else
+                    chunk="$cut"
+                    remaining="${remaining:CHUNK_MAX}"
+                fi
+            fi
+            local marker="[$part/$total_parts] "
+            _tg_stream_send_chunk "$chat_id" "${marker}${chunk}" || return 1
+            part=$((part + 1))
+        done
+    fi
 
     echo "Sent to Telegram via $agent"
 

@@ -105,6 +105,23 @@ This repo improves itself through a continuous evolution cycle, inspired by Karp
 
 ---
 
+## Heartbeat Turn Etiquette
+
+Every turn-end emits an assistant message that the Stop hook routes to Telegram. Heartbeat-fired turns happen on a 5-minute cadence whether or not anything is worth saying. Be deliberate about what you say:
+
+1. **Silent ticks need actual silence, not "Quiet." placeholders.** When a heartbeat fires and there is genuinely nothing meaningful to report (no new user input, no child completion, no schedule fire of consequence, no internal state change worth surfacing), call a single trivial tool (e.g. `Bash` running `:`, or just don't call anything) and produce *no narrative text* at the end. The Stop hook short-circuits when `last_text` is empty, so the user sees nothing on Telegram.
+2. **Never emit "Quiet.", "Nothing.", "Idle.", or other one-word ack placeholders.** Those forward to the user's chat as noise. The user explicitly does not want them.
+3. **Do emit text when:**
+   - A scheduled job fired and produced something user-worthy (a trade, a bug, an unexpected result)
+   - A child agent completed and you have something to bubble up
+   - A bug or anomaly was discovered
+   - You took an action that the user should know about
+   - You hit a fork that requires user input
+4. **The cost of a noisy heartbeat is real.** Every "Quiet." pings the user's phone. Treat heartbeat replies like commit messages: if you have nothing to say, say nothing — but don't fake it with a placeholder.
+5. **If you must produce some text to satisfy the harness, make it a tool call only.** No prose. No markdown. Nothing the posthook would forward.
+
+---
+
 ## Directory Structure
 
 This repo uses **fractal scoping**: every directory can have its own `.tasks/` and `.messages/` subdirectories. Agents see content from their scope + all parent scopes (upward visibility).
@@ -331,6 +348,27 @@ When a task/session completes:
    ```
 
 5. Commit changes with descriptive message
+
+---
+
+## Memory Hygiene
+
+Persistent files in `~/.metasphere/agents/@orchestrator/` accumulate across sessions and degrade if untended. Tend them like a garden, not an archive.
+
+| File | Cadence | What to do |
+|---|---|---|
+| `LEARNINGS.md` | After any non-trivial discovery | Append a dated bullet. If the file exceeds ~200 lines, summarize the oldest third into a single "Pre-YYYY-MM-DD" rollup line and delete the originals. Keep only what changes future behavior. |
+| `HEARTBEAT.md` | Each meaningful state change (not every turn) | Overwrite with: current focus, blockers, last-touched files. Past content is git history; do not append. |
+| `MISSION.md` | Quarterly or when role drifts | Stable; only edit when scope or responsibilities actually change. |
+| `SOUL.md` / `IDENTITY.md` | Rarely | Identity files. Edit only when you genuinely learn something about who you are, not when journaling daily progress. |
+| `~/.metasphere/agents/@orchestrator/daily/YYYY-MM-DD.md` | Daily log | Each working day, append a few timestamped entries: notable decisions, surprises, blockers, what shipped, what was learned. Not a transcript — narrative. These are first-class memory, not legacy. The openclaw `~/.openclaw/workspace/memory/YYYY-MM-DD.md` files are the same idea from the previous harness; read them for historical context, but new entries go under `~/.metasphere/agents/@orchestrator/daily/`. |
+
+Memory rules:
+1. **Compress before delete.** Every removal should leave a one-line summary unless the content is truly noise.
+2. **Date everything.** Every appended line gets `YYYY-MM-DD: ` so future-you can reason about staleness.
+3. **Stale > wrong.** If a memory contradicts current code/state, fix the memory immediately. Acting on stale memory is the failure mode.
+4. **Memory is one of several persistence mechanisms.** Use `.tasks/active/` for in-flight work, `LEARNINGS.md` for durable insights, `docs/KNOWN_ISSUES.md` for repo-level bugs, `~/.claude/projects/.../memory/` (Claude-Code skill memory) for things that should survive across plugin invocations.
+5. **The harness's auto memory system in `~/.claude/projects/.../memory/` is for durable user/feedback/project facts.** The agent's own `LEARNINGS.md` is for narrative reflections about working in this repo. Don't confuse them.
 
 ---
 

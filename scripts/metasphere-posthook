@@ -76,9 +76,19 @@ route_to_telegram() {
     fi
     echo "$last_hash" > "$last_sent_persist"
 
-    # Fire and forget. Failure to telegram should never break the hook.
+    # Fire and (mostly) forget. Failure to telegram should not break the
+    # hook, but we DO log it to a state file so the orchestrator can see in
+    # the next turn that its previous reply did not actually reach the user.
+    # Without this log the failure is invisible — the message looks fine in
+    # tmux and the user sees nothing in Telegram.
     if [[ -x "$SCRIPT_DIR/metasphere-telegram-stream" ]]; then
-        "$SCRIPT_DIR/metasphere-telegram-stream" send "$last_text" >/dev/null 2>&1 || true
+        local err_log="$METASPHERE_DIR/state/posthook_telegram_errors.log"
+        local err_output
+        err_output=$("$SCRIPT_DIR/metasphere-telegram-stream" send "$last_text" 2>&1 >/dev/null) || true
+        if [[ -n "$err_output" ]]; then
+            mkdir -p "$METASPHERE_DIR/state"
+            printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$err_output" >> "$err_log"
+        fi
     fi
 }
 

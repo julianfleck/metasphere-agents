@@ -177,9 +177,47 @@ echo "  Scope:   $SCOPE_PATH"
 echo "  Parent:  $PARENT"
 echo "  Task:    $TASK"
 echo "  Harness: $HARNESS"
-echo ""
-echo "To run interactively:"
-echo "  METASPHERE_AGENT_ID=$AGENT_ID METASPHERE_SCOPE=$SCOPE claude"
-echo ""
-echo "To run non-interactively:"
-echo "  METASPHERE_AGENT_ID=$AGENT_ID METASPHERE_SCOPE=$SCOPE claude -p \"\$(cat $HARNESS)\""
+
+# Auto-execute the child unless METASPHERE_SPAWN_NO_EXEC=1
+if [[ "${METASPHERE_SPAWN_NO_EXEC:-0}" == "1" ]]; then
+    echo ""
+    echo "  (auto-exec disabled via METASPHERE_SPAWN_NO_EXEC=1)"
+    echo "  Run manually:"
+    echo "    METASPHERE_AGENT_ID=$AGENT_ID METASPHERE_SCOPE=$SCOPE claude -p \"\$(cat $HARNESS)\" --dangerously-skip-permissions"
+    exit 0
+fi
+
+if ! command -v claude >/dev/null 2>&1; then
+    echo ""
+    echo "  WARN: claude binary not found in PATH — child not started"
+    echo "  Harness ready at: $HARNESS"
+    exit 0
+fi
+
+LOG_FILE="$AGENT_DIR/output.log"
+PID_FILE="$AGENT_DIR/pid"
+
+# Launch child detached so the parent shell does not block.
+# stdin from /dev/null, stdout+stderr to log, fully backgrounded.
+(
+    cd "$SCOPE" 2>/dev/null || cd "$REPO_ROOT"
+    METASPHERE_AGENT_ID="$AGENT_ID" \
+    METASPHERE_SCOPE="$SCOPE" \
+    METASPHERE_REPO_ROOT="$REPO_ROOT" \
+    METASPHERE_DIR="$METASPHERE_DIR" \
+    nohup claude -p "$(cat "$HARNESS")" \
+        --dangerously-skip-permissions \
+        </dev/null >>"$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+) &
+disown 2>/dev/null || true
+
+# Give the subshell a moment to write the pid file
+sleep 0.2
+CHILD_PID=$(cat "$PID_FILE" 2>/dev/null || echo "?")
+
+echo "  PID:     $CHILD_PID"
+echo "  Log:     $LOG_FILE"
+
+# Log the spawn event
+"$SCRIPT_DIR/metasphere-events" log agent.spawn "$AGENT_ID spawned at $SCOPE_PATH (pid $CHILD_PID)" --agent "$PARENT" --meta child="$AGENT_ID" --meta scope="$SCOPE_PATH" >/dev/null 2>&1 || true

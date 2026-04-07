@@ -128,10 +128,10 @@ check_tasks() {
 
     while IFS= read -r task; do
         [[ -f "$task" ]] || continue
-        ((total_count++))
+        total_count=$((total_count + 1))
 
         local priority=$(grep "^priority:" "$task" 2>/dev/null | head -1 | sed 's/^priority: *//')
-        [[ "$priority" == "!urgent" ]] && ((urgent_count++))
+        [[ "$priority" == "!urgent" ]] && urgent_count=$((urgent_count + 1))
     done < <(find "$REPO_ROOT" -path "*/.tasks/active/*.md" 2>/dev/null)
 
     # Notify if urgent tasks exist and we haven't recently

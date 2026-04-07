@@ -169,11 +169,17 @@ install_scripts() {
     local BIN_DIR="$METASPHERE_DIR/bin"
     mkdir -p "$BIN_DIR"
 
-    # If running from repo, copy scripts
+    # If running from repo, symlink scripts so edits take effect immediately.
+    # (Previously this used `cp`, which silently broke the dev loop — every
+    # repo edit was dead-on-arrival until a reinstall.)
     if [[ -d "$SCRIPT_DIR/scripts" ]]; then
-        cp "$SCRIPT_DIR/scripts"/* "$BIN_DIR/" 2>/dev/null || true
-        chmod +x "$BIN_DIR"/*
-        ok "Copied scripts from repo"
+        for src in "$SCRIPT_DIR/scripts"/*; do
+            local name
+            name=$(basename "$src")
+            [[ "$name" == *.bak ]] && continue
+            ln -sfn "$src" "$BIN_DIR/$name"
+        done
+        ok "Symlinked scripts from repo ($SCRIPT_DIR/scripts → $BIN_DIR)"
     else
         # Download from GitHub
         local RAW_URL="https://raw.githubusercontent.com/$REPO/main/scripts"

@@ -1,0 +1,204 @@
+#!/bin/bash
+# metasphere-wake - Wake a persistent agent (start its tmux+REPL loop)
+#
+# Persistent agents are identities under ~/.metasphere/agents/@name/ that
+# have a MISSION.md (this is what makes them "persistent" vs ephemeral).
+# Each runs in a dedicated tmux session named "metasphere-<name>" with a
+# claude REPL inside a respawn loop, mirroring how the orchestrator runs.
+#
+# Usage:
+#   metasphere-wake @agent             # Start (or attach to) agent's REPL
+#   metasphere-wake @agent "task"      # Start REPL and inject a first task
+#   metasphere-wake --list             # List wakeable persistent agents
+#   metasphere-wake --status           # Show which persistent agents are alive
+#
+# Difference from metasphere-spawn:
+#   - spawn creates a NEW (usually ephemeral) agent with a fresh identity
+#     and runs it headless via claude -p
+#   - wake starts an EXISTING persistent agent's tmux+REPL loop, so it can
+#     accumulate state, multi-turn, be inspected via `metasphere chat`,
+#     and receive heartbeat/wake notices like the orchestrator does
+
+set -e
+
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+
+# Resolve tmux
+TMUX_CMD=$(command -v tmux 2>/dev/null)
+if [[ -z "$TMUX_CMD" ]]; then
+    echo "metasphere-wake: tmux not found" >&2
+    exit 1
+fi
+
+# A persistent agent has a MISSION.md. Anything else is either an ephemeral
+# one-shot (scratch dir from spawn) or an empty stub.
+is_persistent_agent() {
+    local agent="$1"
+    [[ -f "$METASPHERE_DIR/agents/$agent/MISSION.md" ]]
+}
+
+session_name_for() {
+    local agent="$1"
+    echo "metasphere-${agent#@}"
+}
+
+list_persistent() {
+    echo "Persistent agents (have MISSION.md):"
+    for d in "$METASPHERE_DIR/agents"/@*/; do
+        [[ -d "$d" ]] || continue
+        local name; name=$(basename "$d")
+        [[ -f "$d/MISSION.md" ]] || continue
+        local session; session=$(session_name_for "$name")
+        local marker="○"
+        if "$TMUX_CMD" has-session -t "$session" 2>/dev/null; then
+            marker="●"
+        fi
+        echo "  $marker $name"
+    done
+}
+
+show_status() {
+    echo "Persistent agent sessions:"
+    for d in "$METASPHERE_DIR/agents"/@*/; do
+        [[ -d "$d" ]] || continue
+        local name; name=$(basename "$d")
+        [[ -f "$d/MISSION.md" ]] || continue
+        local session; session=$(session_name_for "$name")
+        if "$TMUX_CMD" has-session -t "$session" 2>/dev/null; then
+            local activity
+            activity=$("$TMUX_CMD" display-message -t "$session" -p '#{session_activity}' 2>/dev/null || echo 0)
+            local now; now=$(date +%s)
+            local age=$((now - activity))
+            echo "  ● $name (session: $session, idle ${age}s)"
+        else
+            echo "  ○ $name (dormant)"
+        fi
+    done
+}
+
+wake_agent() {
+    local agent="$1"
+    local first_task="${2:-}"
+
+    [[ "$agent" == @* ]] || agent="@$agent"
+
+    if ! is_persistent_agent "$agent"; then
+        echo "metasphere-wake: $agent is not a persistent agent (no MISSION.md at $METASPHERE_DIR/agents/$agent/)" >&2
+        echo "  Use metasphere-spawn for ephemeral one-shots, or first create $METASPHERE_DIR/agents/$agent/MISSION.md" >&2
+        exit 1
+    fi
+
+    local agent_dir="$METASPHERE_DIR/agents/$agent"
+    local session; session=$(session_name_for "$agent")
+    local scope; scope=$(cat "$agent_dir/scope" 2>/dev/null || echo "$REPO_ROOT")
+
+    # If already alive, optionally inject the task and return.
+    if "$TMUX_CMD" has-session -t "$session" 2>/dev/null; then
+        echo "Already alive: $agent (session: $session)"
+        if [[ -n "$first_task" ]]; then
+            echo "Injecting task..."
+            # shellcheck disable=SC1090
+            source "$SCRIPT_DIR/metasphere-tmux-submit"
+            TMUX_CMD="$TMUX_CMD" submit_to_tmux "$session" "[task] $first_task" || true
+        fi
+        return 0
+    fi
+
+    # Cold start. Create tmux session in a respawn loop, same pattern as
+    # the gateway uses for the orchestrator.
+    echo "Waking $agent..."
+    echo "  Session: $session"
+    echo "  Scope:   $scope"
+
+    "$TMUX_CMD" new-session -d -s "$session" -c "$scope"
+    "$TMUX_CMD" set-option -t "$session" mouse on
+    "$TMUX_CMD" set-option -t "$session" history-limit 100000
+
+    # Set env vars in the new session so identity propagates to claude.
+    "$TMUX_CMD" send-keys -t "$session" \
+        "export METASPHERE_AGENT_ID='$agent' METASPHERE_SCOPE='$scope' METASPHERE_REPO_ROOT='$REPO_ROOT' METASPHERE_DIR='$METASPHERE_DIR'" Enter
+
+    # Respawn loop: when claude exits (e.g. /exit to reload harness), bash
+    # restarts it after a 1s delay. Same as the orchestrator's loop.
+    "$TMUX_CMD" send-keys -t "$session" \
+        "exec bash -c 'while true; do claude --dangerously-skip-permissions; ec=\$?; echo \"[wake] claude exited (\$ec), respawning in 1s...\"; sleep 1; done'" Enter
+
+    # Update agent metadata
+    echo "active: persistent session" > "$agent_dir/status"
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$agent_dir/spawned_at"
+
+    # Log the wake event
+    "$SCRIPT_DIR/metasphere-events" log agent.session "$agent session started via wake" --agent "$agent" >/dev/null 2>&1 || true
+
+    # Wait for claude TUI to actually be ready to accept input. The
+    # rendered prompt contains "bypass permissions on" near the bottom
+    # once the REPL is fully up. Poll for it (up to 15s) before injecting
+    # any task — naive sleep 3 races the TUI render and the task gets
+    # typed into a buffer that isn't listening yet (observed against
+    # @rage-changelog earlier).
+    local ready=false
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+        if "$TMUX_CMD" capture-pane -p -t "$session" 2>/dev/null \
+            | grep -q "bypass permissions"; then
+            ready=true
+            break
+        fi
+        sleep 1
+    done
+    if ! $ready; then
+        echo "  WARN: claude TUI not ready after 15s — injecting anyway" >&2
+    fi
+
+    # Clear any stray characters that landed in claude's input buffer
+    # during the bash → exec bash transition (the "exec bash -c '...'"
+    # command keystrokes can leak into the TUI input). Ctrl-U kills the
+    # current input line.
+    "$TMUX_CMD" send-keys -t "$session" C-u 2>/dev/null || true
+    sleep 0.2
+
+    # Inject first task if provided. Otherwise the agent will sit on its
+    # MISSION.md (which the metasphere-context hook will surface) waiting
+    # for messages, heartbeats, or human input.
+    if [[ -n "$first_task" ]]; then
+        echo "  Injecting initial task..."
+        # shellcheck disable=SC1090
+        source "$SCRIPT_DIR/metasphere-tmux-submit"
+        TMUX_CMD="$TMUX_CMD" submit_to_tmux "$session" "[task] $first_task" || true
+    fi
+
+    echo "$agent awake. Attach with: tmux attach -t $session"
+}
+
+# Main
+case "${1:-}" in
+    --list|list)
+        list_persistent
+        ;;
+    --status|status)
+        show_status
+        ;;
+    "")
+        cat << 'EOF'
+metasphere-wake - Wake a persistent agent's tmux+REPL loop
+
+Usage:
+  metasphere-wake @agent              Start (or report on) the agent's REPL
+  metasphere-wake @agent "task"       Start REPL and inject a first task
+  metasphere-wake --list              List wakeable persistent agents
+  metasphere-wake --status            Show which sessions are alive
+
+Persistent agents are those with ~/.metasphere/agents/@name/MISSION.md.
+Use metasphere-spawn for ephemeral one-shots.
+EOF
+        exit 1
+        ;;
+    -*)
+        echo "Unknown flag: $1" >&2
+        exit 1
+        ;;
+    *)
+        wake_agent "$@"
+        ;;
+esac

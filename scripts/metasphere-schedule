@@ -305,12 +305,14 @@ itr = croniter(expr, now)
 prev = itr.get_prev(datetime.datetime)
 prev_epoch = int(prev.timestamp())
 
-# Fire if the most recent expected fire time is within the last 90 seconds
-# AND we haven't already fired since then. (90s window protects against
-# minor scheduler tick drift.)
+# Fire if the most recent expected fire time is within the last 180 seconds
+# AND we haven't already fired since then. (180s window protects against
+# scheduler tick drift, restarts, and briefly-paused daemons. The 90s
+# window we used previously was too tight: a single missed tick during a
+# patch/restart would silently skip the job for that interval.)
 import time
 delta = int(time.time()) - prev_epoch
-if 0 <= delta < 90 and prev_epoch > last:
+if 0 <= delta < 180 and prev_epoch > last:
     sys.exit(0)
 sys.exit(1)
 PY
@@ -385,7 +387,12 @@ cmd_run() {
     local jobs=$(cat "$SCHEDULE_FILE")
     local updated_jobs="[]"
 
-    echo "$jobs" | jq -c '.[]' | while read -r job; do
+    # Use process substitution instead of a pipe so the while-loop runs in
+    # the parent shell and `updated_jobs` mutations actually persist.
+    # Previously this used `echo "$jobs" | jq ... | while read`, which put
+    # the loop body in a subshell — every cmd_run wiped the schedule file
+    # to "[]" because the parent's $updated_jobs never got updated.
+    while read -r job; do
         local id=$(echo "$job" | jq -r '.id')
         local kind=$(echo "$job" | jq -r '.kind // "interval"')
         local enabled=$(echo "$job" | jq -r '.enabled // true')
@@ -424,12 +431,35 @@ cmd_run() {
                 echo "[$(TZ=$tz date +%Y-%m-%dT%H:%M:%S)] Firing cron job: $orig_cmd"
                 # Log to events
                 "$SCRIPT_DIR/metasphere-events" log schedule.cron_fire "$name" --agent "@$agent_id" 2>/dev/null || true
-                # Spawn the agent with the payload as task. Skip if already running.
-                if ! "$SCRIPT_DIR/metasphere-agent" status "@$agent_id" >/dev/null 2>&1; then
-                    "$SCRIPT_DIR/metasphere-spawn" "@$agent_id" "/" "$payload" "@orchestrator" 2>&1 | head -3 || true
+
+                # The job's agent_id should usually point at a *persistent
+                # collaborator* — the openclaw migration left them all as
+                # @main, but mission-writer split them into named persistent
+                # agents (@briefing, @polymarket, @research-*, etc.) based
+                # on the job name's role prefix. Resolve agent_id → real
+                # persistent agent by extracting the prefix from the job
+                # name (e.g. "research-monitor:brand-mentions" → @research-brand-mentions,
+                # "polymarket:trading-run" → @polymarket).
+                local target_agent="@$agent_id"
+                case "$name" in
+                    research-monitor:*)
+                        target_agent="@research-${name#research-monitor:}"
+                        ;;
+                    polymarket:*) target_agent="@polymarket" ;;
+                    spot:autonomous-exploration*) target_agent="@explorer" ;;
+                    rage-changelog*) target_agent="@rage-changelog" ;;
+                    "Morning briefing"*) target_agent="@briefing" ;;
+                esac
+
+                # If the resolved agent has a MISSION.md, use metasphere-wake
+                # (start its tmux+REPL, inject the payload as a task). Otherwise
+                # fall back to the old spawn-headless path.
+                if [[ -f "$METASPHERE_DIR/agents/$target_agent/MISSION.md" ]]; then
+                    "$SCRIPT_DIR/metasphere-wake" "$target_agent" "$payload" 2>&1 | head -5 || true
+                elif ! "$SCRIPT_DIR/metasphere-agent" status "$target_agent" >/dev/null 2>&1; then
+                    "$SCRIPT_DIR/metasphere-spawn" "$target_agent" "/" "$payload" "@orchestrator" 2>&1 | head -3 || true
                 else
-                    # Agent exists — just send the payload as a task message
-                    "$SCRIPT_DIR/messages" send "@$agent_id" "!task" "$payload" 2>&1 | head -3 || true
+                    "$SCRIPT_DIR/messages" send "$target_agent" "!task" "$payload" 2>&1 | head -3 || true
                 fi
             fi
         else
@@ -456,7 +486,19 @@ cmd_run() {
         if [[ $(echo "$job" | jq -r '.done // false') != "true" ]]; then
             updated_jobs=$(echo "$updated_jobs" | jq --argjson job "$job" '. + [$job]')
         fi
-    done
+    done < <(echo "$jobs" | jq -c '.[]')
+
+    # Defensive: if updated_jobs is empty array AND original was not, do
+    # NOT overwrite. This guards against any future bug that might silently
+    # truncate the file.
+    local input_count
+    input_count=$(echo "$jobs" | jq 'length' 2>/dev/null || echo 0)
+    local output_count
+    output_count=$(echo "$updated_jobs" | jq 'length' 2>/dev/null || echo 0)
+    if [[ "$input_count" -gt 0 && "$output_count" -eq 0 ]]; then
+        echo "[$(date -u +%H:%M:%S)] WARN: cmd_run would have wiped $input_count jobs to 0; refusing write" >&2
+        return 1
+    fi
 
     echo "$updated_jobs" > "$SCHEDULE_FILE"
 }

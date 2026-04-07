@@ -243,7 +243,7 @@ migrate_soul() {
             local dst="$agent_dir/$f"
             if [[ -f "$src" && ! -f "$dst" ]]; then
                 cp "$src" "$dst"
-                ((copied++))
+                copied=$((copied + 1))
             elif [[ -f "$src" && -f "$dst" ]]; then
                 # Already exists — don't clobber. Show that it was preserved.
                 :
@@ -280,7 +280,7 @@ migrate_soul() {
             # Copy the openclaw "agent" descriptor file if present
             if [[ -f "$d/agent" && ! -f "$target_dir/agent" ]]; then
                 cp "$d/agent" "$target_dir/agent"
-                ((agent_count++))
+                agent_count=$((agent_count + 1))
             fi
             # Copy SOUL.md if present (older layouts)
             if [[ -f "$d/SOUL.md" && ! -f "$target_dir/SOUL.md" ]]; then
@@ -463,7 +463,7 @@ migrate_skills() {
         [[ "$name" == _* ]] && continue
         if [[ ! -e "$dst/$name" ]]; then
             # Symlink rather than copy - keeps openclaw and metasphere in sync
-            ln -s "$skill" "$dst/$name" 2>/dev/null && ((migrated++))
+            ln -s "$skill" "$dst/$name" 2>/dev/null && migrated=$((migrated + 1))
         fi
     done
 
@@ -498,7 +498,7 @@ migrate_memory() {
         local basename=$(basename "$mem")
         local target="$METASPHERE_DIR/memory/$basename"
         cp "$mem" "$target"
-        ((migrated++))
+        migrated=$((migrated + 1))
     done
     shopt -u nullglob
 

@@ -146,7 +146,7 @@ cmd_status() {
         esac
 
         echo -e "  $icon $agent: $status"
-        ((agent_count++))
+        agent_count=$((agent_count + 1))
     done
     [[ $agent_count -eq 0 ]] && dim "(no agents registered)"
     echo
@@ -396,7 +396,7 @@ cmd_ls() {
                     for ad in "$METASPHERE_DIR/agents"/@*/; do
                         [[ -d "$ad" ]] || continue
                         local s=$(cat "$ad/scope" 2>/dev/null || echo "")
-                        [[ "$s" == "$path"* ]] && ((agents++))
+                        [[ "$s" == "$path"* ]] && agents=$((agents + 1))
                     done
                     echo -e "  ${GREEN}●${NC} $name ${DIM}($tasks tasks, $agents agents)${NC}"
                 else
@@ -609,11 +609,38 @@ case "${1:-}" in
         ;;
     spawn)
         shift
-        exec "$SCRIPT_DIR/metasphere-agent" spawn "$@"
+        # Headless one-shot agents go through metasphere-spawn, which
+        # creates a fresh ephemeral identity dir, runs `claude -p` once,
+        # and exits. Use this for fire-and-forget tasks. For persistent
+        # collaborators (those with MISSION.md), use `metasphere wake`
+        # instead — it spins up the tmux+REPL respawn loop.
+        exec "$SCRIPT_DIR/metasphere-spawn" "$@"
+        ;;
+    wake)
+        shift
+        # Wake (or re-task) a persistent collaborator. Reuses an existing
+        # tmux session if alive, otherwise spins up a fresh one with the
+        # gateway-style respawn loop. The agent must have MISSION.md.
+        exec "$SCRIPT_DIR/metasphere-wake" "$@"
         ;;
     agent|ag)
         shift
-        exec "$SCRIPT_DIR/metasphere-agent" "$@"
+        # `metasphere agent wake @x` and `metasphere agent spawn ...`
+        # forward to the dedicated helpers so the verb namespace is
+        # consistent. Other subcommands fall through to metasphere-agent.
+        case "${1:-}" in
+            wake)
+                shift
+                exec "$SCRIPT_DIR/metasphere-wake" "$@"
+                ;;
+            spawn)
+                shift
+                exec "$SCRIPT_DIR/metasphere-spawn" "$@"
+                ;;
+            *)
+                exec "$SCRIPT_DIR/metasphere-agent" "$@"
+                ;;
+        esac
         ;;
     send|msg)
         shift
