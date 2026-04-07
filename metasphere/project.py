@@ -134,6 +134,26 @@ def project_changelog(name: Optional[str] = None, *, since: str = "1 day ago",
         lines.append("")
 
     lines += ["## Tasks Completed", ""]
+    # Primary source: walk .tasks/completed/*.task on disk (mirrors bash;
+    # M3, wave-4 review). The events log enrichment below is secondary —
+    # only fires when both are present.
+    completed_dir = proj / ".tasks" / "completed"
+    seen_titles: set[str] = set()
+    if completed_dir.is_dir():
+        for tf in sorted(completed_dir.glob("*.task")):
+            title = ""
+            try:
+                for raw in tf.read_text(errors="replace").splitlines():
+                    if raw.lower().startswith("title:"):
+                        title = raw.split(":", 1)[1].strip()
+                        break
+                if not title:
+                    title = tf.stem
+            except OSError:
+                title = tf.stem
+            if title and title not in seen_titles:
+                seen_titles.add(title)
+                lines.append(f"- {title}")
     events_log = paths.events_log
     if events_log.exists():
         for raw in events_log.read_text(errors="replace").splitlines()[-2000:]:
@@ -144,7 +164,10 @@ def project_changelog(name: Optional[str] = None, *, since: str = "1 day ago",
             if e.get("type") == "task.complete":
                 scope = (e.get("meta") or {}).get("scope", "")
                 if isinstance(scope, str) and scope.startswith(str(proj)):
-                    lines.append(f"- {e.get('message', '')}")
+                    msg = e.get("message", "")
+                    if msg and msg not in seen_titles:
+                        seen_titles.add(msg)
+                        lines.append(f"- {msg}")
     lines.append("")
 
     lines += ["## Agent Activity", ""]

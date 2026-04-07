@@ -194,6 +194,10 @@ def invoke_agent_heartbeat(
         submit_script = paths.repo / "scripts" / "metasphere-tmux-submit"
         if not submit_script.is_file():
             return False
+        # Hard-codes the bash function's two-positional-arg signature
+        # (session, context). If scripts/metasphere-tmux-submit ever
+        # changes submit_to_tmux's argument shape this will silently
+        # break — keep this Python wrapper in sync with that file.
         cmd = (
             f"source {shlex.quote(str(submit_script))}; "
             f"submit_to_tmux \"$1\" \"$2\""
@@ -234,6 +238,20 @@ def invoke_agent_heartbeat(
     elif sandbox == "nobash":
         allowed = "Read,Write,Edit,Glob,Grep"
 
+    # Match bash: cd to the agent's scope dir before invoking claude so
+    # `git rev-parse --show-toplevel` (and metasphere.paths.resolve()
+    # inside the spawned process) resolve relative to the agent's repo,
+    # not whatever cwd the heartbeat daemon was started from.
+    scope_cwd: str | None = None
+    scope_file = agent_dir / "scope"
+    if scope_file.is_file():
+        try:
+            v = scope_file.read_text(encoding="utf-8").strip()
+            if v and Path(v).is_dir():
+                scope_cwd = v
+        except OSError:
+            pass
+
     try:
         subprocess.run(
             ["claude", "-p", "--allowedTools", allowed],
@@ -243,6 +261,7 @@ def invoke_agent_heartbeat(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=60,
+            cwd=scope_cwd,
         )
     except Exception:
         return False

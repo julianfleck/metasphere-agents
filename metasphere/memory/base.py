@@ -30,18 +30,3 @@ class MemoryStrategy(abc.ABC):
     @abc.abstractmethod
     def search(self, query: str, limit: int = 5) -> list[MemoryHit]:
         """Return up to ``limit`` hits for ``query``, best-first."""
-
-    def context_for(self, query: str, budget_chars: int = 2048) -> str:
-        """Format ``search`` results as a markdown block under a budget."""
-        hits = self.search(query, limit=10)
-        if not hits:
-            return ""
-        out: list[str] = []
-        used = 0
-        for h in hits:
-            block = f"### {h.source}  (score: {h.score:.3f})\n    {h.excerpt}\n"
-            if used + len(block) > budget_chars:
-                break
-            out.append(block)
-            used += len(block)
-        return "".join(out).rstrip() + "\n" if out else ""

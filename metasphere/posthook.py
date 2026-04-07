@@ -221,6 +221,10 @@ def track_turn_completion(agent: str, paths: Paths) -> None:
 
     activity_file = agent_dir / "activity.json"
     turns = 0
+    # One lock spans the activity-json + status + updated_at writes so a
+    # racing posthook from a sibling process can never observe a
+    # half-updated agent state. The bash version is naturally atomic via
+    # single-process shell; the Python equivalent needs an explicit lock.
     try:
         with file_lock(activity_file):
             data: dict[str, Any] = {}
@@ -230,28 +234,26 @@ def track_turn_completion(agent: str, paths: Paths) -> None:
                 except (OSError, json.JSONDecodeError):
                     data = {}
             turns = int(data.get("turns") or 0) + 1
+            now = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             data["turns"] = turns
-            data["updated_at"] = _dt.datetime.now(_dt.timezone.utc).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"
-            )
+            data["updated_at"] = now
             atomic_write_text(activity_file, json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+            # Upgrade "spawned" → "active" + bump updated_at marker.
+            status_file = agent_dir / "status"
+            if status_file.exists():
+                try:
+                    cur = status_file.read_text(encoding="utf-8").strip()
+                    if cur == "spawned":
+                        atomic_write_text(status_file, "active\n")
+                except OSError:
+                    pass
+            try:
+                atomic_write_text(agent_dir / "updated_at", now + "\n")
+            except OSError:
+                pass
     except OSError:
         return
-
-    # Upgrade "spawned" → "active" and bump updated_at, mirroring the bash.
-    try:
-        status_file = agent_dir / "status"
-        if status_file.exists():
-            cur = status_file.read_text(encoding="utf-8").strip()
-            if cur == "spawned":
-                atomic_write_text(status_file, "active\n")
-        updated_at = agent_dir / "updated_at"
-        atomic_write_text(
-            updated_at,
-            _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") + "\n",
-        )
-    except OSError:
-        pass
 
     if turns > 0 and turns % 10 == 0:
         try:

@@ -31,22 +31,25 @@ def recall(
     limit: int = 5,
     strategies: list[MemoryStrategy] | None = None,
 ) -> list[MemoryHit]:
-    """Return the top-``limit`` hits across all configured strategies."""
+    """Return the top-``limit`` hits across all configured strategies.
+
+    Multiple strategies are merged through a single :class:`HybridStrategy`
+    so the dedupe + weighting policy is owned in exactly one place.
+    Passing a single strategy short-circuits the wrap.
+    """
     if not query.strip():
         return []
-    merged: dict[tuple[str, str], MemoryHit] = {}
-    for strat in _resolve(strategies):
-        try:
-            hits = strat.search(query, limit=limit)
-        except Exception:
-            continue
-        for h in hits:
-            key = (h.source, h.excerpt[:50])
-            existing = merged.get(key)
-            if existing is None or h.score > existing.score:
-                merged[key] = h
-    out = sorted(merged.values(), key=lambda h: h.score, reverse=True)
-    return out[:limit]
+    resolved = _resolve(strategies)
+    if not resolved:
+        return []
+    if len(resolved) == 1:
+        merger = resolved[0]
+    else:
+        merger = HybridStrategy(resolved)
+    try:
+        return merger.search(query, limit=limit)
+    except Exception:
+        return []
 
 
 def context_for(

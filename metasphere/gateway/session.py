@@ -14,6 +14,7 @@ import subprocess
 import time
 from typing import Tuple
 
+from ..agents import session_alive as _agents_session_alive
 from ..events import log_event
 from ..io import atomic_write_text
 from ..paths import Paths, resolve
@@ -45,7 +46,9 @@ def _tmux(*args: str) -> subprocess.CompletedProcess:
 
 
 def session_alive(name: str = SESSION_NAME) -> bool:
-    return _tmux("has-session", "-t", name).returncode == 0
+    # Delegate to the canonical metasphere.agents.session_alive so a future
+    # fix to one path doesn't silently desync the other (M2, wave-4 review).
+    return _agents_session_alive(name)
 
 
 def session_health(paths: Paths | None = None) -> Tuple[bool, int]:

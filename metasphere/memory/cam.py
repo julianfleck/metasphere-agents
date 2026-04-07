@@ -33,9 +33,10 @@ class CamStrategy(MemoryStrategy):
 
     name = "cam"
 
-    def __init__(self, binary: str = "cam", timeout: float = 5.0) -> None:
+    def __init__(self, binary: str = "cam", timeout: float = 5.0, fast: bool = True) -> None:
         self._binary = binary
         self._timeout = timeout
+        self._fast = fast
 
     def search(self, query: str, limit: int = 5) -> list[MemoryHit]:
         if not query.strip():
@@ -43,9 +44,12 @@ class CamStrategy(MemoryStrategy):
         if shutil.which(self._binary) is None:
             _warn_missing_once()
             return []
+        cmd = [self._binary, "search", query, "--limit", str(limit), "--json"]
+        if self._fast:
+            cmd.append("--fast")
         try:
             res = subprocess.run(
-                [self._binary, "search", query, "--limit", str(limit), "--json", "--fast"],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=self._timeout,
