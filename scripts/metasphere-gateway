@@ -294,7 +294,7 @@ start_session() {
     # control loop. tmux pane stays alive across REPL respawns, so external
     # attachers (spot-chat, mosh, etc) don't drop.
     $TMUX_CMD send-keys -t "$SESSION_NAME" \
-      "exec bash -c 'while true; do claude --allowedTools \"Read,Write,Edit,Bash,Glob,Grep\"; ec=\$?; echo \"[gateway] claude exited (\$ec), respawning in 1s...\"; sleep 1; done'" Enter
+      "exec bash -c 'while true; do claude --dangerously-skip-permissions; ec=\$?; echo \"[gateway] claude exited (\$ec), respawning in 1s...\"; sleep 1; done'" Enter
 
     sleep 3  # Wait for claude to initialize
 
@@ -658,7 +658,7 @@ restart_claude_in_session() {
     # but if we're nuking claude from outside we relaunch the loop too.
     # No context is injected; CLAUDE.md auto-loads on startup.
     $TMUX_CMD send-keys -t "$SESSION_NAME" \
-      "exec bash -c 'while true; do claude --allowedTools \"Read,Write,Edit,Bash,Glob,Grep\"; ec=\$?; echo \"[gateway] claude exited (\$ec), respawning in 1s...\"; sleep 1; done'" Enter
+      "exec bash -c 'while true; do claude --dangerously-skip-permissions; ec=\$?; echo \"[gateway] claude exited (\$ec), respawning in 1s...\"; sleep 1; done'" Enter
     sleep 3
 
     supervisor_log "Claude restart sequence complete in $SESSION_NAME"
