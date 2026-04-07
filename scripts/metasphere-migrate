@@ -343,17 +343,27 @@ migrate_memory() {
 parse_sessions() {
     info "Parsing sessions with CAM..."
 
-    if ! command -v cam &>/dev/null; then
+    # Find cam binary - it may not be on the systemd-run PATH even if installed
+    local cam_bin=""
+    if command -v cam &>/dev/null; then
+        cam_bin=$(command -v cam)
+    else
+        for c in "$HOME/.local/bin/cam" /usr/local/bin/cam /opt/homebrew/bin/cam; do
+            [[ -x "$c" ]] && { cam_bin="$c"; break; }
+        done
+    fi
+
+    if [[ -z "$cam_bin" ]]; then
         warn "CAM not installed - skipping session parsing"
-        echo "    Install: pip install collective-agent-memory"
+        echo "    Install: pipx install collective-agent-memory"
         return 1
     fi
 
     # Index any new sessions
-    cam index 2>&1 | grep -v "^$" | head -5 || true
+    "$cam_bin" index 2>&1 | grep -v "^$" | head -5 || true
 
     # Show status
-    local segment_count=$(cam status 2>/dev/null | grep -o "[0-9]* segments" | head -1 || echo "unknown")
+    local segment_count=$("$cam_bin" status 2>/dev/null | grep -o "[0-9]* segments" | head -1 || echo "unknown")
     ok "CAM indexed sessions ($segment_count)"
 }
 

@@ -414,6 +414,101 @@ migrate_openclaw_inline() {
     fi
 }
 
+# =============================================================================
+# CAM (Collective Agent Memory)
+# =============================================================================
+#
+# Two responsibilities:
+#   1. Ensure the `cam` binary is installed and on PATH (idempotent).
+#   2. Make the user's existing CAM data dir (~/.cam) reachable so we don't
+#      re-index. If the installer is being run by the same user that already
+#      has ~/.cam, there's nothing to do — it's already in place. If the
+#      openclaw user lived under a different home, we link/copy.
+
+CAM_BIN=""
+
+find_cam_bin() {
+    # Standard PATH lookup first
+    if command -v cam &>/dev/null; then
+        CAM_BIN=$(command -v cam)
+        return 0
+    fi
+    # Common pip/pipx install locations not always on PATH
+    for candidate in "$HOME/.local/bin/cam" /usr/local/bin/cam /opt/homebrew/bin/cam; do
+        if [[ -x "$candidate" ]]; then
+            CAM_BIN="$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+install_cam() {
+    if find_cam_bin; then
+        ok "CAM already installed: $CAM_BIN"
+        return 0
+    fi
+
+    info "CAM not found - installing collective-agent-memory..."
+
+    # Prefer pipx (isolated env), fall back to pip --user
+    if command -v pipx &>/dev/null; then
+        if pipx install collective-agent-memory 2>&1 | tail -5; then
+            find_cam_bin && ok "CAM installed via pipx ($CAM_BIN)" || warn "pipx install reported success but cam not found"
+        else
+            warn "pipx install failed - try manually: pipx install collective-agent-memory"
+        fi
+    elif command -v pip3 &>/dev/null || command -v pip &>/dev/null; then
+        local pip_cmd
+        pip_cmd=$(command -v pip3 || command -v pip)
+        if "$pip_cmd" install --user collective-agent-memory 2>&1 | tail -5; then
+            find_cam_bin && ok "CAM installed via pip --user ($CAM_BIN)" || warn "pip install reported success but cam not found"
+        else
+            warn "pip install failed - try manually: $pip_cmd install --user collective-agent-memory"
+        fi
+    else
+        warn "Neither pipx nor pip available - install Python first, then: pipx install collective-agent-memory"
+    fi
+}
+
+migrate_cam_data() {
+    # If ~/.cam already exists, do nothing — the installer is running as a user
+    # who already has CAM data. This is the common case (single-user host).
+    if [[ -d "$HOME/.cam" ]]; then
+        local size
+        size=$(du -sh "$HOME/.cam" 2>/dev/null | cut -f1)
+        ok "CAM data dir present: $HOME/.cam ($size) — no re-index needed"
+        return 0
+    fi
+
+    # Cross-user case: openclaw lived in a different home. Look for .cam
+    # adjacent to the openclaw config dir.
+    if ! $OPENCLAW_DETECTED; then
+        return 0
+    fi
+
+    local openclaw_home
+    openclaw_home=$(dirname "$OPENCLAW_DIR")
+    local src="$openclaw_home/.cam"
+
+    if [[ ! -d "$src" ]]; then
+        info "No prior CAM data to migrate (no $src)"
+        return 0
+    fi
+
+    info "Found openclaw CAM data at $src - linking into $HOME/.cam"
+    # Symlink rather than copy to keep one source of truth and avoid
+    # duplicating the sqlite index (often hundreds of MB).
+    if ln -s "$src" "$HOME/.cam" 2>/dev/null; then
+        local size
+        size=$(du -sh "$src" 2>/dev/null | cut -f1)
+        ok "Linked CAM data ($size) — no re-index needed"
+    else
+        warn "Symlink failed - falling back to copy"
+        cp -a "$src" "$HOME/.cam" && ok "Copied CAM data" || warn "Copy failed"
+    fi
+}
+
 disable_openclaw_gateway() {
     info "Disabling OpenClaw gateway..."
 
@@ -764,6 +859,8 @@ main() {
     setup_directories
     install_scripts
     migrate_openclaw      # Before telegram - migration may provide token
+    install_cam           # Ensure cam binary is available
+    migrate_cam_data      # Reuse existing ~/.cam to skip re-index
     setup_telegram
     setup_orchestrator
     seed_claude_permissions
