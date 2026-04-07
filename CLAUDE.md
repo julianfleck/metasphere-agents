@@ -15,6 +15,18 @@
 | Runtime | `~/.metasphere/` |
 | Identity | `~/.metasphere/agents/@orchestrator/` |
 
+### Persona files (lazy load — read on demand, never all at once)
+
+Your identity, persona, and operating rules live in
+`~/.metasphere/agents/@orchestrator/`. The full index is in
+`persona-index.md` in that same directory — read it first when
+something touches your identity, then read the specific files it
+points to. Do NOT read everything at session start; that wastes
+context. The index is the bookmark, the files are loaded only when
+relevant. If `~/.metasphere/agents/@orchestrator/persona-index.md`
+doesn't exist on this host, the install hasn't been migrated yet —
+run `metasphere-migrate run`.
+
 ### Working Scripts (Use These)
 
 ```bash
