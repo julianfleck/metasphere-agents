@@ -152,25 +152,93 @@ get_latest() {
 
 # Format latest for agent context injection
 format_context() {
-    if [[ ! -f "$LATEST_FILE" ]]; then
-        echo "## Telegram: No recent messages"
+    local history_count=1
+
+    # Parse --history N argument
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --history|-h)
+                history_count="${2:-5}"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # Get today's archive file
+    local today=$(date -u +%Y-%m-%d)
+    local archive_file="$STREAM_DIR/${today}.jsonl"
+
+    # Also check yesterday for continuity
+    local yesterday=$(date -u -v-1d +%Y-%m-%d 2>/dev/null || date -u -d "yesterday" +%Y-%m-%d 2>/dev/null)
+    local yesterday_file="$STREAM_DIR/${yesterday}.jsonl"
+
+    # Collect recent messages
+    local messages=""
+    if [[ -f "$archive_file" ]]; then
+        messages=$(tail -n "$history_count" "$archive_file" 2>/dev/null)
+    fi
+
+    # If not enough messages today, get some from yesterday
+    local msg_count=$(echo "$messages" | grep -c '.' 2>/dev/null || echo 0)
+    if [[ $msg_count -lt $history_count && -f "$yesterday_file" ]]; then
+        local need=$((history_count - msg_count))
+        local yesterday_msgs=$(tail -n "$need" "$yesterday_file" 2>/dev/null)
+        messages="$yesterday_msgs"$'\n'"$messages"
+    fi
+
+    if [[ -z "$messages" ]]; then
+        # Fall back to latest.json
+        if [[ -f "$LATEST_FILE" ]]; then
+            local from=$(jq -r '.from // "unknown"' "$LATEST_FILE")
+            local text=$(jq -r '.text // ""' "$LATEST_FILE")
+            local timestamp=$(jq -r '.timestamp // ""' "$LATEST_FILE")
+
+            if [[ -n "$text" && "$text" != "null" ]]; then
+                echo "## Telegram (last message)"
+                echo ""
+                echo "**@$from** ($timestamp):"
+                echo "> $text"
+            else
+                echo "## Telegram: No recent messages"
+            fi
+        else
+            echo "## Telegram: No recent messages"
+        fi
         return
     fi
 
-    local from=$(jq -r '.from // "unknown"' "$LATEST_FILE")
-    local text=$(jq -r '.text // ""' "$LATEST_FILE")
-    local timestamp=$(jq -r '.timestamp // ""' "$LATEST_FILE")
+    # Format message history
+    echo "## Telegram (recent conversation)"
+    echo ""
 
-    if [[ -n "$text" && "$text" != "null" ]]; then
-        echo "## Telegram (last message)"
-        echo ""
-        echo "**@$from** ($timestamp):"
-        echo "> $text"
-        echo ""
-        echo "_Reply via: \`metasphere-telegram send \"message\"\`_"
-    else
-        echo "## Telegram: No recent messages"
-    fi
+    echo "$messages" | while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+
+        local from=$(echo "$line" | jq -r '.from.username // .from.first_name // .from // "unknown"' 2>/dev/null)
+        local text=$(echo "$line" | jq -r '.text // ""' 2>/dev/null)
+        local date_ts=$(echo "$line" | jq -r '.date // 0' 2>/dev/null)
+        local outgoing=$(echo "$line" | jq -r '.outgoing // false' 2>/dev/null)
+
+        [[ -z "$text" || "$text" == "null" ]] && continue
+
+        # Format timestamp
+        local timestamp=""
+        if [[ "$date_ts" != "0" && "$date_ts" != "null" ]]; then
+            timestamp=$(date -r "$date_ts" +%H:%M 2>/dev/null || date -d "@$date_ts" +%H:%M 2>/dev/null || echo "")
+        fi
+
+        # Format direction indicator
+        local direction=""
+        [[ "$outgoing" == "true" ]] && direction="→" || direction="←"
+
+        echo "$direction **@$from** ($timestamp): $text"
+    done
+
+    echo ""
+    echo "_Reply via: \`metasphere-telegram send \"message\"\`_"
 }
 
 # Send proactive message from agent
@@ -243,7 +311,8 @@ case "${1:-}" in
         get_latest
         ;;
     context)
-        format_context
+        shift
+        format_context "$@"
         ;;
     send)
         shift

@@ -255,9 +255,10 @@ cmd_send() {
     create_message "$msg_id" "$AGENT" "$target" "$label" "$message" "$target_path" > "$msg_file"
     cp "$msg_file" "$out_file"
 
-    # Log event
+    # Log event and track activity
     local script_dir="$(cd "$(dirname "$0")" && pwd)"
     "$script_dir/metasphere-events" log message.send "$AGENT → $target: $label" --agent "$AGENT" --meta msg_id="$msg_id" 2>/dev/null || true
+    "$script_dir/metasphere-agent" activity --sent 2>/dev/null || true
 
     echo "Sent $msg_id to $target ($(rel_path "$target_path"))"
     echo "  Label: $label"
@@ -302,6 +303,10 @@ cmd_reply() {
     create_message "$msg_id" "$AGENT" "$from" "!reply" "$message" "$target_path" "$orig_id" > "$msg_file"
     cp "$msg_file" "$out_file"
 
+    # Track activity
+    local script_dir="$(cd "$(dirname "$0")" && pwd)"
+    "$script_dir/metasphere-agent" activity --sent 2>/dev/null || true
+
     echo "Replied to $orig_id → $msg_id"
 }
 
@@ -337,6 +342,10 @@ cmd_done() {
 
         local msg_id=$(gen_msg_id)
         create_message "$msg_id" "$AGENT" "$from" "!done" "$note" "$target_path" "$orig_id" > "$target_inbox/${msg_id}.msg"
+
+        # Track activity
+        local script_dir="$(cd "$(dirname "$0")" && pwd)"
+        "$script_dir/metasphere-agent" activity --sent 2>/dev/null || true
 
         echo "Completed $orig_id, notified $from → $msg_id"
     else

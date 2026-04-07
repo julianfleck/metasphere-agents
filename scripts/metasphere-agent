@@ -389,11 +389,85 @@ cmd_resume() {
 }
 
 # =============================================================================
+# Infer actual agent state from activity
+# =============================================================================
+
+infer_agent_state() {
+    local agent="$1"
+    local agent_dir="$AGENTS_DIR/$agent"
+    local stored_status=$(cat "$agent_dir/status" 2>/dev/null || echo "unknown")
+
+    # Check for active tmux session
+    local session_name="metasphere-${agent#@}"
+    local has_session=false
+    if command -v tmux &>/dev/null && tmux has-session -t "$session_name" 2>/dev/null; then
+        has_session=true
+    fi
+
+    # Check last activity
+    local last_activity=""
+    local activity_age=999999
+
+    # Check updated_at
+    if [[ -f "$agent_dir/updated_at" ]]; then
+        last_activity=$(cat "$agent_dir/updated_at")
+    elif [[ -f "$agent_dir/spawned_at" ]]; then
+        last_activity=$(cat "$agent_dir/spawned_at")
+    fi
+
+    if [[ -n "$last_activity" ]]; then
+        local activity_ts=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$last_activity" +%s 2>/dev/null || \
+                           date -d "$last_activity" +%s 2>/dev/null || echo 0)
+        local now_ts=$(date +%s)
+        activity_age=$((now_ts - activity_ts))
+    fi
+
+    # Check for recent session log activity
+    local recent_log_activity=false
+    if [[ -f "$agent_dir/session.log" ]]; then
+        local log_mtime=$(stat -f %m "$agent_dir/session.log" 2>/dev/null || \
+                         stat -c %Y "$agent_dir/session.log" 2>/dev/null || echo 0)
+        local now_ts=$(date +%s)
+        local log_age=$((now_ts - log_mtime))
+        [[ $log_age -lt 300 ]] && recent_log_activity=true  # 5 minutes
+    fi
+
+    # Count messages sent/received
+    local msg_sent=0
+    local msg_received=0
+    if [[ -f "$agent_dir/activity.json" ]]; then
+        msg_sent=$(jq -r '.messages_sent // 0' "$agent_dir/activity.json" 2>/dev/null || echo 0)
+        msg_received=$(jq -r '.messages_received // 0' "$agent_dir/activity.json" 2>/dev/null || echo 0)
+    fi
+
+    # Infer actual state
+    local inferred_status="$stored_status"
+
+    if [[ "$stored_status" == "spawned" ]]; then
+        if $has_session; then
+            inferred_status="active: session running"
+        elif [[ $activity_age -gt 3600 ]]; then
+            inferred_status="stale: spawned $(($activity_age / 3600))h ago, never activated"
+        fi
+    elif [[ "$stored_status" == "active"* || "$stored_status" == "working:"* ]]; then
+        if ! $has_session && ! $recent_log_activity; then
+            if [[ $activity_age -gt 1800 ]]; then
+                inferred_status="idle: no activity for $(($activity_age / 60))m"
+            fi
+        fi
+    fi
+
+    # Return structured data
+    echo "$inferred_status|$has_session|$activity_age|$msg_sent|$msg_received"
+}
+
+# =============================================================================
 # Show agent status
 # =============================================================================
 
 cmd_status() {
     local name="${1:-}"
+    local show_inferred=true
 
     if [[ -n "$name" && "$name" == @* ]]; then
         # Single agent status
@@ -405,17 +479,44 @@ cmd_status() {
 
         echo -e "${BOLD}$name${NC}"
         echo
-        echo "Status:  $(cat "$agent_dir/status" 2>/dev/null || echo "unknown")"
+
+        # Get inferred state
+        local inferred=$(infer_agent_state "$name")
+        local inferred_status=$(echo "$inferred" | cut -d'|' -f1)
+        local has_session=$(echo "$inferred" | cut -d'|' -f2)
+        local activity_age=$(echo "$inferred" | cut -d'|' -f3)
+        local msg_sent=$(echo "$inferred" | cut -d'|' -f4)
+        local msg_received=$(echo "$inferred" | cut -d'|' -f5)
+
+        local stored_status=$(cat "$agent_dir/status" 2>/dev/null || echo "unknown")
+
+        # Show status (inferred if different)
+        if [[ "$inferred_status" != "$stored_status" ]]; then
+            echo "Status:  $inferred_status"
+            echo -e "         ${DIM}(stored: $stored_status)${NC}"
+        else
+            echo "Status:  $stored_status"
+        fi
+
         echo "Scope:   $(cat "$agent_dir/scope" 2>/dev/null || echo "unset")"
         echo "Task:    $(cat "$agent_dir/task" 2>/dev/null || echo "none")"
         [[ -f "$agent_dir/parent" ]] && echo "Parent:  $(cat "$agent_dir/parent")"
         [[ -f "$agent_dir/spawned_at" ]] && echo "Spawned: $(cat "$agent_dir/spawned_at")"
         [[ -f "$agent_dir/updated_at" ]] && echo "Updated: $(cat "$agent_dir/updated_at")"
 
+        # Session info
+        [[ "$has_session" == "true" ]] && echo -e "Session: ${GREEN}active${NC} (tmux)"
+
+        # Activity stats
+        if [[ $msg_sent -gt 0 || $msg_received -gt 0 ]]; then
+            echo "Messages: $msg_sent sent, $msg_received received"
+        fi
+
         if [[ -f "$agent_dir/children" && -s "$agent_dir/children" ]]; then
             echo "Children:"
             cat "$agent_dir/children" | while read -r child; do
-                local child_status=$(cat "$AGENTS_DIR/$child/status" 2>/dev/null || echo "?")
+                local child_inferred=$(infer_agent_state "$child" 2>/dev/null)
+                local child_status=$(echo "$child_inferred" | cut -d'|' -f1)
                 echo "  - $child ($child_status)"
             done
         fi
@@ -433,24 +534,34 @@ cmd_status() {
             [[ -d "$agent_dir" ]] || continue
 
             local agent=$(basename "$agent_dir")
-            local status=$(cat "$agent_dir/status" 2>/dev/null || echo "unknown")
+
+            # Get inferred state
+            local inferred=$(infer_agent_state "$agent" 2>/dev/null)
+            local inferred_status=$(echo "$inferred" | cut -d'|' -f1)
+            local has_session=$(echo "$inferred" | cut -d'|' -f2)
+
             local scope=$(cat "$agent_dir/scope" 2>/dev/null | sed "s|$HOME|~|")
             local task=$(cat "$agent_dir/task" 2>/dev/null | head -c 50)
 
-            # Status icon
+            # Status icon based on inferred status
             local icon="○"
-            case "$status" in
+            case "$inferred_status" in
                 active*|working:*) icon="${GREEN}●${NC}" ;;
                 spawned) icon="${YELLOW}◐${NC}" ;;
+                stale:*) icon="${RED}◐${NC}" ;;
                 blocked:*) icon="${RED}◐${NC}" ;;
-                idle) icon="${DIM}○${NC}" ;;
+                idle*) icon="${DIM}○${NC}" ;;
                 complete*) icon="${GREEN}✓${NC}" ;;
                 sunset*) icon="${DIM}◇${NC}" ;;
                 failed:*) icon="${RED}✗${NC}" ;;
             esac
 
-            echo -e "$icon ${BOLD}$agent${NC}"
-            echo -e "  ${DIM}$status${NC}"
+            # Session indicator
+            local session_indicator=""
+            [[ "$has_session" == "true" ]] && session_indicator=" ${GREEN}[tmux]${NC}"
+
+            echo -e "$icon ${BOLD}$agent${NC}$session_indicator"
+            echo -e "  ${DIM}$inferred_status${NC}"
             [[ -n "$scope" ]] && echo -e "  ${DIM}scope: $scope${NC}"
             [[ -n "$task" ]] && echo -e "  ${DIM}task: $task${NC}"
             echo
@@ -466,9 +577,6 @@ cmd_tree() {
     echo -e "${BOLD}Agent Hierarchy${NC}"
     echo
 
-    # Find root agents (no parent)
-    local printed=()
-
     print_agent() {
         local name="$1"
         local indent="$2"
@@ -476,30 +584,53 @@ cmd_tree() {
         local agent_dir="$AGENTS_DIR/$name"
         [[ ! -d "$agent_dir" ]] && return
 
-        local status=$(cat "$agent_dir/status" 2>/dev/null || echo "?")
-        local scope=$(cat "$agent_dir/scope" 2>/dev/null | sed "s|$HOME|~|" | sed 's|.*/||')
+        # Get inferred state
+        local inferred=$(infer_agent_state "$name" 2>/dev/null)
+        local inferred_status=$(echo "$inferred" | cut -d'|' -f1)
+        local has_session=$(echo "$inferred" | cut -d'|' -f2)
+
+        local scope=$(cat "$agent_dir/scope" 2>/dev/null || echo "")
+        local scope_display=""
+
+        # Format scope for display
+        if [[ -n "$scope" ]]; then
+            scope_display=$(echo "$scope" | sed "s|$HOME|~|")
+            # Shorten long paths
+            if [[ ${#scope_display} -gt 40 ]]; then
+                scope_display="...$(echo "$scope_display" | rev | cut -d'/' -f1-3 | rev)"
+            fi
+        else
+            scope_display="(no scope)"
+        fi
 
         # Status icon
         local icon="○"
-        case "$status" in
+        case "$inferred_status" in
             active*|working:*) icon="${GREEN}●${NC}" ;;
             spawned) icon="${YELLOW}◐${NC}" ;;
+            stale:*) icon="${RED}◐${NC}" ;;
             blocked:*) icon="${RED}◐${NC}" ;;
+            idle*) icon="${DIM}○${NC}" ;;
             complete*) icon="${GREEN}✓${NC}" ;;
             sunset*) icon="${DIM}◇${NC}" ;;
         esac
 
-        echo -e "${indent}$icon $name ${DIM}[$scope]${NC}"
+        # Session indicator
+        local session=""
+        [[ "$has_session" == "true" ]] && session=" ${GREEN}[tmux]${NC}"
+
+        echo -e "${indent}$icon $name$session ${DIM}[$scope_display]${NC}"
 
         # Print children
         if [[ -f "$agent_dir/children" ]]; then
             cat "$agent_dir/children" | while read -r child; do
-                [[ -n "$child" ]] && print_agent "$child" "  $indent"
+                [[ -n "$child" && -d "$AGENTS_DIR/$child" ]] && print_agent "$child" "  $indent"
             done
         fi
     }
 
-    # Find and print root agents
+    # Find and print root agents (those without parents)
+    local found_any=false
     for agent_dir in "$AGENTS_DIR"/@*/; do
         [[ -d "$agent_dir" ]] || continue
         local agent=$(basename "$agent_dir")
@@ -508,7 +639,30 @@ cmd_tree() {
         [[ -f "$agent_dir/parent" ]] && continue
 
         print_agent "$agent" ""
+        found_any=true
     done
+
+    # Show orphaned agents (have parent that doesn't exist) separately
+    echo
+    local orphans=""
+    for agent_dir in "$AGENTS_DIR"/@*/; do
+        [[ -d "$agent_dir" ]] || continue
+        local agent=$(basename "$agent_dir")
+
+        if [[ -f "$agent_dir/parent" ]]; then
+            local parent=$(cat "$agent_dir/parent")
+            if [[ ! -d "$AGENTS_DIR/$parent" ]]; then
+                orphans="$orphans $agent"
+            fi
+        fi
+    done
+
+    if [[ -n "$orphans" ]]; then
+        echo -e "${YELLOW}Orphaned agents (parent missing):${NC}"
+        for agent in $orphans; do
+            print_agent "$agent" "  "
+        done
+    fi
 }
 
 # =============================================================================
@@ -519,39 +673,81 @@ cmd_cleanup() {
     echo -e "${BOLD}Cleaning up agents...${NC}"
     echo
 
-    local cleaned=0
+    local issues=0
+    local warnings=0
 
     for agent_dir in "$AGENTS_DIR"/@*/; do
         [[ -d "$agent_dir" ]] || continue
 
         local agent=$(basename "$agent_dir")
         local status=$(cat "$agent_dir/status" 2>/dev/null || echo "unknown")
+        local scope=$(cat "$agent_dir/scope" 2>/dev/null || echo "")
+        local task=$(cat "$agent_dir/task" 2>/dev/null || echo "")
         local updated=$(cat "$agent_dir/updated_at" 2>/dev/null || cat "$agent_dir/spawned_at" 2>/dev/null || echo "")
 
-        # Check for stale spawned agents (spawned > 1 hour ago, never updated)
-        if [[ "$status" == "spawned" && -n "$updated" ]]; then
+        # Calculate age
+        local age=0
+        if [[ -n "$updated" ]]; then
             local updated_ts=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$updated" +%s 2>/dev/null || date -d "$updated" +%s 2>/dev/null || echo 0)
             local now_ts=$(date +%s)
-            local age=$((now_ts - updated_ts))
-
-            if [[ $age -gt 3600 ]]; then
-                echo -e "  ${YELLOW}!${NC} $agent: spawned ${age}s ago, never activated"
-                echo "    Consider: metasphere agent sunset $agent --reason \"stale spawn\""
-                ((cleaned++))
-            fi
+            age=$((now_ts - updated_ts))
         fi
 
-        # Check for orphaned children
+        # Check for stale spawned agents (spawned > 1 hour ago, never activated)
+        if [[ "$status" == "spawned" && $age -gt 3600 ]]; then
+            local hours=$((age / 3600))
+            echo -e "  ${RED}!${NC} $agent: spawned ${hours}h ago, never activated"
+            echo "    Consider: metasphere agent sunset $agent --reason \"stale spawn\""
+            ((issues++))
+        fi
+
+        # Check for agents with no task and no scope (likely orphaned)
+        if [[ -z "$task" && -z "$scope" && "$agent" != "@orchestrator" ]]; then
+            echo -e "  ${YELLOW}!${NC} $agent: no task or scope defined"
+            echo "    Consider: metasphere agent sunset $agent --reason \"no task\""
+            ((warnings++))
+        fi
+
+        # Check for agents with scope pointing to non-existent directory
+        if [[ -n "$scope" && ! -d "$scope" ]]; then
+            echo -e "  ${YELLOW}!${NC} $agent: scope directory does not exist: $scope"
+            ((warnings++))
+        fi
+
+        # Check for orphaned children (parent no longer exists)
         if [[ -f "$agent_dir/parent" ]]; then
             local parent=$(cat "$agent_dir/parent")
             if [[ ! -d "$AGENTS_DIR/$parent" ]]; then
-                echo -e "  ${RED}!${NC} $agent: parent $parent no longer exists"
-                ((cleaned++))
+                echo -e "  ${RED}!${NC} $agent: parent $parent no longer exists (orphaned)"
+                ((issues++))
+            fi
+        fi
+
+        # Check for stuck "working" status with no recent activity
+        if [[ "$status" == working:* && $age -gt 7200 ]]; then
+            local hours=$((age / 3600))
+            echo -e "  ${YELLOW}!${NC} $agent: status='$status' but no activity for ${hours}h"
+            echo "    Consider updating status or sunsetting"
+            ((warnings++))
+        fi
+
+        # Check for agents with tmux sessions but sunset/complete status
+        if [[ "$status" == sunset* || "$status" == complete* ]]; then
+            local session_name="metasphere-${agent#@}"
+            if command -v tmux &>/dev/null && tmux has-session -t "$session_name" 2>/dev/null; then
+                echo -e "  ${YELLOW}!${NC} $agent: has active tmux session but status='$status'"
+                echo "    Consider: metasphere session stop $agent"
+                ((warnings++))
             fi
         fi
     done
 
-    [[ $cleaned -eq 0 ]] && echo -e "  ${GREEN}✓${NC} No issues found"
+    if [[ $issues -eq 0 && $warnings -eq 0 ]]; then
+        echo -e "  ${GREEN}✓${NC} No issues found"
+    else
+        echo
+        echo "Summary: $issues critical issues, $warnings warnings"
+    fi
 }
 
 # =============================================================================
@@ -734,6 +930,71 @@ cmd_view() {
 }
 
 # =============================================================================
+# Track activity (for post-hooks)
+# =============================================================================
+
+cmd_activity() {
+    local name="${METASPHERE_AGENT_ID:-@orchestrator}"
+    local action=""
+    local increment=1
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            @*)
+                name="$1"
+                ;;
+            --sent)
+                action="message_sent"
+                ;;
+            --received)
+                action="message_received"
+                ;;
+            --command)
+                action="command_run"
+                ;;
+            --turn)
+                action="turn_complete"
+                ;;
+            *)
+                [[ -z "$action" ]] && action="$1"
+                ;;
+        esac
+        shift
+    done
+
+    local agent_dir="$AGENTS_DIR/$name"
+    [[ ! -d "$agent_dir" ]] && return 0  # Silently skip if agent doesn't exist
+
+    local activity_file="$agent_dir/activity.json"
+
+    # Initialize activity file if needed
+    if [[ ! -f "$activity_file" ]]; then
+        echo '{"messages_sent":0,"messages_received":0,"commands_run":0,"turns":0,"last_activity":""}' > "$activity_file"
+    fi
+
+    # Update activity
+    local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    case "$action" in
+        message_sent|sent)
+            jq --arg ts "$timestamp" '.messages_sent += 1 | .last_activity = $ts' "$activity_file" > "$activity_file.tmp" && mv "$activity_file.tmp" "$activity_file"
+            ;;
+        message_received|received)
+            jq --arg ts "$timestamp" '.messages_received += 1 | .last_activity = $ts' "$activity_file" > "$activity_file.tmp" && mv "$activity_file.tmp" "$activity_file"
+            ;;
+        command_run|command)
+            jq --arg ts "$timestamp" '.commands_run += 1 | .last_activity = $ts' "$activity_file" > "$activity_file.tmp" && mv "$activity_file.tmp" "$activity_file"
+            ;;
+        turn_complete|turn)
+            jq --arg ts "$timestamp" '.turns += 1 | .last_activity = $ts' "$activity_file" > "$activity_file.tmp" && mv "$activity_file.tmp" "$activity_file"
+            ;;
+        show|"")
+            cat "$activity_file"
+            ;;
+    esac
+}
+
+# =============================================================================
 # Main dispatch
 # =============================================================================
 
@@ -767,38 +1028,71 @@ case "${1:-}" in
     cleanup|clean)
         cmd_cleanup
         ;;
+    activity)
+        shift
+        cmd_activity "$@"
+        ;;
+    subtree)
+        shift
+        cmd_subtree "$@"
+        ;;
+    report)
+        shift
+        cmd_report "$@"
+        ;;
+    view)
+        shift
+        cmd_view "$@"
+        ;;
     *)
         cat << 'EOF'
 metasphere-agent - Agent lifecycle management
 
 Usage:
   metasphere agent spawn @name [options]    Create new agent
-  metasphere agent status [@name]           Show status
+  metasphere agent status [@name]           Show status (with inferred state)
   metasphere agent update @name --status X  Update status
   metasphere agent sunset @name             Graceful shutdown
   metasphere agent resume @name             Reactivate agent
   metasphere agent tree                     Show hierarchy
+  metasphere agent subtree @name            Show agent's subtree
   metasphere agent cleanup                  Find stale agents
+  metasphere agent activity [--sent|--received|--turn]  Track activity
+  metasphere agent report @name "message"   Report status to parent
+  metasphere agent view @name               Show what agent can see
 
 Spawn options:
-  --scope, -s PATH     Working directory (project tree level)
+  --scope, -s PATH     Working directory
   --task, -t "desc"    Task description
   --parent, -p @name   Parent agent
   --soul FILE          SOUL.md template
+  --sandbox LEVEL      none|scoped|nobash|readonly
+  --interactive, -i    Start tmux session immediately
 
-Status states:
-  spawned      Just created
-  active       Running
+Status states (auto-inferred from activity):
+  spawned      Just created, no activity
+  stale        Spawned long ago, never activated
+  active       Running (has tmux session or recent activity)
   working:X    Working on X
   blocked:X    Waiting for X
-  idle         Available
+  idle         No recent activity
   complete     Task done
   sunset       Shutting down
 
+Activity tracking:
+  Activity is tracked automatically via hooks:
+  - Messages sent/received
+  - Turn completions
+  - Last activity timestamp
+
 Agent directory: ~/.metasphere/agents/@name/
-  SOUL.md       Personality (persists)
-  learnings/    Documented learnings
-  history/      Past sessions
+  SOUL.md        Personality (persists)
+  MISSION.md     Current objectives
+  HEARTBEAT.md   Operational status
+  LEARNINGS.md   Accumulated insights
+  activity.json  Activity counters
+  learnings/     Documented learnings
+  history/       Past sessions
 EOF
         exit 1
         ;;

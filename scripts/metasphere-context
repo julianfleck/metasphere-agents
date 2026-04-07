@@ -3,55 +3,145 @@
 # Called before each agent turn via Claude Code UserPromptSubmit hook
 #
 # Injection order (most actionable first):
-#   1. Telegram (human can intervene every turn)
-#   2. Agent messages (inter-agent communication)
-#   3. Tasks (what needs doing)
-#   4. CAM (relevant memory)
+#   1. Telegram (last few messages for conversation continuity)
+#   2. Agent identity (MISSION, HEARTBEAT, LEARNINGS)
+#   3. Child agent reports (completion messages bubble up)
+#   4. Agent messages (inter-agent communication)
+#   5. Tasks (what needs doing)
+#   6. Recent events (situational awareness)
+#   7. CAM (relevant memory - keyed to current task)
 
 REPO_ROOT="${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
-AGENT="${METASPHERE_AGENT_ID:-@user}"
+AGENT="${METASPHERE_AGENT_ID:-@orchestrator}"
 SCOPE="${METASPHERE_SCOPE:-$REPO_ROOT}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+AGENT_DIR="$METASPHERE_DIR/agents/$AGENT"
 
 # Export for child scripts
 export METASPHERE_REPO_ROOT="$REPO_ROOT"
 export METASPHERE_SCOPE="$SCOPE"
 export METASPHERE_AGENT_ID="$AGENT"
 
-# 0. Telegram - last message from human (always check first, user can intervene)
+# =============================================================================
+# 0. Telegram - last few messages for conversation context
+# =============================================================================
 if [[ -x "$SCRIPT_DIR/metasphere-telegram-stream" ]]; then
-    "$SCRIPT_DIR/metasphere-telegram-stream" context 2>/dev/null
+    "$SCRIPT_DIR/metasphere-telegram-stream" context --history 5 2>/dev/null
     echo ""
 fi
 
-# 1. Show messages
+# =============================================================================
+# 1. Agent Identity - who you are and what you're doing
+# =============================================================================
+if [[ -d "$AGENT_DIR" ]]; then
+    echo "## Agent Identity ($AGENT)"
+    echo ""
+
+    # Current status and task
+    local_status=$(cat "$AGENT_DIR/status" 2>/dev/null || echo "unknown")
+    local_task=$(cat "$AGENT_DIR/task" 2>/dev/null || echo "")
+    echo "**Status:** $local_status"
+    [[ -n "$local_task" ]] && echo "**Task:** $local_task"
+    echo ""
+
+    # Mission (if exists and short enough)
+    if [[ -f "$AGENT_DIR/MISSION.md" ]]; then
+        echo "### Mission"
+        head -30 "$AGENT_DIR/MISSION.md" | tail -n +2  # Skip # header
+        echo ""
+    fi
+
+    # Recent learnings (just section headers or last few entries)
+    if [[ -f "$AGENT_DIR/LEARNINGS.md" ]]; then
+        local learnings_lines=$(wc -l < "$AGENT_DIR/LEARNINGS.md" | tr -d ' ')
+        if [[ $learnings_lines -gt 0 && $learnings_lines -le 50 ]]; then
+            echo "### Recent Learnings"
+            cat "$AGENT_DIR/LEARNINGS.md"
+            echo ""
+        elif [[ $learnings_lines -gt 50 ]]; then
+            echo "### Recent Learnings (last 20 lines)"
+            tail -20 "$AGENT_DIR/LEARNINGS.md"
+            echo ""
+        fi
+    fi
+
+    # Heartbeat (current operational state)
+    if [[ -f "$AGENT_DIR/HEARTBEAT.md" ]]; then
+        echo "### Heartbeat"
+        cat "$AGENT_DIR/HEARTBEAT.md"
+        echo ""
+    fi
+fi
+
+# =============================================================================
+# 2. Child Agent Reports (completion messages bubble up)
+# =============================================================================
+if [[ -d "$AGENT_DIR/child_reports" ]]; then
+    local report_count=$(ls "$AGENT_DIR/child_reports"/*.md 2>/dev/null | wc -l | tr -d ' ')
+    if [[ $report_count -gt 0 ]]; then
+        echo "## Child Agent Reports ($report_count pending)"
+        echo ""
+        # Show last 5 reports
+        ls -t "$AGENT_DIR/child_reports"/*.md 2>/dev/null | head -5 | while read -r f; do
+            local child=$(basename "$f" | cut -d- -f1)
+            echo "### @$child"
+            cat "$f"
+            echo ""
+        done
+    fi
+fi
+
+# =============================================================================
+# 3. Messages - inter-agent communication
+# =============================================================================
 "$SCRIPT_DIR/messages" 2>/dev/null || echo "## Messages: Error loading messages"
-
 echo ""
 
-# 2. Show tasks
+# =============================================================================
+# 4. Tasks - what needs doing
+# =============================================================================
 "$SCRIPT_DIR/tasks" 2>/dev/null || echo "## Tasks: Error loading tasks"
-
-# 3. CAM context - based on task, repo name, or recent activity
 echo ""
+
+# =============================================================================
+# 5. Recent Events - situational awareness
+# =============================================================================
+if [[ -x "$SCRIPT_DIR/metasphere-events" ]]; then
+    echo "## Recent Events"
+    "$SCRIPT_DIR/metasphere-events" tail 10 2>/dev/null || echo "(no recent events)"
+    echo ""
+fi
+
+# =============================================================================
+# 6. CAM context - keyed to current task
+# =============================================================================
 echo "## Memory Context (CAM)"
 
-TASK_FILE="$METASPHERE_DIR/agents/$AGENT/task"
+# Build query from task + recent messages
+QUERY=""
+
+# Primary: current task
+TASK_FILE="$AGENT_DIR/task"
 if [[ -f "$TASK_FILE" ]]; then
-    # Use current task as query
     QUERY=$(cat "$TASK_FILE")
-elif [[ -n "$REPO_ROOT" ]]; then
-    # Fall back to repo/project name
-    QUERY=$(basename "$REPO_ROOT")
-else
-    # Last resort: recent activity
-    QUERY="@claude [1h]"
+fi
+
+# Secondary: add project context
+if [[ -n "$REPO_ROOT" ]]; then
+    QUERY="$QUERY $(basename "$REPO_ROOT")"
+fi
+
+# Trim and clean query
+QUERY=$(echo "$QUERY" | tr '\n' ' ' | sed 's/  */ /g' | head -c 200)
+
+if [[ -z "$QUERY" ]]; then
+    QUERY="@$AGENT [1h]"
 fi
 
 # Get CAM context (limit output to keep context manageable)
 if command -v cam &>/dev/null; then
-    cam context "$QUERY" 2>/dev/null | head -40 || echo "No relevant memory found."
+    cam context "$QUERY" 2>/dev/null | head -30 || echo "No relevant memory found."
 else
     echo "CAM not installed. Run: pip install collective-agent-memory"
 fi

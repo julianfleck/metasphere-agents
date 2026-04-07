@@ -1,0 +1,36 @@
+#!/bin/bash
+# metasphere-posthook - Post-turn hook for activity tracking
+# Called after each agent turn completes (via Stop hook)
+#
+# Tracks:
+#   - Turn completion count
+#   - Updates agent status based on activity
+
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+AGENT="${METASPHERE_AGENT_ID:-@orchestrator}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Track turn completion
+"$SCRIPT_DIR/metasphere-agent" activity --turn 2>/dev/null || true
+
+# Update agent status to show it's active
+AGENT_DIR="$METASPHERE_DIR/agents/$AGENT"
+if [[ -d "$AGENT_DIR" ]]; then
+    current_status=$(cat "$AGENT_DIR/status" 2>/dev/null || echo "")
+
+    # If status is "spawned", upgrade to "active"
+    if [[ "$current_status" == "spawned" ]]; then
+        echo "active" > "$AGENT_DIR/status"
+    fi
+
+    # Update timestamp
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$AGENT_DIR/updated_at"
+fi
+
+# Log heartbeat event (throttled to every 10 turns)
+if [[ -f "$AGENT_DIR/activity.json" ]]; then
+    turns=$(jq -r '.turns // 0' "$AGENT_DIR/activity.json" 2>/dev/null || echo 0)
+    if [[ $((turns % 10)) -eq 0 && $turns -gt 0 ]]; then
+        "$SCRIPT_DIR/metasphere-events" log agent.heartbeat "$AGENT turn $turns" --agent "$AGENT" 2>/dev/null || true
+    fi
+fi
