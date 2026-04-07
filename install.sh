@@ -156,6 +156,22 @@ setup_directories() {
     # Set permissions
     chmod 700 "$METASPHERE_DIR/config"
 
+    # Seed default auto-update.env on FRESH installs only — preserves any
+    # operator-tuned setting on re-runs. Default: enabled, daily at 4am.
+    if [[ ! -f "$METASPHERE_DIR/config/auto-update.env" ]]; then
+        cat > "$METASPHERE_DIR/config/auto-update.env" <<'EOF'
+# metasphere auto-update configuration
+# Managed by `metasphere update --enable|--disable`.
+AUTO_UPDATE_ENABLED=true
+AUTO_UPDATE_INTERVAL=daily
+AUTO_UPDATE_BRANCH=main
+AUTO_UPDATE_RESTART_DAEMONS=true
+AUTO_UPDATE_NOTIFY=true
+EOF
+        chmod 600 "$METASPHERE_DIR/config/auto-update.env"
+        ok "Seeded default auto-update.env (daily, enabled)"
+    fi
+
     ok "Created $METASPHERE_DIR"
 }
 
@@ -879,6 +895,24 @@ show_completion() {
 }
 
 # =============================================================================
+# Auto-update job registration
+# =============================================================================
+
+register_auto_update_job() {
+    info "Registering auto-update cron job..."
+    local bin="$METASPHERE_DIR/bin/metasphere"
+    if [[ ! -x "$bin" ]] && ! command -v metasphere &>/dev/null; then
+        warn "metasphere command not found yet, skipping cron job registration"
+        return 0
+    fi
+    if "${bin:-metasphere}" update --register-job 2>/dev/null; then
+        ok "Auto-update job registered (see: metasphere update --status)"
+    else
+        warn "Could not register auto-update job (run 'metasphere update --register-job' manually)"
+    fi
+}
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -894,6 +928,7 @@ main() {
     setup_orchestrator
     seed_claude_permissions
     setup_daemon
+    register_auto_update_job
     show_completion
 }
 
