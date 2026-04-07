@@ -299,8 +299,9 @@ def spawn_ephemeral(
     )
 
     cwd = scope_abs if scope_abs.is_dir() else paths.repo
-    log_fh = open(log_file, "ab")
+    log_fh = None
     try:
+        log_fh = open(log_file, "ab")
         proc = subprocess.Popen(
             [
                 "claude",
@@ -318,8 +319,10 @@ def spawn_ephemeral(
         )
     finally:
         # Popen dups the fd; we can drop our handle so the parent isn't
-        # holding the log file open.
-        log_fh.close()
+        # holding the log file open. Guarded so an open() failure above
+        # doesn't AttributeError here.
+        if log_fh is not None:
+            log_fh.close()
 
     atomic_write_text(pid_file, str(proc.pid) + "\n")
     record.pid_file = pid_file
@@ -367,9 +370,11 @@ def _submit_via_bash(session: str, body: str, paths: Paths) -> None:
     if not submit_script.is_file():
         return
     # The bash file defines submit_to_tmux as a function — source it then call.
+    # shlex.quote both the script path and tmux binary so a path containing
+    # whitespace or quotes can never break the bash -c source.
     cmd = (
-        f'source "{submit_script}"; '
-        f'TMUX_CMD="{_tmux_bin()}" submit_to_tmux "$1" "$2"'
+        f"source {shlex.quote(str(submit_script))}; "
+        f"TMUX_CMD={shlex.quote(_tmux_bin())} submit_to_tmux \"$1\" \"$2\""
     )
     subprocess.run(
         ["bash", "-c", cmd, "_", session, body],
@@ -437,6 +442,8 @@ def wake_persistent(
 
     _wait_for_ready(session)
     # Clear stray buffer characters from the exec-bash transition.
+    # NB: send-keys C-u (no Enter) — readline kill-line. Mirrors the bash
+    # invariant in scripts/metasphere-wake:158; do not "fix" by adding Enter.
     _tmux_run("send-keys", "-t", session, "C-u")
     time.sleep(0.2)
 

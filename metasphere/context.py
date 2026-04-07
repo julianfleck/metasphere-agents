@@ -223,29 +223,34 @@ def _parse_jsonl_loose(lines: Iterable[str]) -> list[dict]:
     """Parse a file that mixes single-line JSONL with pretty-printed objects.
 
     The bash archiver writes single-line JSONL, but earlier code (and the
-    outgoing-archive path) sometimes wrote pretty-printed records. We
-    accumulate brace-balanced chunks and json.loads each one.
+    outgoing-archive path) sometimes wrote pretty-printed records. Use
+    ``json.JSONDecoder().raw_decode`` over a sliding buffer so that braces
+    inside string literals don't desync our offset (the previous brace-
+    counting parser had this footgun).
     """
     out: list[dict] = []
-    buf: list[str] = []
-    depth = 0
-    for line in lines:
-        if not line.strip() and not buf:
+    buf = "\n".join(lines).strip()
+    decoder = json.JSONDecoder()
+    i = 0
+    n = len(buf)
+    while i < n:
+        # Skip whitespace and stray separators between objects.
+        while i < n and buf[i] in " \t\r\n,":
+            i += 1
+        if i >= n:
+            break
+        try:
+            obj, end = decoder.raw_decode(buf, i)
+        except json.JSONDecodeError:
+            # Resync: skip to the next '{' if we get stuck.
+            nxt = buf.find("{", i + 1)
+            if nxt == -1:
+                break
+            i = nxt
             continue
-        buf.append(line)
-        depth += line.count("{") - line.count("}")
-        if depth <= 0 and buf:
-            chunk = "\n".join(buf).strip()
-            buf = []
-            depth = 0
-            if not chunk:
-                continue
-            try:
-                obj = json.loads(chunk)
-                if isinstance(obj, dict):
-                    out.append(obj)
-            except json.JSONDecodeError:
-                continue
+        if isinstance(obj, dict):
+            out.append(obj)
+        i = end
     return out
 
 

@@ -26,7 +26,6 @@ import dataclasses
 import datetime as _dt
 import json
 import logging
-import os
 import subprocess
 import time
 from contextlib import contextmanager
@@ -43,7 +42,7 @@ except ImportError as e:  # pragma: no cover
     ) from e
 
 from .events import log_event
-from .io import atomic_write_text, file_lock, write_json
+from .io import atomic_write_text, file_lock
 from .messages import send_message
 from .paths import Paths, resolve
 

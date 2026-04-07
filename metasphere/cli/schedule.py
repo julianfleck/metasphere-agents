@@ -59,7 +59,14 @@ def _cmd_run() -> int:
 
 
 def _cmd_daemon(argv: list[str]) -> int:
-    interval = int(argv[0]) if argv else 60
+    if argv:
+        try:
+            interval = int(argv[0])
+        except ValueError:
+            print(f"usage: schedule daemon [interval-seconds]; got: {argv[0]!r}", file=sys.stderr)
+            return 2
+    else:
+        interval = 60
     print(f"Schedule daemon started (check interval: {interval}s)")
     while True:
         try:
