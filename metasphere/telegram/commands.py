@@ -17,10 +17,16 @@ so they can compose replies that respect forum topics.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
+
+# Telegram-controlled identifiers that get interpolated into filesystem
+# paths or argv must match this; rejects "..", "/", whitespace, etc.
+_AGENT_RE = re.compile(r"^@[A-Za-z0-9_-]+$")
+_LABEL_RE = re.compile(r"^![A-Za-z0-9_-]+$")
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPTS_DIR = os.path.join(REPO_ROOT, "scripts")
@@ -123,6 +129,8 @@ def cmd_agents(args: str, ctx: Context) -> str:
 
 def cmd_inbox(args: str, ctx: Context) -> str:
     target = (args.strip() or "@orchestrator")
+    if not _AGENT_RE.match(target):
+        return "Invalid agent name"
     scope_file = os.path.join(METASPHERE_DIR, "agents", target, "scope")
     scope = METASPHERE_DIR
     if os.path.exists(scope_file):

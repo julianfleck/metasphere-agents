@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
-import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +26,9 @@ from .io import (
     Frontmatter,
     file_lock,
     read_frontmatter_file,
+    read_json,
     write_frontmatter_file,
+    write_json,
 )
 from .paths import Paths, resolve
 
@@ -58,7 +60,7 @@ _FIELD_ORDER = (
 
 
 def _utcnow() -> str:
-    return _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @dataclass
@@ -129,9 +131,20 @@ def read_message(path: Path) -> Message:
     return Message.from_frontmatter(read_frontmatter_file(path), path=path)
 
 
+def _lock_path(path: Path) -> Path:
+    """Sidecar lock file with a stable inode that survives ``os.replace``.
+
+    ``write_frontmatter_file`` uses tmp+rename, so the destination inode is
+    swapped on every write — locking the destination directly would let two
+    writers each end up holding flocks on different inodes. The sidecar
+    file is never unlinked, so its inode stays put.
+    """
+    return path.with_name(path.name + ".lock")
+
+
 def write_message(msg: Message, path: Path) -> None:
     path = Path(path)
-    with file_lock(path):
+    with file_lock(_lock_path(path)):
         write_frontmatter_file(path, msg.to_frontmatter())
     msg.path = path
 
@@ -141,7 +154,7 @@ def update_status(msg_path: Path, field: str, value: str) -> Message:
     msg_path = Path(msg_path)
     if field not in _FIELD_ORDER:
         raise ValueError(f"unknown message field: {field!r}")
-    with file_lock(msg_path):
+    with file_lock(_lock_path(msg_path)):
         msg = read_message(msg_path)
         attr = "from_" if field == "from" else field
         setattr(msg, attr, value)
@@ -236,14 +249,59 @@ def resolve_target(target: str, scope: Path, repo_root: Path, paths: Paths | Non
 
 
 _pid = os.getpid()
-_seq = 0
+_id_lock = threading.Lock()
+_last_epoch = 0
 
 
 def _gen_msg_id() -> str:
-    global _seq
-    _seq += 1
-    # Include monotonic counter so two sends in the same second don't collide.
-    return f"msg-{int(time.time())}-{_pid}-{_seq}"
+    """Canonical ``msg-<epoch>-<pid>`` per PORTING invariant #1.
+
+    To preserve per-second uniqueness within a process, we serialise
+    callers via ``_id_lock`` and busy-wait until the wall clock advances
+    if two sends arrive in the same second. Cross-process collisions are
+    avoided by the embedded pid.
+    """
+    global _last_epoch
+    with _id_lock:
+        epoch = int(time.time())
+        while epoch <= _last_epoch:
+            time.sleep(0.01)
+            epoch = int(time.time())
+        _last_epoch = epoch
+    return f"msg-{epoch}-{_pid}"
+
+
+# ---------------------------------------------------------------------------
+# Inbox index (msg_id → path) — avoids the O(N) repo walk in _find_inbox_msg.
+# ---------------------------------------------------------------------------
+
+
+def _index_path(paths: Paths) -> Path:
+    return paths.state / "msg_index.json"
+
+
+def _index_add(msg_id: str, path: Path, paths: Paths) -> None:
+    idx_path = _index_path(paths)
+    try:
+        idx = read_json(idx_path, {}) or {}
+        idx[msg_id] = str(path)
+        write_json(idx_path, idx)
+    except Exception:
+        # Index is a perf cache; failures must not break message sends.
+        pass
+
+
+def _index_lookup(msg_id: str, paths: Paths) -> Path | None:
+    try:
+        idx = read_json(_index_path(paths), {}) or {}
+        cand = idx.get(msg_id)
+        if cand:
+            p = Path(cand)
+            if p.exists():
+                return p
+    except Exception:
+        pass
+    return None
 
 
 def _ensure_dirs(*dirs: Path) -> None:
@@ -286,6 +344,7 @@ def send_message(
     write_message(msg, inbox_file)
     # Outbox is a sender-side copy; safe to write the same content.
     write_frontmatter_file(outbox_file, msg.to_frontmatter())
+    _index_add(msg_id, inbox_file, paths)
 
     try:
         log_event(
@@ -308,11 +367,22 @@ def send_message(
     return msg
 
 
-def _find_inbox_msg(msg_id: str, repo_root: Path) -> Path | None:
+def _find_inbox_msg(
+    msg_id: str, repo_root: Path, paths: Paths | None = None
+) -> Path | None:
+    # Fast path: write-through index in ~/.metasphere/state/msg_index.json.
+    if paths is not None:
+        hit = _index_lookup(msg_id, paths)
+        if hit is not None:
+            return hit
+    # Slow path: walk the repo. Preserved for messages written by the bash
+    # CLI which doesn't update the Python index.
     repo_root = Path(repo_root)
     for inbox in repo_root.rglob(".messages/inbox"):
         cand = inbox / f"{msg_id}.msg"
         if cand.exists():
+            if paths is not None:
+                _index_add(msg_id, cand, paths)
             return cand
     return None
 
@@ -324,11 +394,11 @@ def reply_to_message(
     paths: Paths | None = None,
 ) -> Message:
     paths = paths or resolve()
-    orig_path = _find_inbox_msg(orig_id, paths.repo)
+    orig_path = _find_inbox_msg(orig_id, paths.repo, paths=paths)
     if orig_path is None:
         raise FileNotFoundError(f"message {orig_id} not found")
 
-    with file_lock(orig_path):
+    with file_lock(_lock_path(orig_path)):
         orig = read_message(orig_path)
         orig.status = STATUS_REPLIED
         orig.replied_at = _utcnow()
@@ -347,11 +417,11 @@ def mark_done(
 ) -> Message | None:
     """Mark a message completed; if ``note`` is given, send a !done back."""
     paths = paths or resolve()
-    orig_path = _find_inbox_msg(orig_id, paths.repo)
+    orig_path = _find_inbox_msg(orig_id, paths.repo, paths=paths)
     if orig_path is None:
         raise FileNotFoundError(f"message {orig_id} not found")
 
-    with file_lock(orig_path):
+    with file_lock(_lock_path(orig_path)):
         orig = read_message(orig_path)
         orig.status = STATUS_COMPLETED
         orig.completed_at = _utcnow()
@@ -366,10 +436,10 @@ def mark_done(
 
 def mark_read(msg_id: str, paths: Paths | None = None) -> Message:
     paths = paths or resolve()
-    p = _find_inbox_msg(msg_id, paths.repo)
+    p = _find_inbox_msg(msg_id, paths.repo, paths=paths)
     if p is None:
         raise FileNotFoundError(f"message {msg_id} not found")
-    with file_lock(p):
+    with file_lock(_lock_path(p)):
         msg = read_message(p)
         if msg.status == STATUS_UNREAD:
             msg.status = STATUS_READ
