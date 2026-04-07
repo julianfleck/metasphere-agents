@@ -37,6 +37,9 @@ if [[ -z "$TMUX_CMD" ]]; then
     exit 1
 fi
 
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/metasphere-tmux-submit"
+
 # Colors
 if [[ -t 1 ]]; then
     GREEN=$'\033[0;32m'
@@ -184,14 +187,8 @@ Begin by acknowledging your task and getting started."
     # Wait a moment for claude to start
     sleep 2
 
-    # Send initial prompt as a SINGLE atomic paste.
-    # CRITICAL: Do NOT send multi-line content via send-keys directly — that
-    # turns each line into a separate user prompt to claude (line-shredding bug).
-    printf '%s' "$init_prompt" | $TMUX_CMD load-buffer -
-    $TMUX_CMD paste-buffer -t "$session"
-    # Allow claude TUI to consume bracketed-paste end before submit.
-    sleep 0.5
-    $TMUX_CMD send-keys -t "$session" Enter
+    # Atomic paste + verified submit (handles bracketed-paste race).
+    TMUX_CMD="$TMUX_CMD" submit_to_tmux "$session" "$init_prompt"
 
     # Update agent status
     echo "active: interactive session" > "$agent_dir/status"
@@ -247,14 +244,8 @@ cmd_send() {
         exit 1
     fi
 
-    # Send message as input via atomic paste (message may be multi-line).
-    # CRITICAL: Do NOT send multi-line content via send-keys directly — that
-    # turns each line into a separate user prompt to claude (line-shredding bug).
-    printf '%s' "$message" | $TMUX_CMD load-buffer -
-    $TMUX_CMD paste-buffer -t "$session"
-    # Allow claude TUI to consume bracketed-paste end before submit.
-    sleep 0.5
-    $TMUX_CMD send-keys -t "$session" Enter
+    # Atomic paste + verified submit (handles bracketed-paste race).
+    TMUX_CMD="$TMUX_CMD" submit_to_tmux "$session" "$message"
     echo -e "${GREEN}✓${NC} Sent to $agent"
 }
 

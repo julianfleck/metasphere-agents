@@ -1,0 +1,155 @@
+#!/bin/bash
+# metasphere-tmux-submit - Reliable atomic submit helper for tmux+claude TUI
+#
+# Problem:
+#   When pasting multi-line content into a claude TUI running in tmux, the
+#   bracketed-paste sequence renders as a "[Pasted text #N +M lines]"
+#   placeholder. If we send Enter too eagerly the keystroke races the paste
+#   end-marker and is absorbed into the input buffer instead of submitting.
+#   Result: a stuck placeholder that never sends.
+#
+# Strategy (belt-and-suspenders):
+#   1. load-buffer + paste-buffer (atomic delivery)
+#   2. brief settle delay
+#   3. send Enter
+#   4. capture-pane and check whether the "[Pasted text #" placeholder is
+#      still present (i.e. nothing submitted). If so, retry Enter.
+#   5. up to 3 retries, then give up (gateway watchdog will retry).
+#
+# Usage:
+#   source metasphere-tmux-submit
+#   submit_to_tmux <session> <message>
+#
+# Or as a standalone script:
+#   echo "msg" | metasphere-tmux-submit <session>
+
+# Resolve tmux binary
+_mts_find_tmux() {
+    if [[ -n "$TMUX_CMD" ]]; then
+        echo "$TMUX_CMD"
+        return
+    fi
+    local t
+    t=$(command -v tmux 2>/dev/null) && { echo "$t"; return; }
+    for p in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do
+        [[ -x "$p" ]] && { echo "$p"; return; }
+    done
+    if [[ -d /opt/homebrew/Cellar/tmux ]]; then
+        find /opt/homebrew/Cellar/tmux -name tmux -type f -perm +111 2>/dev/null | head -1
+    fi
+}
+
+# Returns 0 if a "[Pasted text #N" placeholder is currently visible in the
+# session's last few lines (i.e. unsubmitted paste).
+_mts_has_pending_paste() {
+    local session="$1"
+    local tmux_bin="$2"
+    "$tmux_bin" capture-pane -p -t "$session" 2>/dev/null \
+        | tail -5 \
+        | grep -q '\[Pasted text #'
+}
+
+# submit_to_tmux <session> <message>
+# Atomically delivers the message and ensures Enter actually submits.
+submit_to_tmux() {
+    local session="$1"
+    local message="$2"
+    local tmux_bin
+    tmux_bin=$(_mts_find_tmux)
+    [[ -z "$tmux_bin" ]] && { echo "submit_to_tmux: tmux not found" >&2; return 1; }
+
+    # Verify session exists
+    if ! "$tmux_bin" has-session -t "$session" 2>/dev/null; then
+        echo "submit_to_tmux: no session $session" >&2
+        return 1
+    fi
+
+    # 1. Atomic paste
+    printf '%s' "$message" | "$tmux_bin" load-buffer -
+    "$tmux_bin" paste-buffer -t "$session"
+
+    # 2. Settle delay so claude TUI consumes bracketed-paste end marker
+    sleep 0.5
+
+    # 3. First submit attempt
+    "$tmux_bin" send-keys -t "$session" Enter
+    sleep 0.5
+
+    # 4. Verify and retry if still pending
+    local attempt=0
+    local max_attempts=3
+    while (( attempt < max_attempts )); do
+        if ! _mts_has_pending_paste "$session" "$tmux_bin"; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        # Stuck placeholder - send another Enter
+        sleep 0.5
+        "$tmux_bin" send-keys -t "$session" Enter
+        sleep 0.5
+    done
+
+    # Final check
+    if _mts_has_pending_paste "$session" "$tmux_bin"; then
+        echo "submit_to_tmux: WARNING placeholder still pending in $session after $max_attempts retries" >&2
+        return 2
+    fi
+    return 0
+}
+
+# Watchdog: scan a session for a stale "[Pasted text #" placeholder and force
+# Enter if found. Intended to run periodically from the gateway daemon.
+# Returns 0 if no action needed or recovery succeeded; 1 on hard failure.
+tmux_submit_watchdog() {
+    local session="$1"
+    local tmux_bin
+    tmux_bin=$(_mts_find_tmux)
+    [[ -z "$tmux_bin" ]] && return 1
+    "$tmux_bin" has-session -t "$session" 2>/dev/null || return 0
+
+    if _mts_has_pending_paste "$session" "$tmux_bin"; then
+        # Force submit
+        "$tmux_bin" send-keys -t "$session" Enter
+        sleep 0.5
+        if _mts_has_pending_paste "$session" "$tmux_bin"; then
+            "$tmux_bin" send-keys -t "$session" Enter
+            sleep 0.5
+        fi
+        if _mts_has_pending_paste "$session" "$tmux_bin"; then
+            return 1
+        fi
+        return 0
+    fi
+    return 0
+}
+
+# Standalone CLI mode
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    case "${1:-}" in
+        watchdog)
+            tmux_submit_watchdog "$2"
+            exit $?
+            ;;
+        "")
+            cat << 'EOF'
+metasphere-tmux-submit - Reliable tmux paste+submit
+
+Usage (as library):
+  source metasphere-tmux-submit
+  submit_to_tmux <session> <message>
+  tmux_submit_watchdog <session>
+
+Usage (as CLI):
+  echo "message" | metasphere-tmux-submit <session>
+  metasphere-tmux-submit watchdog <session>
+EOF
+            exit 1
+            ;;
+        *)
+            session="$1"
+            message=$(cat)
+            submit_to_tmux "$session" "$message"
+            exit $?
+            ;;
+    esac
+fi

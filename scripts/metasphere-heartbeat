@@ -18,6 +18,9 @@ METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/metasphere-tmux-submit"
+
 # Load Telegram config
 if [[ -f "$METASPHERE_DIR/config/telegram.env" ]]; then
     source "$METASPHERE_DIR/config/telegram.env"
@@ -178,15 +181,8 @@ invoke_agent_heartbeat() {
     if tmux has-session -t "$session_name" 2>/dev/null; then
         echo "[$timestamp] Sending heartbeat to tmux: $session_name"
         local context=$(build_agent_context "$agent")
-        # Send to tmux session's input as a SINGLE atomic paste.
-        # CRITICAL: Do NOT loop send-keys per line + Enter — that turns each
-        # line into a separate user prompt to claude (line-shredding bug that
-        # killed both the local orchestrator and spot's claude session).
-        printf '# HEARTBEAT\n%s' "$context" | tmux load-buffer -
-        tmux paste-buffer -t "$session_name"
-        # Allow claude TUI to consume bracketed-paste end before submit.
-        sleep 0.5
-        tmux send-keys -t "$session_name" Enter
+        # Atomic paste + verified submit (handles bracketed-paste race).
+        submit_to_tmux "$session_name" "$(printf '# HEARTBEAT\n%s' "$context")"
     else
         # Use claude -p one-shot
         local scope=$(cat "$agent_dir/scope" 2>/dev/null || echo "$PWD")
