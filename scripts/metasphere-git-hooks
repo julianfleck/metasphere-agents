@@ -1,0 +1,257 @@
+#!/bin/bash
+# metasphere-git-hooks - Git hook integration for event logging
+#
+# Install hooks in a repo to automatically log git events
+# and enable orchestrator awareness of code changes.
+#
+# Usage:
+#   metasphere git-hooks install [repo-path]   Install hooks
+#   metasphere git-hooks uninstall [repo-path] Remove hooks
+#   metasphere git-hooks status [repo-path]    Check status
+
+set -e
+
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# =============================================================================
+# Hook scripts
+# =============================================================================
+
+HOOK_HEADER='#!/bin/bash
+# Metasphere git hook - logs events to shared event log
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+'
+
+generate_pre_commit() {
+    cat << 'HOOK'
+#!/bin/bash
+# Metasphere pre-commit hook
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+EVENTS="$METASPHERE_DIR/bin/metasphere-events"
+
+# Log the commit attempt
+[[ -x "$EVENTS" ]] && "$EVENTS" log git.pre-commit "Pre-commit check" --meta repo="$(basename $(pwd))" 2>/dev/null || true
+
+# Check for pending urgent reviews
+urgent_reviews=$(find . -path "*/.metasphere/reviews/pending/*.json" -exec grep -l '"severity":"error"' {} \; 2>/dev/null | wc -l | tr -d ' ')
+if [[ $urgent_reviews -gt 0 ]]; then
+    echo "[metasphere] Warning: $urgent_reviews urgent reviews pending"
+    # Don't block, just warn
+fi
+
+exit 0
+HOOK
+}
+
+generate_post_commit() {
+    cat << 'HOOK'
+#!/bin/bash
+# Metasphere post-commit hook
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+EVENTS="$METASPHERE_DIR/bin/metasphere-events"
+
+# Get commit info
+COMMIT_SHA=$(git rev-parse HEAD)
+COMMIT_MSG=$(git log -1 --pretty=%s)
+COMMIT_AUTHOR=$(git log -1 --pretty=%an)
+FILES_CHANGED=$(git diff-tree --no-commit-id --name-only -r HEAD | wc -l | tr -d ' ')
+REPO=$(basename $(git rev-parse --show-toplevel))
+
+# Log to events
+[[ -x "$EVENTS" ]] && "$EVENTS" log git.commit "$COMMIT_MSG" \
+    --meta sha="${COMMIT_SHA:0:8}" \
+    --meta author="$COMMIT_AUTHOR" \
+    --meta files="$FILES_CHANGED" \
+    --meta repo="$REPO" \
+    --agent "@${METASPHERE_AGENT_ID:-git}" 2>/dev/null || true
+
+# Index to CAM if available
+if command -v cam &>/dev/null; then
+    echo "Commit: $COMMIT_MSG (${COMMIT_SHA:0:8})" | cam index --source "git:$REPO" 2>/dev/null || true
+fi
+
+exit 0
+HOOK
+}
+
+generate_post_checkout() {
+    cat << 'HOOK'
+#!/bin/bash
+# Metasphere post-checkout hook
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+EVENTS="$METASPHERE_DIR/bin/metasphere-events"
+
+PREV_HEAD=$1
+NEW_HEAD=$2
+BRANCH_CHECKOUT=$3
+
+if [[ "$BRANCH_CHECKOUT" == "1" ]]; then
+    BRANCH=$(git rev-parse --abbrev-ref HEAD)
+    REPO=$(basename $(git rev-parse --show-toplevel))
+    [[ -x "$EVENTS" ]] && "$EVENTS" log git.checkout "Switched to $BRANCH" \
+        --meta branch="$BRANCH" \
+        --meta repo="$REPO" 2>/dev/null || true
+fi
+
+exit 0
+HOOK
+}
+
+generate_pre_push() {
+    cat << 'HOOK'
+#!/bin/bash
+# Metasphere pre-push hook
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+EVENTS="$METASPHERE_DIR/bin/metasphere-events"
+
+REMOTE=$1
+URL=$2
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+REPO=$(basename $(git rev-parse --show-toplevel))
+
+[[ -x "$EVENTS" ]] && "$EVENTS" log git.push "Pushing $BRANCH to $REMOTE" \
+    --meta branch="$BRANCH" \
+    --meta remote="$REMOTE" \
+    --meta repo="$REPO" 2>/dev/null || true
+
+exit 0
+HOOK
+}
+
+# =============================================================================
+# Install hooks
+# =============================================================================
+
+cmd_install() {
+    local repo_path="${1:-.}"
+    local hooks_dir="$repo_path/.git/hooks"
+
+    if [[ ! -d "$repo_path/.git" ]]; then
+        echo "Not a git repository: $repo_path"
+        exit 1
+    fi
+
+    mkdir -p "$hooks_dir"
+
+    echo "Installing metasphere git hooks in $repo_path"
+
+    # Backup existing hooks
+    for hook in pre-commit post-commit post-checkout pre-push; do
+        if [[ -f "$hooks_dir/$hook" ]] && ! grep -q "Metasphere" "$hooks_dir/$hook"; then
+            cp "$hooks_dir/$hook" "$hooks_dir/$hook.backup"
+            echo "  Backed up existing $hook"
+        fi
+    done
+
+    # Install hooks
+    generate_pre_commit > "$hooks_dir/pre-commit"
+    generate_post_commit > "$hooks_dir/post-commit"
+    generate_post_checkout > "$hooks_dir/post-checkout"
+    generate_pre_push > "$hooks_dir/pre-push"
+
+    chmod +x "$hooks_dir"/{pre-commit,post-commit,post-checkout,pre-push}
+
+    echo "Installed: pre-commit, post-commit, post-checkout, pre-push"
+    echo
+    echo "Events will be logged to: ~/.metasphere/events/"
+}
+
+# =============================================================================
+# Uninstall hooks
+# =============================================================================
+
+cmd_uninstall() {
+    local repo_path="${1:-.}"
+    local hooks_dir="$repo_path/.git/hooks"
+
+    if [[ ! -d "$hooks_dir" ]]; then
+        echo "No hooks directory found"
+        exit 1
+    fi
+
+    echo "Removing metasphere git hooks from $repo_path"
+
+    for hook in pre-commit post-commit post-checkout pre-push; do
+        if [[ -f "$hooks_dir/$hook" ]] && grep -q "Metasphere" "$hooks_dir/$hook"; then
+            rm "$hooks_dir/$hook"
+            echo "  Removed $hook"
+
+            # Restore backup if exists
+            if [[ -f "$hooks_dir/$hook.backup" ]]; then
+                mv "$hooks_dir/$hook.backup" "$hooks_dir/$hook"
+                echo "  Restored $hook from backup"
+            fi
+        fi
+    done
+
+    echo "Done"
+}
+
+# =============================================================================
+# Status
+# =============================================================================
+
+cmd_status() {
+    local repo_path="${1:-.}"
+    local hooks_dir="$repo_path/.git/hooks"
+
+    if [[ ! -d "$repo_path/.git" ]]; then
+        echo "Not a git repository: $repo_path"
+        exit 1
+    fi
+
+    echo "Git hooks status for $repo_path"
+    echo
+
+    for hook in pre-commit post-commit post-checkout pre-push; do
+        if [[ -f "$hooks_dir/$hook" ]]; then
+            if grep -q "Metasphere" "$hooks_dir/$hook"; then
+                echo "  [x] $hook (metasphere)"
+            else
+                echo "  [?] $hook (other)"
+            fi
+        else
+            echo "  [ ] $hook (not installed)"
+        fi
+    done
+}
+
+# =============================================================================
+# Main dispatch
+# =============================================================================
+
+case "${1:-}" in
+    install|add)
+        shift
+        cmd_install "$@"
+        ;;
+    uninstall|remove)
+        shift
+        cmd_uninstall "$@"
+        ;;
+    status|check)
+        shift
+        cmd_status "$@"
+        ;;
+    *)
+        cat << 'EOF'
+metasphere-git-hooks - Git integration for event logging
+
+Usage:
+  metasphere git-hooks install [path]    Install hooks in repo
+  metasphere git-hooks uninstall [path]  Remove hooks
+  metasphere git-hooks status [path]     Check hook status
+
+Hooks installed:
+  pre-commit     Warn about pending reviews
+  post-commit    Log commit to events, index to CAM
+  post-checkout  Log branch switches
+  pre-push       Log push attempts
+
+Events are logged to ~/.metasphere/events/events.jsonl
+and become visible to the orchestrator.
+EOF
+        exit 1
+        ;;
+esac

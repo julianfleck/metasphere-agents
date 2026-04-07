@@ -1,0 +1,686 @@
+#!/bin/bash
+#
+# Metasphere Agents - Multi-agent orchestration for Claude Code
+# One-line installer: curl -fsSL https://raw.githubusercontent.com/julianfleck/metasphere-agents/main/install.sh | bash
+#
+# Options:
+#   -y    Non-interactive mode (use defaults/env vars)
+#   -v    Verbose output
+#
+# Environment variables (for non-interactive):
+#   TELEGRAM_BOT_TOKEN    - Telegram bot token
+#   METASPHERE_DIR        - Installation directory (default: ~/.metasphere)
+#
+set -e
+
+REPO="julianfleck/metasphere-agents"
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo ".")"
+INTERACTIVE=true
+VERBOSE=false
+
+# Parse arguments
+while getopts "yv" opt; do
+    case $opt in
+        y) INTERACTIVE=false ;;
+        v) VERBOSE=true ;;
+        *) ;;
+    esac
+done
+
+# Detect if stdin is terminal
+[[ ! -t 0 ]] && INTERACTIVE=false
+
+# Colors
+if [[ -t 1 ]]; then
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    RED='\033[0;31m'
+    CYAN='\033[0;36m'
+    DIM='\033[2m'
+    NC='\033[0m'
+else
+    GREEN='' YELLOW='' RED='' CYAN='' DIM='' NC=''
+fi
+
+ok() { echo -e "${GREEN}[ok]${NC} $*"; }
+info() { echo -e "${CYAN}[..]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!!]${NC} $*"; }
+err() { echo -e "${RED}[error]${NC} $*"; exit 1; }
+
+echo "Metasphere Agents"
+echo "================="
+echo "Multi-agent orchestration for Claude Code"
+echo
+
+# =============================================================================
+# Dependency checks
+# =============================================================================
+
+check_dependencies() {
+    info "Checking dependencies..."
+
+    # Git
+    if command -v git &>/dev/null; then
+        ok "git"
+    else
+        err "git required - install from https://git-scm.com"
+    fi
+
+    # jq
+    if command -v jq &>/dev/null; then
+        ok "jq"
+    else
+        warn "jq not found - installing..."
+        if [[ "$(uname)" == "Darwin" ]]; then
+            brew install jq || err "Failed to install jq"
+        elif command -v apt-get &>/dev/null; then
+            sudo apt-get install -y jq || err "Failed to install jq"
+        else
+            err "Please install jq manually"
+        fi
+        ok "jq installed"
+    fi
+
+    # curl
+    if command -v curl &>/dev/null; then
+        ok "curl"
+    else
+        err "curl required"
+    fi
+
+    # Claude Code CLI
+    if command -v claude &>/dev/null; then
+        local claude_version=$(claude --version 2>/dev/null | head -1 || echo "unknown")
+        ok "claude CLI ($claude_version)"
+
+        # Test if Claude is authenticated with a quick probe
+        info "Testing Claude Code authentication..."
+        local test_response=$(echo "reply with just 'ok'" | timeout 30 claude -p 2>&1 || echo "FAILED")
+        if [[ "$test_response" == *"ok"* ]] || [[ "$test_response" == *"Ok"* ]] || [[ "$test_response" == *"OK"* ]]; then
+            ok "Claude Code authenticated"
+        elif [[ "$test_response" == *"FAILED"* ]] || [[ "$test_response" == *"error"* ]] || [[ "$test_response" == *"login"* ]]; then
+            warn "Claude Code may not be authenticated"
+            echo "    Run: claude /login"
+            echo "    Then re-run this installer"
+            if $INTERACTIVE; then
+                read -p "Continue anyway? [y/N] " -n 1 -r
+                echo
+                [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
+            fi
+        else
+            ok "Claude Code responding"
+        fi
+    else
+        warn "claude CLI not found"
+        echo "    Install from: https://claude.ai/code"
+        echo "    Metasphere requires Claude Code for agent execution"
+        if $INTERACTIVE; then
+            read -p "Continue without Claude? [y/N] " -n 1 -r
+            echo
+            [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
+        fi
+    fi
+
+    # CAM (Collective Agent Memory)
+    if command -v cam &>/dev/null; then
+        local cam_version=$(cam --version 2>/dev/null || echo "unknown")
+        ok "CAM ($cam_version)"
+    else
+        warn "CAM not found - installing..."
+        if command -v uv &>/dev/null; then
+            uv tool install git+https://github.com/julianfleck/collective-agent-memory.git 2>&1 | tail -3
+        elif command -v pipx &>/dev/null; then
+            pipx install git+https://github.com/julianfleck/collective-agent-memory.git 2>&1 | tail -3
+        elif command -v pip3 &>/dev/null; then
+            pip3 install --user git+https://github.com/julianfleck/collective-agent-memory.git 2>&1 | tail -3
+        else
+            err "pip/pipx/uv required to install CAM"
+        fi
+        ok "CAM installed"
+    fi
+
+    echo
+}
+
+# =============================================================================
+# Directory setup
+# =============================================================================
+
+setup_directories() {
+    info "Setting up directories..."
+
+    mkdir -p "$METASPHERE_DIR"/{config,agents,telegram/stream,logs}
+    mkdir -p "$METASPHERE_DIR/agents/@orchestrator"
+
+    # Set permissions
+    chmod 700 "$METASPHERE_DIR/config"
+
+    ok "Created $METASPHERE_DIR"
+}
+
+# =============================================================================
+# Install scripts
+# =============================================================================
+
+install_scripts() {
+    info "Installing scripts..."
+
+    local BIN_DIR="$METASPHERE_DIR/bin"
+    mkdir -p "$BIN_DIR"
+
+    # If running from repo, copy scripts
+    if [[ -d "$SCRIPT_DIR/scripts" ]]; then
+        cp "$SCRIPT_DIR/scripts"/* "$BIN_DIR/" 2>/dev/null || true
+        chmod +x "$BIN_DIR"/*
+        ok "Copied scripts from repo"
+    else
+        # Download from GitHub
+        local RAW_URL="https://raw.githubusercontent.com/$REPO/main/scripts"
+        local scripts=(
+            "metasphere"
+            "metasphere-gateway"
+            "metasphere-telegram"
+            "metasphere-telegram-stream"
+            "metasphere-heartbeat"
+            "metasphere-context"
+            "metasphere-spawn"
+            "metasphere-schedule"
+            "metasphere-agent"
+            "metasphere-events"
+            "metasphere-project"
+            "metasphere-migrate"
+            "messages"
+            "tasks"
+        )
+
+        for script in "${scripts[@]}"; do
+            curl -fsSL "$RAW_URL/$script" -o "$BIN_DIR/$script" 2>/dev/null || warn "Failed to download $script"
+            chmod +x "$BIN_DIR/$script" 2>/dev/null || true
+        done
+        ok "Downloaded scripts from GitHub"
+    fi
+
+    # Configure PATH in shell profile
+    setup_path "$BIN_DIR"
+}
+
+setup_path() {
+    local BIN_DIR="$1"
+
+    # Already in PATH?
+    if [[ ":$PATH:" == *":$BIN_DIR:"* ]]; then
+        ok "PATH already configured"
+        return
+    fi
+
+    # Detect shell and profile
+    local shell_name=$(basename "$SHELL")
+    local profile=""
+
+    case "$shell_name" in
+        zsh)
+            profile="$HOME/.zshrc"
+            ;;
+        bash)
+            if [[ -f "$HOME/.bash_profile" ]]; then
+                profile="$HOME/.bash_profile"
+            else
+                profile="$HOME/.bashrc"
+            fi
+            ;;
+        fish)
+            profile="$HOME/.config/fish/config.fish"
+            ;;
+        *)
+            profile="$HOME/.profile"
+            ;;
+    esac
+
+    # Check if already added to profile
+    if [[ -f "$profile" ]] && grep -q "metasphere/bin" "$profile" 2>/dev/null; then
+        ok "PATH entry exists in $profile"
+        return
+    fi
+
+    # Add to profile
+    local path_line=""
+    if [[ "$shell_name" == "fish" ]]; then
+        path_line="set -gx PATH $BIN_DIR \$PATH"
+    else
+        path_line="export PATH=\"$BIN_DIR:\$PATH\""
+    fi
+
+    if $INTERACTIVE; then
+        read -p "Add metasphere to PATH in $profile? [Y/n] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            echo "" >> "$profile"
+            echo "# Metasphere Agents" >> "$profile"
+            echo "$path_line" >> "$profile"
+            ok "Added to $profile"
+            echo "    Run: source $profile (or restart shell)"
+        else
+            warn "Skipped PATH setup"
+            echo "    Add manually: $path_line"
+        fi
+    else
+        # Non-interactive: add automatically
+        echo "" >> "$profile"
+        echo "# Metasphere Agents" >> "$profile"
+        echo "$path_line" >> "$profile"
+        ok "Added to $profile"
+    fi
+
+    # Also export for current session
+    export PATH="$BIN_DIR:$PATH"
+}
+
+# =============================================================================
+# OpenClaw Migration
+# =============================================================================
+
+OPENCLAW_DIR="${OPENCLAW_DIR:-$HOME/.openclaw}"
+OPENCLAW_DETECTED=false
+OPENCLAW_HAS_TELEGRAM=false
+
+detect_openclaw() {
+    if [[ -d "$OPENCLAW_DIR" ]]; then
+        OPENCLAW_DETECTED=true
+
+        # Check for Telegram token
+        if [[ -f "$OPENCLAW_DIR/openclaw.json" ]]; then
+            if jq -e '.telegram.botToken // .TELEGRAM_BOT_TOKEN // .env.TELEGRAM_BOT_TOKEN' "$OPENCLAW_DIR/openclaw.json" &>/dev/null 2>&1; then
+                OPENCLAW_HAS_TELEGRAM=true
+            fi
+        fi
+    fi
+}
+
+migrate_openclaw() {
+    if ! $OPENCLAW_DETECTED; then
+        return 0
+    fi
+
+    echo
+    echo "OpenClaw Detected"
+    echo "-----------------"
+    echo "Found existing OpenClaw installation at $OPENCLAW_DIR"
+    echo
+
+    if $INTERACTIVE; then
+        read -p "Migrate configuration from OpenClaw? [Y/n] " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Nn]$ ]]; then
+            info "Skipped OpenClaw migration"
+            return 0
+        fi
+    fi
+
+    # Run migration script if available
+    if [[ -x "$METASPHERE_DIR/bin/metasphere-migrate" ]]; then
+        "$METASPHERE_DIR/bin/metasphere-migrate" run
+    elif [[ -x "$SCRIPT_DIR/scripts/metasphere-migrate" ]]; then
+        "$SCRIPT_DIR/scripts/metasphere-migrate" run
+    else
+        # Inline migration for bootstrap
+        migrate_openclaw_inline
+    fi
+
+    # Ask about disabling OpenClaw
+    if $INTERACTIVE; then
+        echo
+        local gateway_running=false
+        if [[ "$(uname)" == "Darwin" ]]; then
+            launchctl list 2>/dev/null | grep -q "openclaw" && gateway_running=true
+        else
+            systemctl --user is-active openclaw-gateway &>/dev/null && gateway_running=true
+        fi
+
+        if $gateway_running; then
+            echo "OpenClaw gateway is currently running."
+            read -p "Disable OpenClaw gateway (Metasphere will take over)? [Y/n] " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                disable_openclaw_gateway
+            fi
+        fi
+    fi
+}
+
+migrate_openclaw_inline() {
+    # Inline migration for when script isn't installed yet
+    info "Migrating OpenClaw configuration..."
+
+    # Extract Telegram token
+    if [[ -f "$OPENCLAW_DIR/openclaw.json" ]] && $OPENCLAW_HAS_TELEGRAM; then
+        local token=""
+        token=$(jq -r '.telegram.botToken // .TELEGRAM_BOT_TOKEN // .env.TELEGRAM_BOT_TOKEN // empty' "$OPENCLAW_DIR/openclaw.json" 2>/dev/null)
+
+        if [[ -n "$token" && "$token" != "null" ]]; then
+            mkdir -p "$METASPHERE_DIR/config"
+            echo "TELEGRAM_BOT_TOKEN=$token" > "$METASPHERE_DIR/config/telegram.env"
+            chmod 600 "$METASPHERE_DIR/config/telegram.env"
+            ok "Migrated Telegram token from OpenClaw"
+            TELEGRAM_BOT_TOKEN="$token"  # Set for later verification
+        fi
+    fi
+
+    # Migrate SOUL.md
+    if [[ -f "$OPENCLAW_DIR/SOUL.md" ]]; then
+        mkdir -p "$METASPHERE_DIR/agents/@orchestrator"
+        if [[ ! -f "$METASPHERE_DIR/agents/@orchestrator/SOUL.md" ]]; then
+            cp "$OPENCLAW_DIR/SOUL.md" "$METASPHERE_DIR/agents/@orchestrator/SOUL.md"
+            ok "Migrated SOUL.md"
+        fi
+    fi
+
+    # Mark as migrated
+    if [[ -f "$OPENCLAW_DIR/openclaw.json" ]]; then
+        local tmp=$(mktemp)
+        jq '. + {metasphere_migrated: true, migrated_at: now | tostring}' "$OPENCLAW_DIR/openclaw.json" > "$tmp" 2>/dev/null && \
+            mv "$tmp" "$OPENCLAW_DIR/openclaw.json" || rm -f "$tmp"
+    fi
+}
+
+disable_openclaw_gateway() {
+    info "Disabling OpenClaw gateway..."
+
+    if [[ "$(uname)" == "Darwin" ]]; then
+        local plist="$HOME/Library/LaunchAgents/com.openclaw.gateway.plist"
+        if [[ -f "$plist" ]]; then
+            launchctl unload "$plist" 2>/dev/null || true
+            mv "$plist" "${plist}.disabled"
+            ok "Disabled OpenClaw (launchd)"
+        fi
+    else
+        if systemctl --user is-active openclaw-gateway &>/dev/null; then
+            systemctl --user stop openclaw-gateway 2>/dev/null || true
+            systemctl --user disable openclaw-gateway 2>/dev/null || true
+            ok "Disabled OpenClaw (systemd)"
+        fi
+    fi
+
+    # Update OpenClaw config
+    if [[ -f "$OPENCLAW_DIR/openclaw.json" ]]; then
+        local tmp=$(mktemp)
+        jq '. + {gateway_disabled: true}' "$OPENCLAW_DIR/openclaw.json" > "$tmp" 2>/dev/null && \
+            mv "$tmp" "$OPENCLAW_DIR/openclaw.json" || rm -f "$tmp"
+    fi
+}
+
+# =============================================================================
+# Telegram configuration
+# =============================================================================
+
+setup_telegram() {
+    info "Configuring Telegram..."
+
+    local token_file="$METASPHERE_DIR/config/telegram.env"
+
+    # Check if token already set (possibly from migration)
+    if [[ -f "$token_file" ]] && grep -q "TELEGRAM_BOT_TOKEN=" "$token_file"; then
+        # Verify the token
+        source "$token_file"
+        local bot_info=$(curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getMe" 2>/dev/null | jq -r '.result.username // empty')
+        if [[ -n "$bot_info" ]]; then
+            ok "Telegram configured (bot: @$bot_info)"
+            return
+        else
+            warn "Telegram token invalid - reconfiguring"
+        fi
+    fi
+
+    # Check environment variable
+    if [[ -n "$TELEGRAM_BOT_TOKEN" ]]; then
+        echo "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN" > "$token_file"
+        chmod 600 "$token_file"
+        ok "Telegram token set from environment"
+        return
+    fi
+
+    # Interactive prompt
+    if $INTERACTIVE; then
+        echo
+        echo "Telegram Bot Setup"
+        echo "------------------"
+        echo "1. Message @BotFather on Telegram"
+        echo "2. Send /newbot and follow instructions"
+        echo "3. Copy the token (format: 123456789:ABCdefGHI...)"
+        echo
+        read -p "Enter bot token (or press Enter to skip): " token
+
+        if [[ -n "$token" ]]; then
+            echo "TELEGRAM_BOT_TOKEN=$token" > "$token_file"
+            chmod 600 "$token_file"
+            ok "Telegram token saved"
+
+            # Verify token
+            local bot_info=$(curl -s "https://api.telegram.org/bot$token/getMe" | jq -r '.result.username // empty')
+            if [[ -n "$bot_info" ]]; then
+                ok "Bot verified: @$bot_info"
+                echo
+                echo "Send a message to @$bot_info to complete setup"
+            else
+                warn "Could not verify token - check if correct"
+            fi
+        else
+            warn "Skipped Telegram setup"
+            echo "    Run later: metasphere telegram setup"
+        fi
+    else
+        warn "No TELEGRAM_BOT_TOKEN - skipping Telegram"
+    fi
+}
+
+# =============================================================================
+# Agent setup
+# =============================================================================
+
+setup_orchestrator() {
+    info "Setting up @orchestrator agent..."
+
+    local agent_dir="$METASPHERE_DIR/agents/@orchestrator"
+    mkdir -p "$agent_dir"
+
+    # SOUL.md
+    if [[ ! -f "$agent_dir/SOUL.md" ]]; then
+        cat > "$agent_dir/SOUL.md" << 'EOF'
+# @orchestrator Soul
+
+## Identity
+I am the Orchestrator - the central coordinator of the Metasphere agent ecosystem.
+
+## Core Values
+- **Coordination**: Connect agents to accomplish complex goals
+- **Clarity**: Ensure clear, actionable communication
+- **Balance**: Distribute work fairly and efficiently
+- **Growth**: Support evolution of agents and the collective
+
+## Purpose
+Transform human intentions into coordinated agent actions.
+
+## Principles
+1. Listen first, act decisively
+2. Delegate to the most capable agent
+3. Maintain transparency
+4. Learn from every interaction
+5. Protect system integrity
+EOF
+    fi
+
+    # Status
+    echo "active: ready" > "$agent_dir/status"
+
+    ok "Orchestrator initialized"
+}
+
+# =============================================================================
+# Daemon setup
+# =============================================================================
+
+setup_daemon() {
+    info "Setting up daemon..."
+
+    if [[ "$(uname)" == "Darwin" ]]; then
+        setup_daemon_macos
+    elif [[ "$(uname)" == "Linux" ]]; then
+        setup_daemon_linux
+    else
+        warn "Unsupported platform for daemon"
+    fi
+}
+
+setup_daemon_macos() {
+    local plist_dir="$HOME/Library/LaunchAgents"
+    local plist_file="$plist_dir/com.metasphere.plist"
+    local old_plist="$plist_dir/com.metasphere.gateway.plist"
+
+    mkdir -p "$plist_dir"
+
+    # Remove old plist if exists
+    [[ -f "$old_plist" ]] && launchctl unload "$old_plist" 2>/dev/null && rm "$old_plist"
+
+    cat > "$plist_file" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.metasphere</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$METASPHERE_DIR/bin/metasphere</string>
+        <string>run</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>$METASPHERE_DIR/logs/metasphere.log</string>
+    <key>StandardErrorPath</key>
+    <string>$METASPHERE_DIR/logs/metasphere.error.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>METASPHERE_DIR</key>
+        <string>$METASPHERE_DIR</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin:$METASPHERE_DIR/bin</string>
+    </dict>
+</dict>
+</plist>
+EOF
+
+    ok "Created launchd plist"
+
+    if $INTERACTIVE; then
+        read -p "Start metasphere daemon now? [Y/n] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            launchctl unload "$plist_file" 2>/dev/null || true
+            launchctl load "$plist_file"
+            ok "Daemon started"
+        fi
+    else
+        launchctl unload "$plist_file" 2>/dev/null || true
+        launchctl load "$plist_file"
+        ok "Daemon started"
+    fi
+}
+
+setup_daemon_linux() {
+    local service_dir="$HOME/.config/systemd/user"
+    local service_file="$service_dir/metasphere.service"
+    local old_service="$service_dir/metasphere-gateway.service"
+
+    mkdir -p "$service_dir"
+
+    # Remove old service if exists
+    if [[ -f "$old_service" ]]; then
+        systemctl --user stop metasphere-gateway 2>/dev/null || true
+        systemctl --user disable metasphere-gateway 2>/dev/null || true
+        rm "$old_service"
+    fi
+
+    cat > "$service_file" << EOF
+[Unit]
+Description=Metasphere - Multi-agent orchestration
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$METASPHERE_DIR/bin/metasphere run
+Restart=always
+RestartSec=10
+Environment=METASPHERE_DIR=$METASPHERE_DIR
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin:$METASPHERE_DIR/bin
+
+[Install]
+WantedBy=default.target
+EOF
+
+    systemctl --user daemon-reload
+    ok "Created systemd service"
+
+    if $INTERACTIVE; then
+        read -p "Start metasphere daemon now? [Y/n] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            systemctl --user enable metasphere
+            systemctl --user start metasphere
+            ok "Daemon started"
+        fi
+    else
+        systemctl --user enable metasphere
+        systemctl --user start metasphere
+        ok "Daemon started"
+    fi
+}
+
+# =============================================================================
+# Final setup
+# =============================================================================
+
+show_completion() {
+    echo
+    echo "Installation complete!"
+    echo "====================="
+    echo
+    echo "Directory: $METASPHERE_DIR"
+    echo
+    echo "Commands:"
+    echo "  metasphere status          # System overview"
+    echo "  metasphere ls              # Project landscape"
+    echo "  metasphere agents          # List agents"
+    echo "  metasphere gateway status  # Gateway/Telegram status"
+    echo
+    echo "Daemon:"
+    if [[ "$(uname)" == "Darwin" ]]; then
+        echo "  launchctl list | grep metasphere"
+        echo "  tail -f $METASPHERE_DIR/logs/gateway.log"
+    else
+        echo "  systemctl --user status metasphere-gateway"
+        echo "  journalctl --user -u metasphere-gateway -f"
+    fi
+    echo
+    echo "Documentation: https://github.com/$REPO"
+}
+
+# =============================================================================
+# Main
+# =============================================================================
+
+main() {
+    detect_openclaw
+    check_dependencies
+    setup_directories
+    install_scripts
+    migrate_openclaw      # Before telegram - migration may provide token
+    setup_telegram
+    setup_orchestrator
+    setup_daemon
+    show_completion
+}
+
+main "$@"

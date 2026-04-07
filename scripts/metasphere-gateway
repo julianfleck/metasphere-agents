@@ -1,0 +1,562 @@
+#!/bin/bash
+# metasphere-gateway - Persistent session orchestrator with watchdog
+#
+# Architecture:
+#   - Maintains persistent tmux session for @orchestrator
+#   - User messages are injected INTO the session (not spawning new ones)
+#   - Watchdog monitors session health and revives if needed
+#   - Responses are captured and sent to Telegram
+#
+# Session modes:
+#   - persistent (default): Single long-running session, messages injected
+#   - per-message: Fresh session per message (original behavior)
+#
+# Usage:
+#   metasphere-gateway daemon [interval]   Run gateway with watchdog
+#   metasphere-gateway inject "message"    Send message to orchestrator session
+#   metasphere-gateway ensure              Ensure session is alive
+#   metasphere-gateway status              Check session status
+
+set -e
+
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Resolve REPO_ROOT carefully - avoid home directory
+resolve_repo_root() {
+    if [[ -n "$METASPHERE_REPO_ROOT" ]]; then
+        echo "$METASPHERE_REPO_ROOT"
+        return
+    fi
+    local git_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+    if [[ "$git_root" == "$HOME" || -z "$git_root" ]]; then
+        echo "$PWD"
+    else
+        echo "$git_root"
+    fi
+}
+REPO_ROOT=$(resolve_repo_root)
+
+# Load Telegram config
+[[ -f "$METASPHERE_DIR/config/telegram.env" ]] && source "$METASPHERE_DIR/config/telegram.env"
+[[ -f "$METASPHERE_DIR/config/telegram_chat_id" ]] && TELEGRAM_CHAT_ID=$(cat "$METASPHERE_DIR/config/telegram_chat_id")
+
+# Load timezone config (user's preferred timezone, system runs on UTC)
+USER_TIMEZONE="${METASPHERE_TIMEZONE:-}"
+[[ -f "$METASPHERE_DIR/config/timezone" ]] && USER_TIMEZONE=$(cat "$METASPHERE_DIR/config/timezone")
+
+# Format timestamp with both UTC and user timezone
+format_timestamp() {
+    local utc_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    if [[ -n "$USER_TIMEZONE" ]]; then
+        local local_ts=$(TZ="$USER_TIMEZONE" date +%H:%M 2>/dev/null || echo "")
+        if [[ -n "$local_ts" ]]; then
+            echo "$utc_ts ($local_ts $USER_TIMEZONE)"
+        else
+            echo "$utc_ts"
+        fi
+    else
+        echo "$utc_ts"
+    fi
+}
+
+# Session config
+SESSION_NAME="metasphere-orchestrator"
+SESSION_MODE="${METASPHERE_SESSION_MODE:-persistent}"
+RESPONSE_FILE="$METASPHERE_DIR/gateway/pending_response"
+OFFSET_FILE="$METASPHERE_DIR/telegram/offset"
+LOG_FILE="$METASPHERE_DIR/logs/gateway.log"
+
+mkdir -p "$METASPHERE_DIR/logs" "$METASPHERE_DIR/telegram" "$METASPHERE_DIR/gateway"
+
+# Find tmux - use which first, then fall back to known paths
+TMUX_CMD=$(which tmux 2>/dev/null || true)
+if [[ -z "$TMUX_CMD" ]]; then
+    # Fall back to known paths
+    for path in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do
+        if [[ -x "$path" ]]; then
+            TMUX_CMD="$path"
+            break
+        fi
+    done
+fi
+# Last resort: check Homebrew Cellar (installed but not linked)
+if [[ -z "$TMUX_CMD" && -d "/opt/homebrew/Cellar/tmux" ]]; then
+    TMUX_CMD=$(find /opt/homebrew/Cellar/tmux -name "tmux" -type f -perm +111 2>/dev/null | head -1)
+fi
+
+# Fall back to per-message mode if tmux not found
+if [[ -z "$TMUX_CMD" ]]; then
+    if [[ "$SESSION_MODE" == "persistent" ]]; then
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] tmux not found, falling back to per-message mode" >> "$LOG_FILE"
+        SESSION_MODE="per-message"
+    fi
+else
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] Using tmux: $TMUX_CMD" >> "$LOG_FILE"
+fi
+
+log() {
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "$LOG_FILE"
+}
+
+# =============================================================================
+# Session Management
+# =============================================================================
+
+# Check if orchestrator session exists and is healthy
+session_alive() {
+    $TMUX_CMD has-session -t "$SESSION_NAME" 2>/dev/null
+}
+
+# Get session info
+session_info() {
+    if session_alive; then
+        local created=$($TMUX_CMD display-message -t "$SESSION_NAME" -p '#{session_created}' 2>/dev/null)
+        local activity=$($TMUX_CMD display-message -t "$SESSION_NAME" -p '#{session_activity}' 2>/dev/null)
+        echo "alive created=$created last_activity=$activity"
+    else
+        echo "dead"
+    fi
+}
+
+# Build initial context for new session
+build_initial_context() {
+    cat << 'CONTEXT'
+# Orchestrator Session
+
+You are @orchestrator in a persistent session. You will receive user messages and system events continuously.
+
+## Your Role
+- Respond to user messages via Telegram
+- Coordinate other agents
+- Monitor system health
+- Take proactive action when needed
+
+## How This Works
+- User messages appear as "## User Message" blocks
+- Respond naturally - your output goes to Telegram
+- Use tools as needed for actions
+- Session persists - you have continuity
+
+## Available Commands
+
+### Status & Overview
+- metasphere status              # Full system status
+- metasphere ls                  # Project landscape (agents, tasks, events)
+- metasphere ls @agent           # Agent-specific view
+- metasphere agents              # List all agents
+- metasphere logs                # View all logs
+- metasphere logs gateway -f     # Follow gateway log
+- metasphere logs events -f      # Follow event stream
+
+### Tasks
+- tasks                          # List active tasks
+- tasks new "title" !priority    # Create task (!urgent, !high, !normal, !low)
+- tasks start ID                 # Start working on task
+- tasks update ID "note"         # Add update
+- tasks done ID "summary"        # Complete task
+- tasks tree                     # Show task tree across scopes
+
+### Messages
+- messages send @target !label "msg"   # Send to agent
+- messages inbox                       # Check inbox
+- messages read ID                     # Read message
+
+### Agents
+- metasphere agent spawn @name --task "X" --sandbox scoped
+- metasphere agent status @name
+- metasphere agent update @name --status "working: X"
+- metasphere agent sunset @name        # Graceful shutdown with learnings
+- metasphere agent tree                # Show agent hierarchy
+- metasphere agent subtree @name       # Show agent's descendants
+- metasphere agent report @name "msg"  # Bubble up to parent
+
+### Events
+- metasphere events log TYPE "msg" --agent @name
+- metasphere events tail 20            # Recent events
+- metasphere events query --type task  # Filter events
+
+### Projects
+- metasphere project init [path]       # Initialize project
+- metasphere project list              # List projects
+- metasphere project status            # Project status
+- metasphere project changelog         # Generate changelog
+- metasphere project learnings         # Aggregate learnings
+
+### Scheduling
+- metasphere schedule                  # List jobs
+- metasphere schedule add 'cmd' @15:00 @daily
+
+### Telegram
+- metasphere-telegram-stream send "msg"  # Send to Telegram
+
+## Guidelines
+- Be concise (Telegram has 4000 char limit)
+- No emojis
+- Give specifics, not high-level summaries
+- Check events for recent activity
+- Proactively communicate blockers
+- Use tasks to track work
+- Spawn child agents for parallel work
+
+Ready for messages.
+CONTEXT
+}
+
+# Start new orchestrator session
+start_session() {
+    log "Starting orchestrator session"
+
+    local scope=$(cat "$METASPHERE_DIR/agents/@orchestrator/scope" 2>/dev/null || echo "$REPO_ROOT")
+
+    # Create tmux session
+    $TMUX_CMD new-session -d -s "$SESSION_NAME" -c "$scope"
+    $TMUX_CMD set-option -t "$SESSION_NAME" mouse on
+    $TMUX_CMD set-option -t "$SESSION_NAME" history-limit 100000
+
+    # Start claude in the session
+    $TMUX_CMD send-keys -t "$SESSION_NAME" "claude --allowedTools 'Read,Write,Edit,Bash,Glob,Grep'" Enter
+
+    sleep 3  # Wait for claude to initialize
+
+    # Send initial context
+    local context=$(build_initial_context)
+    inject_to_session "$context"
+
+    # Update agent status
+    echo "active: persistent session" > "$METASPHERE_DIR/agents/@orchestrator/status"
+
+    # Log event
+    "$SCRIPT_DIR/metasphere-events" log agent.session "Orchestrator session started" --agent @orchestrator 2>/dev/null || true
+
+    log "Session started: $SESSION_NAME"
+}
+
+# Ensure session is running
+ensure_session() {
+    if ! session_alive; then
+        log "Session not alive, starting..."
+        start_session
+        return 0
+    fi
+
+    # Check if session is responsive (last activity within 5 min)
+    local activity=$($TMUX_CMD display-message -t "$SESSION_NAME" -p '#{session_activity}' 2>/dev/null || echo "0")
+    local now=$(date +%s)
+    local age=$((now - activity))
+
+    if [[ $age -gt 600 ]]; then
+        log "Session stale (${age}s), checking health..."
+        # Could add more sophisticated health check here
+    fi
+
+    return 0
+}
+
+# Inject message into session
+inject_to_session() {
+    local message="$1"
+
+    if ! session_alive; then
+        log "Session not alive for injection"
+        return 1
+    fi
+
+    # Send message as input to the session
+    # Use a heredoc-style approach to handle multiline
+    echo "$message" | while IFS= read -r line; do
+        $TMUX_CMD send-keys -t "$SESSION_NAME" "$line" Enter
+        sleep 0.05  # Small delay to prevent buffer overflow
+    done
+}
+
+# =============================================================================
+# Message Handling
+# =============================================================================
+
+# Build pre-command context (cam + metasphere ls)
+build_precommand_context() {
+    local context=""
+
+    # CAM context (recent relevant sessions)
+    if command -v cam &>/dev/null; then
+        local cam_output=$(cam status 2>/dev/null | head -5 || echo "")
+        if [[ -n "$cam_output" ]]; then
+            context+="## Memory (CAM)
+$cam_output
+"
+        fi
+    fi
+
+    # Metasphere landscape
+    local ms_output=$("$SCRIPT_DIR/metasphere" ls 2>/dev/null | head -30 || echo "")
+    if [[ -n "$ms_output" ]]; then
+        context+="
+## Metasphere Status
+$ms_output
+"
+    fi
+
+    echo "$context"
+}
+
+# Build context for a user message
+build_message_context() {
+    local trigger_message="$1"
+
+    # Pre-command context
+    local precommand=$(build_precommand_context)
+    local timestamp=$(format_timestamp)
+
+    cat << CONTEXT
+$precommand
+## User Message ($timestamp)
+> $trigger_message
+
+Respond to the user. Your response will be sent to Telegram.
+CONTEXT
+}
+
+# Send response to Telegram
+send_telegram() {
+    local text="$1"
+
+    [[ -z "$TELEGRAM_BOT_TOKEN" || -z "$TELEGRAM_CHAT_ID" ]] && {
+        log "No Telegram config"
+        return 1
+    }
+
+    # Truncate for Telegram limits
+    text="${text:0:4000}"
+
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d "chat_id=$TELEGRAM_CHAT_ID" \
+        -d "parse_mode=Markdown" \
+        --data-urlencode "text=$text" > /dev/null
+
+    log "Sent to Telegram: ${text:0:50}..."
+}
+
+# Process incoming user message
+process_user_message() {
+    local text="$1"
+    local message_id="$2"
+
+    log "Processing: $text"
+
+    # Log event
+    "$SCRIPT_DIR/metasphere-events" log user.message "$text" --agent @user --meta msg_id="$message_id" 2>/dev/null || true
+
+    if [[ "$SESSION_MODE" == "persistent" ]]; then
+        # Inject into persistent session
+        ensure_session
+        local context=$(build_message_context "$text")
+        inject_to_session "$context"
+
+        # Wait for response (check tmux pane content)
+        # This is tricky - we need to capture claude's response
+        # For now, we rely on claude using the send command
+        sleep 2  # Give time for processing
+
+    else
+        # Per-message mode (original behavior)
+        local context=$(build_full_context "$text")
+        local response=$(cd "$REPO_ROOT" && echo "$context" | claude -p --allowedTools "Read,Write,Edit,Bash,Glob,Grep" 2>&1 | tail -100)
+        send_telegram "$response"
+    fi
+}
+
+# Build full context for per-message mode
+build_full_context() {
+    local trigger_message="$1"
+
+    # Pre-command context
+    local precommand=$(build_precommand_context)
+
+    cat << CONTEXT
+# Orchestrator Session
+
+You are @orchestrator. User sent a message - respond directly.
+
+$precommand
+
+## User Message
+> $trigger_message
+
+## Agent Tree
+$(for d in "$METASPHERE_DIR/agents"/@*/; do
+    [[ -d "$d" ]] || continue
+    a=$(basename "$d")
+    s=$(cat "$d/status" 2>/dev/null || echo "?")
+    t=$(cat "$d/task" 2>/dev/null | head -c 60 || echo "none")
+    echo "- $a: $s"
+    echo "  Task: $t"
+done)
+
+## Recent Events
+$("$SCRIPT_DIR/metasphere-events" tail 10 2>/dev/null || echo "none")
+
+## Active Tasks
+$("$SCRIPT_DIR/tasks" 2>/dev/null | head -15 || echo "none")
+
+## How to Respond
+- Answer with specifics
+- No emojis
+- Be concise
+
+Your response will be sent to Telegram.
+CONTEXT
+}
+
+# =============================================================================
+# Telegram Polling
+# =============================================================================
+
+poll_telegram() {
+    [[ -z "$TELEGRAM_BOT_TOKEN" ]] && return 1
+
+    local offset=0
+    [[ -f "$OFFSET_FILE" ]] && offset=$(cat "$OFFSET_FILE")
+
+    local response=$(curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=$offset&timeout=1")
+
+    local ok=$(echo "$response" | jq -r '.ok')
+    [[ "$ok" != "true" ]] && return 1
+
+    echo "$response" | jq -c '.result[]' 2>/dev/null | while read -r update; do
+        local update_id=$(echo "$update" | jq -r '.update_id')
+        local message=$(echo "$update" | jq -c '.message // empty')
+
+        if [[ -n "$message" && "$message" != "null" ]]; then
+            local chat_id=$(echo "$message" | jq -r '.chat.id')
+            local message_id=$(echo "$message" | jq -r '.message_id')
+            local text=$(echo "$message" | jq -r '.text // ""')
+            local from=$(echo "$message" | jq -r '.from.username // .from.first_name // "user"')
+
+            # Save chat ID
+            echo "$chat_id" > "$METASPHERE_DIR/config/telegram_chat_id"
+            TELEGRAM_CHAT_ID="$chat_id"
+
+            # Archive message
+            "$SCRIPT_DIR/metasphere-telegram-stream" once 2>/dev/null || true
+
+            # Process text messages
+            if [[ -n "$text" && "$text" != "null" ]]; then
+                log "[@$from] $text"
+
+                if [[ "$text" == /* ]]; then
+                    # Command - handle via telegram script
+                    "$SCRIPT_DIR/metasphere-telegram" process "$chat_id" "$text" 2>/dev/null || true
+                else
+                    # Regular message - process
+                    process_user_message "$text" "$message_id"
+                fi
+            fi
+        fi
+
+        # Update offset
+        echo $((update_id + 1)) > "$OFFSET_FILE"
+    done
+}
+
+# =============================================================================
+# Watchdog
+# =============================================================================
+
+run_watchdog() {
+    log "Watchdog check"
+
+    if [[ "$SESSION_MODE" == "persistent" ]]; then
+        if ! session_alive; then
+            log "Session dead, reviving..."
+            "$SCRIPT_DIR/metasphere-events" log watchdog.revive "Reviving orchestrator session" --agent @watchdog 2>/dev/null || true
+            start_session
+        fi
+    fi
+}
+
+# =============================================================================
+# Daemon Mode
+# =============================================================================
+
+daemon_mode() {
+    local interval="${1:-3}"
+    local watchdog_interval=60
+    local last_watchdog=0
+
+    log "Starting gateway daemon (poll: ${interval}s, mode: $SESSION_MODE)"
+
+    # Ensure session on startup
+    [[ "$SESSION_MODE" == "persistent" ]] && ensure_session
+
+    while true; do
+        poll_telegram 2>/dev/null || true
+
+        # Watchdog check
+        local now=$(date +%s)
+        if (( now - last_watchdog >= watchdog_interval )); then
+            run_watchdog
+            last_watchdog=$now
+        fi
+
+        sleep "$interval"
+    done
+}
+
+# =============================================================================
+# Main Dispatch
+# =============================================================================
+
+case "${1:-}" in
+    daemon|run)
+        daemon_mode "${2:-3}"
+        ;;
+    inject|send)
+        shift
+        ensure_session
+        inject_to_session "$*"
+        ;;
+    ensure|start)
+        ensure_session
+        echo "Session: $(session_info)"
+        ;;
+    status|info)
+        echo "Session: $(session_info)"
+        echo "Mode: $SESSION_MODE"
+        echo "Telegram: ${TELEGRAM_CHAT_ID:-not configured}"
+        ;;
+    attach)
+        if session_alive; then
+            $TMUX_CMD attach-session -t "$SESSION_NAME"
+        else
+            echo "No session running"
+        fi
+        ;;
+    kill|stop)
+        $TMUX_CMD kill-session -t "$SESSION_NAME" 2>/dev/null || true
+        echo "Session killed"
+        ;;
+    context)
+        build_full_context "${2:-test message}"
+        ;;
+    *)
+        cat << 'EOF'
+metasphere-gateway - Persistent session orchestrator
+
+Usage:
+  metasphere-gateway daemon [N]    Run gateway with watchdog
+  metasphere-gateway inject "msg"  Send to orchestrator session
+  metasphere-gateway ensure        Start session if needed
+  metasphere-gateway status        Check session status
+  metasphere-gateway attach        Attach to session (Ctrl+b d to detach)
+  metasphere-gateway kill          Stop session
+
+Modes (set METASPHERE_SESSION_MODE):
+  persistent   Single long-running session (default)
+  per-message  Fresh session per message
+
+The watchdog monitors session health and revives if needed.
+EOF
+        exit 1
+        ;;
+esac

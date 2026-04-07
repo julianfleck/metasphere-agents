@@ -4,6 +4,67 @@ All notable changes to Metasphere Agents will be documented here.
 
 ---
 
+## [2026-04-07T00:37:00Z] — Telegram Bridge + CAM Integration
+
+**Context:** Human-in-the-loop via Telegram; user can intervene on every turn.
+
+**Changes:**
+- Created `metasphere-telegram` - Bot command handler (/status, /inbox, /tasks, /send, /cam)
+- Created `metasphere-telegram-stream` - Stream archival + CAM indexing
+- Created `metasphere-heartbeat` - Proactive monitoring daemon
+- Updated `metasphere-context` to inject last Telegram message first
+- Telegram messages archived to `~/.metasphere/telegram/stream/YYYY-MM-DD.jsonl`
+- Messages indexed into CAM for searchable history
+
+**Architecture:**
+```
+User (Telegram) ←→ metasphere-telegram-stream ←→ Agent Mesh
+                          ↓
+                    CAM (searchable)
+                          ↓
+                    Context Injection
+```
+
+**Features:**
+- Bidirectional: human → agents, agents → human
+- Last message always in agent context (user can intervene)
+- Proactive notifications for urgent messages, blocked agents
+- Stream archived locally + indexed to CAM
+
+**Files created:**
+- `scripts/metasphere-telegram`
+- `scripts/metasphere-telegram-stream`
+- `scripts/metasphere-heartbeat`
+
+---
+
+## [2026-04-07T00:20:00Z] — Self-Evolution Bootstrap
+
+**Context:** Rewrote claude.md for operational self-evolution; session continued from context compaction.
+
+**Changes:**
+- Rewrote `claude.md` from specification doc to operational instructions
+  - Added Evolution Loop based on Karpathy's AutoResearch pattern
+  - Added SPIRAL cognitive loop documentation
+  - Added Quick Reference for scripts, labels, priorities
+  - Added Self-evolution protocol
+- Updated @orchestrator identity files at `~/.metasphere/agents/@orchestrator/`
+  - `LEARNINGS.md`: Session insights (fractal scoping, file-based coordination, hooks)
+  - `MISSION.md`: Clear success criteria with phase checkboxes
+  - `HEARTBEAT.md`: Current operational status
+- Fixed hook path in `.claude/settings.json` (was pointing to wrong directory)
+- Verified all scripts working: messages, tasks, metasphere-spawn, metasphere-context
+
+**Learnings captured:**
+1. Karpathy's AutoResearch: tight feedback loops > extensive planning
+2. Fractal scoping with upward visibility creates natural information flow
+3. File-based coordination beats API calls (git-friendly, inspectable, durable)
+4. Context injection via hooks gives agents immediate awareness
+
+**Files touched:** `claude.md`, `CHANGELOG.md`, `.claude/settings.json`, `~/.metasphere/agents/@orchestrator/*`
+
+---
+
 ## [2026-04-06T23:30:00Z] — Renamed to Metasphere Agents
 
 **Context:** Project renamed for clarity and installability on any machine.

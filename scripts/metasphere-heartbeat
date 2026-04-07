@@ -1,0 +1,336 @@
+#!/bin/bash
+# metasphere-heartbeat - Proactive monitoring daemon
+#
+# Runs continuously, checking for:
+# - Urgent messages that need human attention
+# - Agents that are blocked/waiting
+# - Task deadlines
+# - System health
+#
+# Usage:
+#   metasphere-heartbeat              # Run once
+#   metasphere-heartbeat daemon       # Run continuously (default 30s interval)
+#   metasphere-heartbeat daemon 10    # Custom interval in seconds
+
+set -e
+
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+
+# Load Telegram config
+if [[ -f "$METASPHERE_DIR/config/telegram.env" ]]; then
+    source "$METASPHERE_DIR/config/telegram.env"
+fi
+if [[ -f "$METASPHERE_DIR/config/telegram_chat_id" ]]; then
+    TELEGRAM_CHAT_ID=$(cat "$METASPHERE_DIR/config/telegram_chat_id")
+fi
+
+# State file to track what we've already notified about
+STATE_FILE="$METASPHERE_DIR/heartbeat_state"
+touch "$STATE_FILE"
+
+# Send Telegram notification
+notify() {
+    local message="$1"
+    local urgent="${2:-false}"
+
+    if [[ -z "$TELEGRAM_BOT_TOKEN" || -z "$TELEGRAM_CHAT_ID" ]]; then
+        echo "[notify] No Telegram configured: $message"
+        return
+    fi
+
+    local prefix="[heartbeat]"
+    [[ "$urgent" == "true" ]] && prefix="[URGENT]"
+
+    curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+        -d "chat_id=$TELEGRAM_CHAT_ID" \
+        -d "parse_mode=Markdown" \
+        --data-urlencode "text=$prefix $message" > /dev/null
+}
+
+# Check if we already notified about something
+already_notified() {
+    local key="$1"
+    grep -q "^$key$" "$STATE_FILE" 2>/dev/null
+}
+
+# Mark as notified
+mark_notified() {
+    local key="$1"
+    echo "$key" >> "$STATE_FILE"
+}
+
+# Clear notification state for something (e.g., when resolved)
+clear_notified() {
+    local key="$1"
+    if [[ -f "$STATE_FILE" ]]; then
+        grep -v "^$key$" "$STATE_FILE" > "$STATE_FILE.tmp" 2>/dev/null || true
+        mv "$STATE_FILE.tmp" "$STATE_FILE"
+    fi
+}
+
+# Check for urgent messages
+check_urgent_messages() {
+    find "$REPO_ROOT" -path "*/.messages/inbox/*.msg" 2>/dev/null | while read -r msg; do
+        local label=$(grep "^label:" "$msg" 2>/dev/null | head -1 | sed 's/^label: *//')
+        local status=$(grep "^status:" "$msg" 2>/dev/null | head -1 | sed 's/^status: *//')
+        local id=$(grep "^id:" "$msg" 2>/dev/null | head -1 | sed 's/^id: *//')
+        local from=$(grep "^from:" "$msg" 2>/dev/null | head -1 | sed 's/^from: *//')
+
+        if [[ "$label" == "!urgent" && "$status" == "unread" ]]; then
+            if ! already_notified "urgent:$id"; then
+                # Get message body (after YAML frontmatter)
+                local body=$(awk '/^---$/{p++; next} p==2{print}' "$msg" | head -3 | tr '\n' ' ')
+                notify "*Urgent message from $from*
+
+$body
+
+ID: \`$id\`" true
+                mark_notified "urgent:$id"
+            fi
+        fi
+    done
+}
+
+# Check for blocked/waiting agents
+check_agent_status() {
+    for status_file in "$METASPHERE_DIR/agents"/*/status; do
+        [[ -f "$status_file" ]] || continue
+
+        local agent=$(basename "$(dirname "$status_file")")
+        local status=$(cat "$status_file")
+
+        # Check for waiting/blocked states
+        if [[ "$status" == waiting:* || "$status" == blocked:* ]]; then
+            if ! already_notified "status:$agent:$status"; then
+                notify "*Agent $agent needs attention*
+
+Status: $status" true
+                mark_notified "status:$agent:$status"
+            fi
+        else
+            # Clear old waiting notifications if status changed
+            grep "^status:$agent:" "$STATE_FILE" 2>/dev/null | while read -r old; do
+                clear_notified "$old"
+            done
+        fi
+    done
+}
+
+# Check task health
+check_tasks() {
+    local urgent_count=0
+    local total_count=0
+
+    while IFS= read -r task; do
+        [[ -f "$task" ]] || continue
+        ((total_count++))
+
+        local priority=$(grep "^priority:" "$task" 2>/dev/null | head -1 | sed 's/^priority: *//')
+        [[ "$priority" == "!urgent" ]] && ((urgent_count++))
+    done < <(find "$REPO_ROOT" -path "*/.tasks/active/*.md" 2>/dev/null)
+
+    # Notify if urgent tasks exist and we haven't recently
+    if [[ $urgent_count -gt 0 ]]; then
+        local key="tasks:urgent:$urgent_count"
+        if ! already_notified "$key"; then
+            notify "*$urgent_count urgent task(s)* pending ($total_count total)"
+            mark_notified "$key"
+        fi
+    fi
+}
+
+# Build context for agent heartbeat
+build_agent_context() {
+    local agent="${1:-@orchestrator}"
+
+    cat << CONTEXT
+# Heartbeat - $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+You are $agent. This is a periodic heartbeat. Review state and decide if proactive action needed.
+
+## Last Telegram Message
+$(cat "$METASPHERE_DIR/telegram/latest.json" 2>/dev/null | jq -r '"@\(.from // "?"): \(.text // "(none)")\nTime: \(.timestamp // "?")"' 2>/dev/null || echo "(none)")
+
+## Active Tasks
+$("$SCRIPT_DIR/tasks" 2>/dev/null | head -15 || echo "(none)")
+
+## Agent Status
+$(for f in "$METASPHERE_DIR/agents"/@*/status; do [[ -f "$f" ]] && echo "$(basename $(dirname $f)): $(cat $f)"; done 2>/dev/null | head -10)
+
+## Pending Messages
+$("$SCRIPT_DIR/messages" 2>/dev/null | head -8 || echo "(none)")
+
+## Decision
+If something is noteworthy, use: \`~/.metasphere/bin/metasphere-telegram-stream send "message"\`
+Most heartbeats should be silent. Only communicate if meaningful.
+CONTEXT
+}
+
+# Invoke agent for heartbeat decision
+invoke_agent_heartbeat() {
+    local agent="${1:-@orchestrator}"
+    local agent_dir="$METASPHERE_DIR/agents/$agent"
+
+    # Check for tmux session first
+    local session_name="metasphere-${agent#@}"
+    if tmux has-session -t "$session_name" 2>/dev/null; then
+        echo "[$timestamp] Sending heartbeat to tmux: $session_name"
+        local context=$(build_agent_context "$agent")
+        # Send to tmux session's input
+        tmux send-keys -t "$session_name" "# HEARTBEAT" Enter
+        echo "$context" | while IFS= read -r line; do
+            tmux send-keys -t "$session_name" "$line" Enter
+        done
+    else
+        # Use claude -p one-shot
+        local scope=$(cat "$agent_dir/scope" 2>/dev/null || echo "$PWD")
+        local sandbox=$(cat "$agent_dir/sandbox" 2>/dev/null || echo "none")
+
+        # Sandbox tool restrictions
+        local allowed_tools="Read,Write,Edit,Bash,Glob,Grep"
+        case "$sandbox" in
+            readonly) allowed_tools="Read,Glob,Grep" ;;
+            nobash) allowed_tools="Read,Write,Edit,Glob,Grep" ;;
+        esac
+
+        local context=$(build_agent_context "$agent")
+        cd "$scope" 2>/dev/null || cd "$HOME"
+        echo "$context" | timeout 60 claude -p --allowedTools "$allowed_tools" 2>&1 | tail -20 || true
+    fi
+}
+
+# Single heartbeat check
+heartbeat_once() {
+    local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    echo "[$timestamp] Heartbeat check..."
+
+    # Traditional checks (notifications for urgent items)
+    check_urgent_messages
+    check_agent_status
+    check_tasks
+
+    # Agent-driven heartbeat - only if explicitly enabled
+    # Default is silent monitoring, no agent invocation
+    if [[ "${HEARTBEAT_INVOKE_AGENT:-false}" == "true" ]]; then
+        echo "[$timestamp] Invoking agent heartbeat..."
+        invoke_agent_heartbeat "@orchestrator" 2>&1 | head -30
+    fi
+
+    echo "[$timestamp] Done."
+}
+
+# Daemon mode
+heartbeat_daemon() {
+    local interval="${1:-30}"
+
+    echo "Starting heartbeat daemon (interval: ${interval}s)"
+    echo "Telegram: ${TELEGRAM_CHAT_ID:-not configured}"
+    echo ""
+
+    # Silent start - no notification
+
+    while true; do
+        heartbeat_once
+        sleep "$interval"
+    done
+}
+
+# Also poll Telegram for incoming messages (bidirectional)
+poll_telegram() {
+    [[ -z "$TELEGRAM_BOT_TOKEN" ]] && return
+
+    local offset_file="$METASPHERE_DIR/telegram_offset"
+    local offset=0
+    [[ -f "$offset_file" ]] && offset=$(cat "$offset_file")
+
+    local response
+    response=$(curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getUpdates?offset=$offset&timeout=1" 2>/dev/null)
+
+    echo "$response" | jq -r '.result[]? | @base64' 2>/dev/null | while read -r update; do
+        local decoded
+        decoded=$(echo "$update" | base64 -d)
+
+        local update_id chat_id text
+        update_id=$(echo "$decoded" | jq -r '.update_id')
+        chat_id=$(echo "$decoded" | jq -r '.message.chat.id')
+        text=$(echo "$decoded" | jq -r '.message.text // ""')
+
+        # Save chat ID
+        if [[ -n "$chat_id" && "$chat_id" != "null" ]]; then
+            echo "$chat_id" > "$METASPHERE_DIR/config/telegram_chat_id"
+        fi
+
+        # Process commands (delegate to metasphere-telegram)
+        if [[ -n "$text" && "$text" != "null" ]]; then
+            "$SCRIPT_DIR/metasphere-telegram" process "$chat_id" "$text" 2>/dev/null || true
+        fi
+
+        # Update offset
+        echo $((update_id + 1)) > "$offset_file"
+    done
+}
+
+# Combined daemon: heartbeat + telegram polling
+combined_daemon() {
+    local interval="${1:-30}"
+    local poll_interval=5  # Check Telegram every 5 seconds
+
+    echo "Starting combined daemon"
+    echo "  Heartbeat interval: ${interval}s"
+    echo "  Telegram poll: ${poll_interval}s"
+    echo "  Chat ID: ${TELEGRAM_CHAT_ID:-waiting for first message}"
+    echo ""
+
+    local last_heartbeat=0
+
+    while true; do
+        local now=$(date +%s)
+
+        # Heartbeat check
+        if (( now - last_heartbeat >= interval )); then
+            heartbeat_once
+            last_heartbeat=$now
+        fi
+
+        # Telegram poll
+        poll_telegram
+
+        sleep "$poll_interval"
+    done
+}
+
+# Main dispatch
+case "${1:-}" in
+    daemon)
+        combined_daemon "${2:-30}"
+        ;;
+    once|check)
+        heartbeat_once
+        ;;
+    notify)
+        shift
+        notify "$*"
+        ;;
+    *)
+        cat << 'EOF'
+metasphere-heartbeat - Proactive monitoring daemon
+
+Usage:
+  metasphere-heartbeat              Run single check
+  metasphere-heartbeat daemon [N]   Run continuously (default 30s interval)
+  metasphere-heartbeat notify MSG   Send manual notification
+
+Monitors:
+  - Urgent (!urgent) unread messages → Telegram notification
+  - Agents in waiting/blocked state → Telegram notification
+  - Urgent tasks pending → Telegram notification
+
+Also polls Telegram for incoming messages (bidirectional bridge).
+
+Configure Telegram in ~/.metasphere/config/telegram.env
+EOF
+        exit 1
+        ;;
+esac

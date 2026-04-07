@@ -1,0 +1,530 @@
+#!/bin/bash
+# tasks - Fractal task management CLI
+#
+# Tasks are markdown files in .tasks/ directories at each scope level.
+# Like messages, tasks have upward visibility - you see tasks from your scope + parents.
+#
+# Usage:
+#   tasks                           # Show active tasks (precommand hook)
+#   tasks new "title" [!priority]   # Create new task
+#   tasks start <task-id>           # Start working on task
+#   tasks update <task-id> "note"   # Add update to task
+#   tasks done <task-id> "summary"  # Complete task
+#   tasks list [all|completed]      # List tasks
+#   tasks show <task-id>            # Show full task
+#   tasks tree                      # Show task tree across scopes
+
+set -e
+
+REPO_ROOT="${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+AGENT="${METASPHERE_AGENT_ID:-@user}"
+SCOPE="${METASPHERE_SCOPE:-$REPO_ROOT}"
+
+cd "$SCOPE" 2>/dev/null || cd "$REPO_ROOT"
+SCOPE="$(pwd)"
+
+# Colors
+if [[ -t 1 ]]; then
+    RED='\033[0;31m'
+    YELLOW='\033[1;33m'
+    GREEN='\033[0;32m'
+    CYAN='\033[0;36m'
+    DIM='\033[2m'
+    BOLD='\033[1m'
+    NC='\033[0m'
+else
+    RED='' YELLOW='' GREEN='' CYAN='' DIM='' BOLD='' NC=''
+fi
+
+# Generate task ID from name or auto-generate
+# Supports hierarchical naming: project/agent/taskname or just taskname
+gen_task_id() {
+    local name="$1"
+
+    if [[ -n "$name" ]]; then
+        # Sanitize: replace spaces with hyphens, lowercase
+        local sanitized=$(echo "$name" | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9\/_-]//g')
+
+        # Build hierarchical ID based on context
+        local project_name=""
+        local agent_part=""
+
+        # Get project name from scope
+        if [[ -d "$SCOPE/.metasphere" ]]; then
+            project_name=$(basename "$SCOPE")
+        fi
+
+        # Get agent if set
+        if [[ "$AGENT" != "@user" && -n "$AGENT" ]]; then
+            agent_part="$AGENT"
+        fi
+
+        # If name already contains slashes, use as-is
+        if [[ "$sanitized" == */* ]]; then
+            echo "$sanitized"
+        elif [[ -n "$project_name" && -n "$agent_part" ]]; then
+            # Full hierarchy: project/agent/name
+            echo "$project_name/$agent_part/$sanitized"
+        elif [[ -n "$project_name" ]]; then
+            # Project scope: project/name
+            echo "$project_name/$sanitized"
+        elif [[ -n "$agent_part" ]]; then
+            # Agent scope: agent/name
+            echo "$agent_part/$sanitized"
+        else
+            # Simple name with date suffix for uniqueness
+            echo "$sanitized-$(date +%Y%m%d)"
+        fi
+    else
+        # Auto-generate ID (legacy behavior)
+        echo "task-$(date +%Y%m%d)-$(printf '%04d' $((RANDOM % 10000)))"
+    fi
+}
+
+# Get relative path from repo root
+rel_path() {
+    local path="$1"
+    echo "${path#$REPO_ROOT}" | sed 's|^/*|/|'
+}
+
+# Create task file
+create_task() {
+    local id="$1"
+    local title="$2"
+    local priority="${3:-!normal}"
+    local scope="$4"
+    local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    cat << EOF
+---
+id: $id
+title: $title
+priority: $priority
+status: pending
+scope: $(rel_path "$scope")
+created: $timestamp
+created_by: $AGENT
+assigned_to:
+started_at:
+completed_at:
+---
+
+# $title
+
+## Description
+
+[Add description here]
+
+## Acceptance Criteria
+
+- [ ] Criteria 1
+- [ ] Criteria 2
+
+## Updates
+
+- $timestamp [$AGENT] Created task
+
+## Subtasks
+
+<!-- Add subtasks as needed -->
+
+## Notes
+
+EOF
+}
+
+# Parse task field from YAML frontmatter
+task_field() {
+    local file="$1"
+    local field="$2"
+    grep "^${field}:" "$file" 2>/dev/null | head -1 | sed "s/^${field}: *//"
+}
+
+# Update task field
+update_task_field() {
+    local file="$1"
+    local field="$2"
+    local value="$3"
+
+    if [[ "$(uname)" == "Darwin" ]]; then
+        sed -i '' "s/^${field}:.*/${field}: ${value}/" "$file"
+    else
+        sed -i "s/^${field}:.*/${field}: ${value}/" "$file"
+    fi
+}
+
+# Append update to task
+append_update() {
+    local file="$1"
+    local note="$2"
+    local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # Find ## Updates section and append
+    if [[ "$(uname)" == "Darwin" ]]; then
+        sed -i '' "/^## Updates$/a\\
+- $timestamp [$AGENT] $note
+" "$file"
+    else
+        sed -i "/^## Updates$/a - $timestamp [$AGENT] $note" "$file"
+    fi
+}
+
+# Collect tasks from scope and parent scopes
+collect_tasks() {
+    local filter="${1:-active}"  # active, all, completed
+    local current="$SCOPE"
+    local tasks=()
+
+    while [[ "$current" == "$REPO_ROOT"* ]]; do
+        local tasks_dir="$current/.tasks"
+
+        if [[ -d "$tasks_dir/active" ]]; then
+            shopt -s nullglob; for task in "$tasks_dir/active"/*.md; do
+                [[ -f "$task" ]] && tasks+=("$task")
+            done
+        fi
+
+        if [[ "$filter" != "active" && -d "$tasks_dir/completed" ]]; then
+            shopt -s nullglob; for task in "$tasks_dir/completed"/*.md; do
+                [[ -f "$task" ]] && tasks+=("$task")
+            done
+        fi
+
+        [[ "$current" == "$REPO_ROOT" ]] && break
+        current="$(dirname "$current")"
+    done
+
+    printf '%s\n' "${tasks[@]}"
+}
+
+# Find task by ID (supports hierarchical IDs like project/@agent/taskname)
+find_task() {
+    local task_id="$1"
+
+    # First try exact path match for hierarchical IDs
+    if [[ "$task_id" == */* ]]; then
+        # Try finding as a direct path under .tasks/active or .tasks/completed
+        local found=$(find "$REPO_ROOT" -path "*/.tasks/active/${task_id}.md" -o -path "*/.tasks/completed/${task_id}.md" 2>/dev/null | head -1)
+        [[ -n "$found" ]] && echo "$found" && return
+    fi
+
+    # Fall back to searching anywhere in .tasks directories
+    find "$REPO_ROOT" -path "*/.tasks/*/${task_id}.md" 2>/dev/null | head -1
+}
+
+cmd_list() {
+    local filter="${1:-active}"
+    local tasks=($(collect_tasks "$filter"))
+
+    if [[ ${#tasks[@]} -eq 0 ]]; then
+        echo "## Tasks: No ${filter} tasks in scope"
+        return
+    fi
+
+    echo "## Tasks ($(rel_path "$SCOPE"))"
+    echo ""
+
+    for task in "${tasks[@]}"; do
+        [[ -f "$task" ]] || continue
+
+        local id=$(task_field "$task" id)
+        local title=$(task_field "$task" title)
+        local priority=$(task_field "$task" priority)
+        local status=$(task_field "$task" status)
+        local assigned=$(task_field "$task" assigned_to)
+        local task_scope=$(task_field "$task" scope)
+
+        # Priority coloring
+        local priority_display="$priority"
+        case "$priority" in
+            !urgent) priority_display="${RED}$priority${NC}" ;;
+            !high)   priority_display="${YELLOW}$priority${NC}" ;;
+            !normal) priority_display="${DIM}$priority${NC}" ;;
+        esac
+
+        # Status icon
+        local status_icon=""
+        case "$status" in
+            pending)     status_icon="○" ;;
+            in-progress) status_icon="◐" ;;
+            blocked)     status_icon="${RED}◼${NC}" ;;
+            completed)   status_icon="${GREEN}●${NC}" ;;
+        esac
+
+        local assigned_display=""
+        [[ -n "$assigned" ]] && assigned_display=" → $assigned"
+
+        echo -e "$status_icon $priority_display $title ${DIM}[$id]${NC}$assigned_display"
+        echo -e "  ${DIM}$task_scope | $status${NC}"
+    done
+}
+
+cmd_new() {
+    local title=""
+    local name=""
+    local priority="!normal"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            !urgent|!high|!normal|!low)
+                priority="$1"
+                ;;
+            --name|-n)
+                name="$2"
+                shift
+                ;;
+            *)
+                if [[ -z "$title" ]]; then
+                    title="$1"
+                fi
+                ;;
+        esac
+        shift
+    done
+
+    if [[ -z "$title" ]]; then
+        echo "Usage: tasks new \"title\" [!priority] [--name task-name]"
+        echo
+        echo "Examples:"
+        echo "  tasks new \"Fix login bug\" !high"
+        echo "  tasks new \"Heartbeat check\" --name heartbeat"
+        echo "  tasks new \"Review PRs\" --name project/@agent/review"
+        echo
+        echo "Priorities: !urgent, !high, !normal, !low"
+        echo
+        echo "Names are auto-scoped based on current project/agent context."
+        echo "Use slashes for explicit hierarchical naming."
+        exit 1
+    fi
+
+    # Generate task ID from name or title
+    local task_id
+    if [[ -n "$name" ]]; then
+        task_id=$(gen_task_id "$name")
+    else
+        # Use title to generate a name-based ID
+        task_id=$(gen_task_id "$title")
+    fi
+
+    # Handle hierarchical task IDs - create directory structure
+    local tasks_dir="$SCOPE/.tasks/active"
+    local task_file
+
+    if [[ "$task_id" == */* ]]; then
+        # Hierarchical - create parent directories
+        local parent_path=$(dirname "$task_id")
+        mkdir -p "$tasks_dir/$parent_path"
+        task_file="$tasks_dir/${task_id}.md"
+    else
+        mkdir -p "$tasks_dir"
+        task_file="$tasks_dir/${task_id}.md"
+    fi
+
+    create_task "$task_id" "$title" "$priority" "$SCOPE" > "$task_file"
+
+    # Log event
+    local script_dir="$(cd "$(dirname "$0")" && pwd)"
+    "$script_dir/metasphere-events" log task.create "$title" --agent "$AGENT" --meta task_id="$task_id" --meta priority="$priority" 2>/dev/null || true
+
+    echo "Created task: $task_id"
+    echo "  Title: $title"
+    echo "  Priority: $priority"
+    echo "  File: $(rel_path "$task_file")"
+}
+
+cmd_start() {
+    local task_id="$1"
+
+    if [[ -z "$task_id" ]]; then
+        echo "Usage: tasks start <task-id>"
+        exit 1
+    fi
+
+    local task_file=$(find_task "$task_id")
+
+    if [[ -z "$task_file" ]]; then
+        echo "Task $task_id not found"
+        exit 1
+    fi
+
+    update_task_field "$task_file" "status" "in-progress"
+    update_task_field "$task_file" "assigned_to" "$AGENT"
+    update_task_field "$task_file" "started_at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    append_update "$task_file" "Started task"
+
+    # Log event
+    local script_dir="$(cd "$(dirname "$0")" && pwd)"
+    "$script_dir/metasphere-events" log task.start "Started $task_id" --agent "$AGENT" --meta task_id="$task_id" 2>/dev/null || true
+
+    echo "Started: $task_id"
+    echo "Assigned to: $AGENT"
+}
+
+cmd_update() {
+    local task_id="$1"
+    shift
+    local note="$*"
+
+    if [[ -z "$task_id" || -z "$note" ]]; then
+        echo "Usage: tasks update <task-id> \"update note\""
+        exit 1
+    fi
+
+    local task_file=$(find_task "$task_id")
+
+    if [[ -z "$task_file" ]]; then
+        echo "Task $task_id not found"
+        exit 1
+    fi
+
+    append_update "$task_file" "$note"
+
+    echo "Updated: $task_id"
+    echo "Note: $note"
+}
+
+cmd_done() {
+    local task_id="$1"
+    shift
+    local summary="$*"
+
+    if [[ -z "$task_id" ]]; then
+        echo "Usage: tasks done <task-id> [\"completion summary\"]"
+        exit 1
+    fi
+
+    local task_file=$(find_task "$task_id")
+
+    if [[ -z "$task_file" ]]; then
+        echo "Task $task_id not found"
+        exit 1
+    fi
+
+    local tasks_dir=$(dirname "$(dirname "$task_file")")
+    local completed_dir="$tasks_dir/completed"
+    mkdir -p "$completed_dir"
+
+    update_task_field "$task_file" "status" "completed"
+    update_task_field "$task_file" "completed_at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+    [[ -n "$summary" ]] && append_update "$task_file" "Completed: $summary"
+
+    mv "$task_file" "$completed_dir/"
+
+    # Log event
+    local script_dir="$(cd "$(dirname "$0")" && pwd)"
+    "$script_dir/metasphere-events" log task.complete "Completed $task_id" --agent "$AGENT" --meta task_id="$task_id" 2>/dev/null || true
+
+    echo "Completed: $task_id"
+    [[ -n "$summary" ]] && echo "Summary: $summary"
+}
+
+cmd_show() {
+    local task_id="$1"
+
+    if [[ -z "$task_id" ]]; then
+        echo "Usage: tasks show <task-id>"
+        exit 1
+    fi
+
+    local task_file=$(find_task "$task_id")
+
+    if [[ -z "$task_file" ]]; then
+        echo "Task $task_id not found"
+        exit 1
+    fi
+
+    cat "$task_file"
+}
+
+cmd_tree() {
+    echo "## Task Tree"
+    echo "## Scope: $(rel_path "$SCOPE")"
+    echo ""
+
+    find "$REPO_ROOT" -type d -name ".tasks" 2>/dev/null | sort | while read -r tasks_dir; do
+        local scope_dir=$(dirname "$tasks_dir")
+        local rel=$(rel_path "$scope_dir")
+        local active_count=$(find "$tasks_dir/active" -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+        local completed_count=$(find "$tasks_dir/completed" -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+
+        [[ $active_count -eq 0 && $completed_count -eq 0 ]] && continue
+
+        # Indicate current scope
+        local marker=""
+        [[ "$scope_dir" == "$SCOPE" ]] && marker=" ← you are here"
+
+        echo "$rel$marker"
+        echo "  active: $active_count | completed: $completed_count"
+    done
+}
+
+# Main command dispatch
+case "${1:-}" in
+    ""|list)
+        shift 2>/dev/null || true
+        cmd_list "$@"
+        ;;
+    new)
+        shift
+        cmd_new "$@"
+        ;;
+    start)
+        shift
+        cmd_start "$@"
+        ;;
+    update)
+        shift
+        cmd_update "$@"
+        ;;
+    done)
+        shift
+        cmd_done "$@"
+        ;;
+    show)
+        shift
+        cmd_show "$@"
+        ;;
+    tree)
+        cmd_tree
+        ;;
+    *)
+        cat << 'EOF'
+tasks - Fractal task management
+
+Usage:
+  tasks                                  Show active tasks in scope
+  tasks list [all|completed]             List tasks with filter
+  tasks new "title" [!priority] [--name] Create new task
+  tasks start <task-id>                  Start working on task
+  tasks update <task-id> "note"          Add update to task
+  tasks done <task-id> "summary"         Complete task
+  tasks show <task-id>                   Show full task details
+  tasks tree                             Show task tree across scopes
+
+Naming:
+  Task IDs are auto-generated from titles with hierarchical scoping:
+    project/@agent/task-name
+
+  Explicit naming with --name:
+    tasks new "Fix bug" --name bugfix
+    tasks new "Daily check" --name heartbeat
+    tasks new "Review" --name project/@coder/review
+
+  Hierarchical IDs support slashes for organization.
+
+Priorities:
+  !urgent   Critical, immediate attention
+  !high     Important, prioritize
+  !normal   Standard priority (default)
+  !low      Nice to have, when time permits
+
+Scoping:
+  Tasks are stored in .tasks/active/ and .tasks/completed/ at each directory.
+  Agents see tasks in their scope + all parent scopes (upward visibility).
+EOF
+        exit 1
+        ;;
+esac

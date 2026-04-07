@@ -1,0 +1,889 @@
+#!/bin/bash
+# metasphere - Main CLI for the Metasphere agent system
+#
+# Usage:
+#   metasphere status              Full system status (like cam status)
+#   metasphere ls [path]           Project/task/agent landscape
+#   metasphere agents              List all agents
+#   metasphere gateway status      Gateway/Telegram status
+#   metasphere daemon start|stop   Manage background daemon
+#   metasphere spawn ...           Spawn a new agent
+#   metasphere send ...            Send message
+
+set -e
+
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VERSION="0.1.0"
+
+# Resolve REPO_ROOT carefully - avoid home directory if it has .git
+resolve_repo_root() {
+    if [[ -n "$METASPHERE_REPO_ROOT" ]]; then
+        echo "$METASPHERE_REPO_ROOT"
+        return
+    fi
+
+    local git_root
+    git_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+
+    # Avoid home directory as repo root (common misconfiguration)
+    if [[ "$git_root" == "$HOME" ]]; then
+        echo "$PWD"
+    elif [[ -n "$git_root" ]]; then
+        echo "$git_root"
+    else
+        echo "$PWD"
+    fi
+}
+
+REPO_ROOT=$(resolve_repo_root)
+
+# Colors
+if [[ -t 1 ]]; then
+    RED=$'\033[0;31m'
+    YELLOW=$'\033[1;33m'
+    GREEN=$'\033[0;32m'
+    CYAN=$'\033[0;36m'
+    DIM=$'\033[2m'
+    BOLD=$'\033[1m'
+    NC=$'\033[0m'
+else
+    RED='' YELLOW='' GREEN='' CYAN='' DIM='' BOLD='' NC=''
+fi
+
+ok() { echo -e "  ${GREEN}✓${NC} $*"; }
+warn() { echo -e "  ${YELLOW}!${NC} $*"; }
+err() { echo -e "  ${RED}✗${NC} $*"; }
+dim() { echo -e "  ${DIM}$*${NC}"; }
+
+# =============================================================================
+# Status command (comprehensive, like cam status)
+# =============================================================================
+
+cmd_status() {
+    echo -e "${BOLD}Metasphere Agents${NC} $VERSION"
+    echo
+
+    # Runtime info
+    echo -e "${BOLD}Configuration${NC}"
+    echo "  Directory: $METASPHERE_DIR"
+    echo "  Repo root: $REPO_ROOT"
+    echo
+
+    # Gateway status
+    echo -e "${BOLD}Gateway${NC}"
+    local gateway_running=false
+
+    if [[ "$(uname)" == "Darwin" ]]; then
+        if launchctl list 2>/dev/null | grep -q "com.metasphere.gateway"; then
+            ok "Daemon running (launchd)"
+            gateway_running=true
+        else
+            warn "Daemon not running"
+        fi
+    else
+        if systemctl --user is-active metasphere-gateway &>/dev/null; then
+            ok "Daemon running (systemd)"
+            gateway_running=true
+        else
+            warn "Daemon not running"
+        fi
+    fi
+
+    # Telegram
+    if [[ -f "$METASPHERE_DIR/config/telegram.env" ]]; then
+        source "$METASPHERE_DIR/config/telegram.env"
+        if [[ -n "$TELEGRAM_BOT_TOKEN" ]]; then
+            local bot_info=$(curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getMe" 2>/dev/null | jq -r '.result.username // empty')
+            if [[ -n "$bot_info" ]]; then
+                ok "Telegram: @$bot_info"
+            else
+                warn "Telegram: token invalid"
+            fi
+        else
+            warn "Telegram: no token"
+        fi
+    else
+        warn "Telegram: not configured"
+    fi
+
+    if [[ -f "$METASPHERE_DIR/config/telegram_chat_id" ]]; then
+        dim "Chat ID: $(cat "$METASPHERE_DIR/config/telegram_chat_id")"
+    fi
+    echo
+
+    # CAM
+    echo -e "${BOLD}Memory (CAM)${NC}"
+    if command -v cam &>/dev/null; then
+        local cam_version=$(cam --version 2>/dev/null || echo "?")
+        ok "Installed: $cam_version"
+        if [[ -f ~/.cam/index.sqlite ]]; then
+            local cam_size=$(du -sh ~/.cam/index.sqlite 2>/dev/null | cut -f1)
+            local segment_count=$(sqlite3 ~/.cam/index.sqlite "SELECT COUNT(*) FROM segments" 2>/dev/null || echo "?")
+            dim "Index: $cam_size ($segment_count segments)"
+        fi
+    else
+        warn "Not installed"
+        dim "Install: pip install collective-agent-memory"
+    fi
+    echo
+
+    # Agents
+    echo -e "${BOLD}Agents${NC}"
+    local agent_count=0
+    for agent_dir in "$METASPHERE_DIR/agents"/@*/; do
+        [[ -d "$agent_dir" ]] || continue
+        local agent=$(basename "$agent_dir")
+        local status="unknown"
+        [[ -f "$agent_dir/status" ]] && status=$(cat "$agent_dir/status")
+
+        local icon="○"
+        case "$status" in
+            active:*|working:*) icon="${GREEN}●${NC}" ;;
+            waiting:*|blocked:*) icon="${YELLOW}◐${NC}" ;;
+            complete:*) icon="${DIM}●${NC}" ;;
+        esac
+
+        echo -e "  $icon $agent: $status"
+        ((agent_count++))
+    done
+    [[ $agent_count -eq 0 ]] && dim "(no agents registered)"
+    echo
+
+    # Tasks summary
+    echo -e "${BOLD}Tasks${NC}"
+    local task_files
+    task_files=$(find "$REPO_ROOT" -maxdepth 6 -path "*/.tasks/active/*.md" 2>/dev/null || true)
+    local task_total=$(echo "$task_files" | grep -c . 2>/dev/null || echo 0)
+    local task_urgent=0
+    if [[ -n "$task_files" && "$task_total" -gt 0 ]]; then
+        task_urgent=$(echo "$task_files" | xargs grep -l "^priority: !urgent" 2>/dev/null | wc -l | tr -d ' ')
+        if [[ $task_urgent -gt 0 ]]; then
+            echo -e "  ${RED}$task_urgent urgent${NC} / $task_total active"
+        else
+            echo "  $task_total active"
+        fi
+    else
+        dim "(no active tasks)"
+    fi
+    echo
+
+    # Messages summary
+    echo -e "${BOLD}Messages${NC}"
+    local msg_files
+    msg_files=$(find "$REPO_ROOT" -maxdepth 6 -path "*/.messages/inbox/*.msg" 2>/dev/null || true)
+    local msg_total=$(echo "$msg_files" | grep -c . 2>/dev/null || echo 0)
+    local msg_unread=0
+    if [[ -n "$msg_files" && "$msg_total" -gt 0 ]]; then
+        msg_unread=$(echo "$msg_files" | xargs grep -l "^status: unread" 2>/dev/null | wc -l | tr -d ' ')
+    fi
+    if [[ $msg_total -gt 0 ]]; then
+        if [[ $msg_unread -gt 0 ]]; then
+            echo -e "  ${YELLOW}$msg_unread unread${NC} / $msg_total total"
+        else
+            echo "  $msg_total total (all read)"
+        fi
+    else
+        dim "(no messages)"
+    fi
+    echo
+
+    # Telegram latest
+    echo -e "${BOLD}Last Telegram${NC}"
+    if [[ -f "$METASPHERE_DIR/telegram/latest.json" ]]; then
+        local tg_from=$(jq -r '.from // "?"' "$METASPHERE_DIR/telegram/latest.json")
+        local tg_text=$(jq -r '.text // ""' "$METASPHERE_DIR/telegram/latest.json" | head -c 50)
+        local tg_time=$(jq -r '.timestamp // ""' "$METASPHERE_DIR/telegram/latest.json")
+        echo "  @$tg_from: \"$tg_text\""
+        dim "$tg_time"
+    else
+        dim "(no messages)"
+    fi
+}
+
+# =============================================================================
+# Gateway status
+# =============================================================================
+
+cmd_gateway_status() {
+    echo -e "${BOLD}Metasphere Gateway${NC}"
+    echo
+
+    # Daemon status
+    echo -e "${BOLD}Daemon${NC}"
+    if [[ "$(uname)" == "Darwin" ]]; then
+        if launchctl list 2>/dev/null | grep -q "com.metasphere.gateway"; then
+            ok "Running (launchd)"
+            dim "Config: ~/Library/LaunchAgents/com.metasphere.gateway.plist"
+        else
+            warn "Not running"
+            dim "Start: metasphere daemon start"
+        fi
+    else
+        if systemctl --user is-active metasphere-gateway &>/dev/null; then
+            ok "Running (systemd)"
+            systemctl --user status metasphere-gateway --no-pager 2>/dev/null | head -5 | sed 's/^/  /'
+        else
+            warn "Not running"
+            dim "Start: metasphere daemon start"
+        fi
+    fi
+    echo
+
+    # Telegram
+    echo -e "${BOLD}Telegram${NC}"
+    if [[ -f "$METASPHERE_DIR/config/telegram.env" ]]; then
+        source "$METASPHERE_DIR/config/telegram.env"
+        if [[ -n "$TELEGRAM_BOT_TOKEN" ]]; then
+            local bot_info=$(curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getMe" 2>/dev/null)
+            local bot_name=$(echo "$bot_info" | jq -r '.result.username // empty')
+            local bot_ok=$(echo "$bot_info" | jq -r '.ok // false')
+
+            if [[ "$bot_ok" == "true" ]]; then
+                ok "Bot: @$bot_name"
+            else
+                err "Token invalid"
+            fi
+        else
+            warn "No token configured"
+        fi
+
+        if [[ -f "$METASPHERE_DIR/config/telegram_chat_id" ]]; then
+            ok "Chat ID: $(cat "$METASPHERE_DIR/config/telegram_chat_id")"
+        else
+            warn "No chat ID (send message to bot first)"
+        fi
+    else
+        warn "Not configured"
+        dim "Run: metasphere telegram setup"
+    fi
+    echo
+
+    # Offset/queue
+    echo -e "${BOLD}Queue${NC}"
+    if [[ -f "$METASPHERE_DIR/telegram/offset" ]]; then
+        dim "Offset: $(cat "$METASPHERE_DIR/telegram/offset")"
+    fi
+    local processed=$(wc -l < "$METASPHERE_DIR/telegram/processed" 2>/dev/null || echo "0")
+    dim "Processed: $processed messages"
+    echo
+
+    # Logs
+    echo -e "${BOLD}Recent Logs${NC}"
+    if [[ -f "$METASPHERE_DIR/logs/gateway.log" ]]; then
+        tail -5 "$METASPHERE_DIR/logs/gateway.log" 2>/dev/null | sed 's/^/  /' || dim "(empty)"
+    else
+        dim "(no logs)"
+    fi
+}
+
+# =============================================================================
+# Run (main daemon - foreground)
+# =============================================================================
+
+cmd_run() {
+    local interval="${1:-5}"
+
+    echo -e "${BOLD}Metasphere${NC} $VERSION"
+    echo "Starting orchestrator daemon..."
+    echo
+
+    # Run the gateway (which handles Telegram + scheduling)
+    exec "$SCRIPT_DIR/metasphere-gateway" daemon "$interval"
+}
+
+# =============================================================================
+# Daemon management (background via launchd/systemd)
+# =============================================================================
+
+cmd_daemon() {
+    local action="${1:-status}"
+
+    case "$action" in
+        start)
+            if [[ "$(uname)" == "Darwin" ]]; then
+                local plist="$HOME/Library/LaunchAgents/com.metasphere.plist"
+                if [[ -f "$plist" ]]; then
+                    launchctl unload "$plist" 2>/dev/null || true
+                    launchctl load "$plist"
+                    ok "Daemon started"
+                else
+                    err "Plist not found. Run install.sh first."
+                fi
+            else
+                systemctl --user start metasphere
+                ok "Daemon started"
+            fi
+            ;;
+        stop)
+            if [[ "$(uname)" == "Darwin" ]]; then
+                launchctl unload "$HOME/Library/LaunchAgents/com.metasphere.plist" 2>/dev/null
+                ok "Daemon stopped"
+            else
+                systemctl --user stop metasphere
+                ok "Daemon stopped"
+            fi
+            ;;
+        restart)
+            cmd_daemon stop
+            sleep 1
+            cmd_daemon start
+            ;;
+        status)
+            cmd_gateway_status
+            ;;
+        logs)
+            if [[ -f "$METASPHERE_DIR/logs/metasphere.log" ]]; then
+                tail -f "$METASPHERE_DIR/logs/metasphere.log"
+            elif [[ -f "$METASPHERE_DIR/logs/gateway.log" ]]; then
+                tail -f "$METASPHERE_DIR/logs/gateway.log"
+            else
+                err "No log file"
+            fi
+            ;;
+        *)
+            echo "Usage: metasphere daemon {start|stop|restart|status|logs}"
+            exit 1
+            ;;
+    esac
+}
+
+# =============================================================================
+# Landscape (ls)
+# =============================================================================
+
+cmd_ls() {
+    local scope="${1:-/}"
+
+    # Agent-specific view
+    if [[ "$scope" == @* ]]; then
+        cmd_ls_agent "$scope"
+        return
+    fi
+
+    # Format time with user timezone if set
+    local time_display=$(date -u +%H:%M)
+    if [[ -f "$METASPHERE_DIR/config/timezone" ]]; then
+        local user_tz=$(cat "$METASPHERE_DIR/config/timezone")
+        local local_time=$(TZ="$user_tz" date +%H:%M 2>/dev/null)
+        [[ -n "$local_time" ]] && time_display="$local_time ($user_tz)"
+    fi
+
+    echo -e "${BOLD}Metasphere${NC} $time_display"
+
+    # Session status (compact)
+    if tmux has-session -t "metasphere-orchestrator" 2>/dev/null; then
+        echo -e "  ${GREEN}●${NC} session active"
+    else
+        echo -e "  ${YELLOW}○${NC} no session"
+    fi
+    echo
+
+    # Projects first
+    echo -e "${BOLD}Projects${NC}"
+    if [[ -f "$METASPHERE_DIR/projects.json" ]]; then
+        local projects=$(cat "$METASPHERE_DIR/projects.json")
+        local count=$(echo "$projects" | jq 'length')
+        if [[ "$count" != "0" ]]; then
+            echo "$projects" | jq -r '.[] | "\(.name)\t\(.path)"' | while IFS=$'\t' read -r name path; do
+                if [[ -d "$path/.metasphere" ]]; then
+                    local tasks=$(find "$path/.tasks/active" -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+                    local agents=0
+                    for ad in "$METASPHERE_DIR/agents"/@*/; do
+                        [[ -d "$ad" ]] || continue
+                        local s=$(cat "$ad/scope" 2>/dev/null || echo "")
+                        [[ "$s" == "$path"* ]] && ((agents++))
+                    done
+                    echo -e "  ${GREEN}●${NC} $name ${DIM}($tasks tasks, $agents agents)${NC}"
+                else
+                    echo -e "  ${RED}○${NC} $name ${DIM}(missing)${NC}"
+                fi
+            done
+        else
+            dim "  (no projects - run: metasphere project init)"
+        fi
+    else
+        dim "  (no projects - run: metasphere project init)"
+    fi
+    echo
+
+    # Recent events (last 3, compact)
+    echo -e "${BOLD}Events${NC}"
+    if [[ -f "$METASPHERE_DIR/events/events.jsonl" ]]; then
+        tail -3 "$METASPHERE_DIR/events/events.jsonl" 2>/dev/null | jq -r '"\(.timestamp | split("T")[1] | split(".")[0]) \(.type | split(".")[1] // .type): \(.message | .[0:40])"' 2>/dev/null || dim "  (none)"
+    else
+        dim "  (none)"
+    fi
+    echo
+
+    # Agents (compact, grouped by status)
+    echo -e "${BOLD}Agents${NC}"
+    local active="" spawned="" other=""
+    for agent_dir in "$METASPHERE_DIR/agents"/@*/; do
+        [[ -d "$agent_dir" ]] || continue
+        local agent=$(basename "$agent_dir")
+        local status=$(cat "$agent_dir/status" 2>/dev/null || echo "unknown")
+
+        case "$status" in
+            active*|working:*) active="$active $agent" ;;
+            spawned) spawned="$spawned $agent" ;;
+            *) other="$other $agent" ;;
+        esac
+    done
+    [[ -n "$active" ]] && echo -e "  ${GREEN}●${NC} active:$active"
+    [[ -n "$spawned" ]] && echo -e "  ${YELLOW}◐${NC} spawned:$spawned"
+    [[ -n "$other" ]] && echo -e "  ${DIM}○${NC} other:$other"
+    [[ -z "$active$spawned$other" ]] && dim "  (none)"
+    echo
+
+    # Tasks
+    echo -e "${BOLD}Tasks${NC}"
+    "$SCRIPT_DIR/tasks" 2>/dev/null | head -10 || dim "(no tasks)"
+    echo
+
+    # Messages (brief)
+    local msg_total=$(find "$METASPHERE_DIR" -path "*/.messages/inbox/*.msg" 2>/dev/null | wc -l | tr -d ' ')
+    if [[ $msg_total -gt 0 ]]; then
+        echo -e "${BOLD}Messages${NC}: $msg_total pending"
+        echo
+    fi
+}
+
+# Agent-specific view
+cmd_ls_agent() {
+    local agent="$1"
+    local agent_dir="$METASPHERE_DIR/agents/$agent"
+
+    if [[ ! -d "$agent_dir" ]]; then
+        echo "Agent not found: $agent"
+        exit 1
+    fi
+
+    echo -e "${BOLD}$agent${NC}"
+    echo
+
+    # Status
+    local status=$(cat "$agent_dir/status" 2>/dev/null || echo "unknown")
+    echo "Status: $status"
+
+    # Task
+    if [[ -f "$agent_dir/task" ]]; then
+        echo -e "\n${BOLD}Task${NC}"
+        cat "$agent_dir/task"
+    fi
+
+    # Scope
+    if [[ -f "$agent_dir/scope" ]]; then
+        echo -e "\nScope: $(cat "$agent_dir/scope" | sed "s|$HOME|~|")"
+    fi
+
+    # Sandbox
+    if [[ -f "$agent_dir/sandbox" ]]; then
+        echo "Sandbox: $(cat "$agent_dir/sandbox")"
+    fi
+
+    # Children
+    if [[ -f "$agent_dir/children" && -s "$agent_dir/children" ]]; then
+        echo -e "\n${BOLD}Children${NC}"
+        cat "$agent_dir/children" | while read -r child; do
+            local cstatus=$(cat "$METASPHERE_DIR/agents/$child/status" 2>/dev/null || echo "?")
+            echo "  $child: $cstatus"
+        done
+    fi
+
+    # Recent events for this agent
+    echo -e "\n${BOLD}Recent Events${NC}"
+    if [[ -f "$METASPHERE_DIR/events/events.jsonl" ]]; then
+        grep "\"agent\":\"$agent\"" "$METASPHERE_DIR/events/events.jsonl" 2>/dev/null | tail -5 | \
+            jq -r '"\(.timestamp | split("T")[1] | split(".")[0]) \(.type): \(.message | .[0:40])"' 2>/dev/null || echo "(none)"
+    else
+        echo "(none)"
+    fi
+
+    # Session info if orchestrator
+    if [[ "$agent" == "@orchestrator" ]]; then
+        echo -e "\n${BOLD}Session${NC}"
+        if tmux has-session -t "metasphere-orchestrator" 2>/dev/null; then
+            echo "Active (attach: metasphere-gateway attach)"
+        else
+            echo "Not running"
+        fi
+    fi
+}
+
+# =============================================================================
+# Agents
+# =============================================================================
+
+cmd_agents() {
+    echo -e "${BOLD}Registered Agents${NC}"
+    echo
+
+    for agent_dir in "$METASPHERE_DIR/agents"/@*/; do
+        [[ -d "$agent_dir" ]] || continue
+
+        local agent=$(basename "$agent_dir")
+        local status="unknown"
+        [[ -f "$agent_dir/status" ]] && status=$(cat "$agent_dir/status")
+
+        local icon="○"
+        case "$status" in
+            active:*|working:*) icon="${GREEN}●${NC}" ;;
+            waiting:*|blocked:*) icon="${YELLOW}◐${NC}" ;;
+            complete:*) icon="${DIM}●${NC}" ;;
+        esac
+
+        echo -e "$icon ${BOLD}$agent${NC}"
+        echo "  Status: $status"
+        [[ -f "$agent_dir/scope" ]] && echo "  Scope: $(cat "$agent_dir/scope" | sed "s|$REPO_ROOT|.|")"
+        [[ -f "$agent_dir/parent" ]] && echo "  Parent: $(cat "$agent_dir/parent")"
+        [[ -f "$agent_dir/task" ]] && echo "  Task: $(cat "$agent_dir/task" | head -c 60)"
+        echo
+    done
+}
+
+# =============================================================================
+# Telegram setup
+# =============================================================================
+
+cmd_telegram_setup() {
+    echo "Telegram Bot Setup"
+    echo "=================="
+    echo
+    echo "1. Open Telegram and message @BotFather"
+    echo "2. Send /newbot and follow instructions"
+    echo "3. Copy the token (format: 123456789:ABCdef...)"
+    echo
+
+    read -p "Enter bot token: " token
+
+    if [[ -n "$token" ]]; then
+        mkdir -p "$METASPHERE_DIR/config"
+        echo "TELEGRAM_BOT_TOKEN=$token" > "$METASPHERE_DIR/config/telegram.env"
+        chmod 600 "$METASPHERE_DIR/config/telegram.env"
+
+        local bot_info=$(curl -s "https://api.telegram.org/bot$token/getMe" | jq -r '.result.username // empty')
+        if [[ -n "$bot_info" ]]; then
+            ok "Bot verified: @$bot_info"
+            echo
+            echo "Now send a message to @$bot_info to complete setup."
+        else
+            err "Could not verify token"
+        fi
+    fi
+}
+
+# =============================================================================
+# Main dispatch
+# =============================================================================
+
+case "${1:-}" in
+    run)
+        shift
+        cmd_run "$@"
+        ;;
+    status|st)
+        cmd_status
+        ;;
+    ls|list)
+        shift
+        cmd_ls "$@"
+        ;;
+    agents|ag)
+        cmd_agents
+        ;;
+    gateway|gw)
+        shift
+        case "${1:-status}" in
+            status) cmd_gateway_status ;;
+            *) cmd_gateway_status ;;
+        esac
+        ;;
+    daemon|d)
+        shift
+        cmd_daemon "$@"
+        ;;
+    spawn)
+        shift
+        exec "$SCRIPT_DIR/metasphere-agent" spawn "$@"
+        ;;
+    agent|ag)
+        shift
+        exec "$SCRIPT_DIR/metasphere-agent" "$@"
+        ;;
+    send|msg)
+        shift
+        exec "$SCRIPT_DIR/messages" send "$@"
+        ;;
+    tasks|task|t)
+        shift
+        exec "$SCRIPT_DIR/tasks" "$@"
+        ;;
+    schedule|sched|cron)
+        shift
+        exec "$SCRIPT_DIR/metasphere-schedule" "$@"
+        ;;
+    telegram|tg)
+        shift
+        case "${1:-}" in
+            setup) cmd_telegram_setup ;;
+            groups|g) shift; exec "$SCRIPT_DIR/metasphere-telegram-groups" "$@" ;;
+            *) exec "$SCRIPT_DIR/metasphere-telegram-stream" "$@" ;;
+        esac
+        ;;
+    context)
+        exec "$SCRIPT_DIR/metasphere-context"
+        ;;
+    trace|tr)
+        shift
+        exec "$SCRIPT_DIR/metasphere-trace" "$@"
+        ;;
+    session|sess|s)
+        shift
+        exec "$SCRIPT_DIR/metasphere-session" "$@"
+        ;;
+    events|ev|e)
+        shift
+        exec "$SCRIPT_DIR/metasphere-events" "$@"
+        ;;
+    git-hooks|hooks)
+        shift
+        exec "$SCRIPT_DIR/metasphere-git-hooks" "$@"
+        ;;
+    project|proj|p)
+        shift
+        exec "$SCRIPT_DIR/metasphere-project" "$@"
+        ;;
+    migrate|migration)
+        shift
+        exec "$SCRIPT_DIR/metasphere-migrate" "$@"
+        ;;
+    update|upgrade)
+        shift
+        info "Updating Metasphere..."
+
+        # Find the installation source
+        local install_source=""
+        if [[ -d "$METASPHERE_DIR/.git" ]]; then
+            install_source="$METASPHERE_DIR"
+        elif [[ -n "$METASPHERE_REPO_ROOT" && -d "$METASPHERE_REPO_ROOT/.git" ]]; then
+            install_source="$METASPHERE_REPO_ROOT"
+        else
+            # Try to find from script location
+            local script_path=$(readlink -f "$0" 2>/dev/null || echo "$0")
+            local script_dir=$(dirname "$script_path")
+            if [[ -d "$script_dir/../.git" ]]; then
+                install_source=$(cd "$script_dir/.." && pwd)
+            fi
+        fi
+
+        if [[ -z "$install_source" ]]; then
+            err "Cannot find git repo. Manual update required."
+            echo "  cd /path/to/metasphere-agents && git pull && ./install.sh"
+            exit 1
+        fi
+
+        echo "  Source: $install_source"
+
+        # Pull latest
+        cd "$install_source"
+        if git pull --ff-only; then
+            ok "Git pull successful"
+        else
+            warn "Git pull failed (conflicts?). Trying fetch + reset..."
+            git fetch origin
+            git reset --hard origin/main
+            ok "Reset to origin/main"
+        fi
+
+        # Reinstall scripts
+        if [[ -d "$install_source/scripts" ]]; then
+            mkdir -p "$METASPHERE_DIR/bin"
+            cp "$install_source/scripts"/* "$METASPHERE_DIR/bin/" 2>/dev/null || true
+            chmod +x "$METASPHERE_DIR/bin"/* 2>/dev/null || true
+            ok "Scripts updated"
+        fi
+
+        # Restart daemon if running
+        if [[ "$(uname)" == "Darwin" ]]; then
+            if launchctl list 2>/dev/null | grep -q "com.metasphere"; then
+                launchctl unload ~/Library/LaunchAgents/com.metasphere.plist 2>/dev/null || true
+                launchctl load ~/Library/LaunchAgents/com.metasphere.plist 2>/dev/null || true
+                ok "Daemon restarted"
+            fi
+        else
+            if systemctl --user is-active metasphere &>/dev/null; then
+                systemctl --user restart metasphere
+                ok "Daemon restarted"
+            fi
+        fi
+
+        echo
+        echo "Update complete. Version: $VERSION"
+        ;;
+    logs|log)
+        shift
+        local log_type="${1:-all}"
+        local follow=false
+        [[ "$1" == "-f" || "$2" == "-f" ]] && follow=true
+        [[ "$1" == "-f" ]] && log_type="${2:-all}"
+
+        case "$log_type" in
+            gateway|gw)
+                if $follow; then
+                    tail -f "$METASPHERE_DIR/logs/gateway.log"
+                else
+                    tail -100 "$METASPHERE_DIR/logs/gateway.log"
+                fi
+                ;;
+            error|err)
+                if $follow; then
+                    tail -f "$METASPHERE_DIR/logs/metasphere.error.log"
+                else
+                    tail -100 "$METASPHERE_DIR/logs/metasphere.error.log"
+                fi
+                ;;
+            events|ev)
+                if [[ -f "$METASPHERE_DIR/events/events.jsonl" ]]; then
+                    if $follow; then
+                        tail -f "$METASPHERE_DIR/events/events.jsonl" | jq -r '"\(.timestamp) [\(.agent)] \(.type): \(.message)"'
+                    else
+                        tail -50 "$METASPHERE_DIR/events/events.jsonl" | jq -r '"\(.timestamp) [\(.agent)] \(.type): \(.message)"'
+                    fi
+                else
+                    echo "No events log"
+                fi
+                ;;
+            all|*)
+                echo -e "${BOLD}=== Gateway Log ===${NC}"
+                tail -20 "$METASPHERE_DIR/logs/gateway.log" 2>/dev/null || echo "(empty)"
+                echo
+                echo -e "${BOLD}=== Error Log ===${NC}"
+                tail -10 "$METASPHERE_DIR/logs/metasphere.error.log" 2>/dev/null || echo "(empty)"
+                echo
+                echo -e "${BOLD}=== Recent Events ===${NC}"
+                tail -10 "$METASPHERE_DIR/events/events.jsonl" 2>/dev/null | jq -r '"\(.timestamp | split("T")[1] | split(".")[0]) [\(.agent)] \(.type): \(.message[0:50])"' 2>/dev/null || echo "(none)"
+                ;;
+        esac
+        ;;
+    config)
+        shift
+        case "${1:-}" in
+            timezone|tz)
+                shift
+                if [[ -n "$1" ]]; then
+                    # Validate timezone
+                    if TZ="$1" date &>/dev/null; then
+                        echo "$1" > "$METASPHERE_DIR/config/timezone"
+                        echo "Timezone set to: $1"
+                        echo "Current time: $(TZ="$1" date)"
+                    else
+                        echo "Invalid timezone: $1"
+                        echo "Example: Europe/Berlin, America/New_York, UTC"
+                        exit 1
+                    fi
+                else
+                    if [[ -f "$METASPHERE_DIR/config/timezone" ]]; then
+                        local tz=$(cat "$METASPHERE_DIR/config/timezone")
+                        echo "Current timezone: $tz"
+                        echo "Local time: $(TZ="$tz" date)"
+                    else
+                        echo "No timezone set (using UTC)"
+                    fi
+                    echo
+                    echo "Set with: metasphere config timezone <TIMEZONE>"
+                    echo "Example: metasphere config timezone Europe/Berlin"
+                fi
+                ;;
+            *)
+                echo "metasphere config - Configuration management"
+                echo
+                echo "Usage:"
+                echo "  metasphere config timezone [TZ]    Get/set user timezone"
+                echo
+                echo "Current config:"
+                echo "  Directory: $METASPHERE_DIR"
+                [[ -f "$METASPHERE_DIR/config/timezone" ]] && echo "  Timezone: $(cat "$METASPHERE_DIR/config/timezone")"
+                [[ -f "$METASPHERE_DIR/config/telegram.env" ]] && echo "  Telegram: configured"
+                ;;
+        esac
+        ;;
+    version|-v|--version)
+        echo "metasphere $VERSION"
+        ;;
+    help|-h|--help|"")
+        cat << EOF
+${BOLD}metasphere${NC} - Agent orchestration CLI
+
+${BOLD}Status & Overview:${NC}
+  metasphere status              Full system status
+  metasphere ls [path]           Project landscape (agents, tasks, messages)
+  metasphere agents              List all agents
+  metasphere gateway status      Gateway/Telegram status
+
+${BOLD}Tasks:${NC}
+  metasphere tasks               List active tasks
+  metasphere tasks new "title" [!priority]   Create task
+  metasphere tasks start ID      Start working on task
+  metasphere tasks done ID       Complete task
+
+${BOLD}Messages:${NC}
+  metasphere send @target !label "msg"   Send message
+
+${BOLD}Scheduling:${NC}
+  metasphere schedule            List scheduled jobs
+  metasphere schedule add 'cmd' @TIME [@REPEAT]
+  metasphere schedule remove ID
+
+  Time: @15:00, @in:30m, @in:2h, @tomorrow
+  Repeat: @hourly, @daily, @weekly, @every:15m
+
+${BOLD}Running:${NC}
+  metasphere run                 Run orchestrator (foreground)
+  metasphere daemon start        Start as background service
+  metasphere daemon stop         Stop background service
+  metasphere daemon logs         Follow logs
+
+${BOLD}Agents:${NC}
+  metasphere agent spawn @name [opts]    Spawn new agent
+  metasphere agent status [@name]        Show agent status
+  metasphere agent sunset @name          Graceful shutdown with docs
+  metasphere agent tree                  Show agent hierarchy
+  metasphere agent cleanup               Find stale agents
+
+${BOLD}Telegram:${NC}
+  metasphere telegram setup           Configure Telegram bot
+  metasphere telegram groups setup    Setup forum for project topics
+  metasphere telegram groups create   Create a topic
+  metasphere telegram groups list     List topics
+
+${BOLD}Migration:${NC}
+  metasphere migrate detect           Check for OpenClaw installation
+  metasphere migrate run [--disable]  Migrate from OpenClaw
+  metasphere migrate disable          Disable OpenClaw gateway
+
+${BOLD}Configuration:${NC}
+  metasphere config timezone [TZ]     Get/set user timezone (e.g., Europe/Berlin)
+
+${BOLD}Logs:${NC}
+  metasphere logs                     Show all recent logs
+  metasphere logs gateway [-f]        Gateway log (follow with -f)
+  metasphere logs error [-f]          Error log
+  metasphere logs events [-f]         Event stream
+
+${BOLD}Updates:${NC}
+  metasphere update                   Update from git and restart daemon
+
+${BOLD}Examples:${NC}
+  metasphere status
+  metasphere tasks new "Review PRs" !high
+  metasphere schedule add 'send @researcher !task "Daily report"' @09:00 @daily
+  metasphere send @orchestrator !info "Status update"
+EOF
+        ;;
+    *)
+        echo "Unknown command: $1"
+        echo "Run 'metasphere help' for usage"
+        exit 1
+        ;;
+esac

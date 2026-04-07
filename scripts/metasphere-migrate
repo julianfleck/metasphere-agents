@@ -1,0 +1,458 @@
+#!/bin/bash
+# metasphere-migrate - Migrate from OpenClaw to Metasphere
+#
+# Handles backwards compatibility with OpenClaw:
+#   - Extracts Telegram token from openclaw.json
+#   - Migrates SOUL.md and agent profiles
+#   - Imports memory files
+#   - Triggers CAM to parse existing sessions
+#   - Optionally disables OpenClaw gateway
+#
+# Usage:
+#   metasphere-migrate detect              Check for OpenClaw installation
+#   metasphere-migrate run [--disable]     Run full migration
+#   metasphere-migrate telegram            Extract Telegram token only
+#   metasphere-migrate sessions            Parse sessions with CAM
+
+set -e
+
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+OPENCLAW_DIR="${OPENCLAW_DIR:-$HOME/.openclaw}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Colors
+if [[ -t 1 ]]; then
+    GREEN=$'\033[0;32m'
+    YELLOW=$'\033[1;33m'
+    RED=$'\033[0;31m'
+    CYAN=$'\033[0;36m'
+    DIM=$'\033[2m'
+    NC=$'\033[0m'
+else
+    GREEN='' YELLOW='' RED='' CYAN='' DIM='' NC=''
+fi
+
+ok() { echo -e "${GREEN}[ok]${NC} $*"; }
+info() { echo -e "${CYAN}[..]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!!]${NC} $*"; }
+err() { echo -e "${RED}[error]${NC} $*"; }
+
+# =============================================================================
+# Detection
+# =============================================================================
+
+detect_openclaw() {
+    local found=false
+
+    echo "OpenClaw Detection"
+    echo "=================="
+    echo
+
+    # Check ~/.openclaw directory
+    if [[ -d "$OPENCLAW_DIR" ]]; then
+        ok "Found OpenClaw directory: $OPENCLAW_DIR"
+        found=true
+
+        # Check for config file
+        if [[ -f "$OPENCLAW_DIR/openclaw.json" ]]; then
+            ok "  Config: openclaw.json"
+
+            # Check for tokens
+            if jq -e '.telegram' "$OPENCLAW_DIR/openclaw.json" &>/dev/null; then
+                ok "  Telegram config found"
+            fi
+            if jq -e '.github' "$OPENCLAW_DIR/openclaw.json" &>/dev/null || \
+               jq -e '.GITHUB_TOKEN' "$OPENCLAW_DIR/openclaw.json" &>/dev/null; then
+                ok "  GitHub token found"
+            fi
+        fi
+
+        # Check for SOUL.md
+        if [[ -f "$OPENCLAW_DIR/SOUL.md" ]]; then
+            ok "  SOUL.md found"
+        fi
+
+        # Check for memory files
+        local memory_count=$(find "$OPENCLAW_DIR" -name "*.memory" -o -name "memory.json" 2>/dev/null | wc -l | tr -d ' ')
+        if [[ $memory_count -gt 0 ]]; then
+            ok "  Memory files: $memory_count"
+        fi
+
+        # Check for skills
+        if [[ -d "$OPENCLAW_DIR/skills" ]]; then
+            local skill_count=$(find "$OPENCLAW_DIR/skills" -name "SKILL.md" 2>/dev/null | wc -l | tr -d ' ')
+            ok "  Skills: $skill_count"
+        fi
+    else
+        info "No OpenClaw directory found at $OPENCLAW_DIR"
+    fi
+
+    # Check for running gateway
+    echo
+    echo "Gateway Status"
+    echo "--------------"
+
+    if [[ "$(uname)" == "Darwin" ]]; then
+        if launchctl list 2>/dev/null | grep -q "openclaw"; then
+            warn "OpenClaw gateway running (launchd)"
+        else
+            info "No OpenClaw launchd service"
+        fi
+    else
+        if systemctl --user is-active openclaw-gateway &>/dev/null; then
+            warn "OpenClaw gateway running (systemd)"
+        else
+            info "No OpenClaw systemd service"
+        fi
+    fi
+
+    # Check CAM sessions
+    echo
+    echo "CAM Sessions"
+    echo "------------"
+
+    if [[ -d "$HOME/.cam/sessions" ]]; then
+        local session_count=$(find "$HOME/.cam/sessions" -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+        ok "Found $session_count CAM session segments"
+    else
+        info "No CAM sessions found"
+    fi
+
+    # Check Claude Code sessions
+    if [[ -d "$HOME/.claude/projects" ]]; then
+        local claude_session_count=$(find "$HOME/.claude/projects" -name "*.jsonl" 2>/dev/null | wc -l | tr -d ' ')
+        ok "Found $claude_session_count Claude Code sessions"
+    fi
+
+    echo
+    if $found; then
+        echo "Run: metasphere-migrate run"
+        echo "  to migrate OpenClaw configuration to Metasphere"
+    fi
+}
+
+# =============================================================================
+# Token extraction
+# =============================================================================
+
+extract_telegram_token() {
+    local config="$OPENCLAW_DIR/openclaw.json"
+
+    if [[ ! -f "$config" ]]; then
+        warn "No openclaw.json found"
+        return 1
+    fi
+
+    # Try different possible locations for Telegram token
+    local token=""
+
+    # Check telegram.botToken
+    token=$(jq -r '.telegram.botToken // empty' "$config" 2>/dev/null)
+
+    # Check TELEGRAM_BOT_TOKEN
+    [[ -z "$token" ]] && token=$(jq -r '.TELEGRAM_BOT_TOKEN // empty' "$config" 2>/dev/null)
+
+    # Check telegram_bot_token
+    [[ -z "$token" ]] && token=$(jq -r '.telegram_bot_token // empty' "$config" 2>/dev/null)
+
+    # Check env vars section
+    [[ -z "$token" ]] && token=$(jq -r '.env.TELEGRAM_BOT_TOKEN // empty' "$config" 2>/dev/null)
+
+    if [[ -n "$token" && "$token" != "null" ]]; then
+        echo "$token"
+        return 0
+    fi
+
+    return 1
+}
+
+extract_github_token() {
+    local config="$OPENCLAW_DIR/openclaw.json"
+
+    if [[ ! -f "$config" ]]; then
+        return 1
+    fi
+
+    local token=""
+    token=$(jq -r '.GITHUB_TOKEN // .github.token // .env.GITHUB_TOKEN // empty' "$config" 2>/dev/null)
+
+    if [[ -n "$token" && "$token" != "null" ]]; then
+        echo "$token"
+        return 0
+    fi
+
+    return 1
+}
+
+migrate_telegram() {
+    info "Extracting Telegram configuration..."
+
+    local token=$(extract_telegram_token)
+
+    if [[ -n "$token" ]]; then
+        mkdir -p "$METASPHERE_DIR/config"
+        echo "TELEGRAM_BOT_TOKEN=$token" > "$METASPHERE_DIR/config/telegram.env"
+        chmod 600 "$METASPHERE_DIR/config/telegram.env"
+
+        # Verify token
+        local bot_info=$(curl -s "https://api.telegram.org/bot$token/getMe" 2>/dev/null | jq -r '.result.username // empty')
+        if [[ -n "$bot_info" ]]; then
+            ok "Migrated Telegram token (bot: @$bot_info)"
+        else
+            warn "Migrated token but verification failed"
+        fi
+        return 0
+    else
+        warn "No Telegram token found in OpenClaw config"
+        return 1
+    fi
+}
+
+# =============================================================================
+# SOUL.md migration
+# =============================================================================
+
+migrate_soul() {
+    info "Migrating SOUL.md..."
+
+    local agent_dir="$METASPHERE_DIR/agents/@orchestrator"
+    mkdir -p "$agent_dir"
+
+    # Check OpenClaw SOUL.md
+    if [[ -f "$OPENCLAW_DIR/SOUL.md" ]]; then
+        if [[ ! -f "$agent_dir/SOUL.md" ]]; then
+            cp "$OPENCLAW_DIR/SOUL.md" "$agent_dir/SOUL.md"
+            ok "Migrated SOUL.md to @orchestrator"
+        else
+            # Merge or ask
+            warn "SOUL.md already exists - keeping both"
+            cp "$OPENCLAW_DIR/SOUL.md" "$agent_dir/SOUL.openclaw.md"
+            ok "Saved OpenClaw SOUL.md as SOUL.openclaw.md"
+        fi
+    fi
+
+    # Check for agent-specific SOUL files
+    for soul in "$OPENCLAW_DIR"/agents/*/SOUL.md 2>/dev/null; do
+        [[ -f "$soul" ]] || continue
+        local agent_name=$(basename "$(dirname "$soul")")
+        local target_dir="$METASPHERE_DIR/agents/@$agent_name"
+
+        mkdir -p "$target_dir"
+        if [[ ! -f "$target_dir/SOUL.md" ]]; then
+            cp "$soul" "$target_dir/SOUL.md"
+            ok "Migrated SOUL.md for @$agent_name"
+        fi
+    done
+}
+
+# =============================================================================
+# Memory migration
+# =============================================================================
+
+migrate_memory() {
+    info "Migrating memory files..."
+
+    local migrated=0
+
+    # Memory files in OpenClaw
+    for mem in "$OPENCLAW_DIR"/*.memory "$OPENCLAW_DIR"/memory.json "$OPENCLAW_DIR"/agents/*/memory.json 2>/dev/null; do
+        [[ -f "$mem" ]] || continue
+
+        local basename=$(basename "$mem")
+        local target="$METASPHERE_DIR/memory/$basename"
+        mkdir -p "$METASPHERE_DIR/memory"
+
+        cp "$mem" "$target"
+        ((migrated++))
+    done
+
+    if [[ $migrated -gt 0 ]]; then
+        ok "Migrated $migrated memory files"
+    else
+        info "No memory files to migrate"
+    fi
+}
+
+# =============================================================================
+# Session parsing with CAM
+# =============================================================================
+
+parse_sessions() {
+    info "Parsing sessions with CAM..."
+
+    if ! command -v cam &>/dev/null; then
+        warn "CAM not installed - skipping session parsing"
+        echo "    Install: pip install collective-agent-memory"
+        return 1
+    fi
+
+    # Index any new sessions
+    cam index 2>&1 | grep -v "^$" | head -5 || true
+
+    # Show status
+    local segment_count=$(cam status 2>/dev/null | grep -o "[0-9]* segments" | head -1 || echo "unknown")
+    ok "CAM indexed sessions ($segment_count)"
+}
+
+# =============================================================================
+# Disable OpenClaw
+# =============================================================================
+
+disable_openclaw() {
+    info "Disabling OpenClaw gateway..."
+
+    if [[ "$(uname)" == "Darwin" ]]; then
+        local plist="$HOME/Library/LaunchAgents/com.openclaw.gateway.plist"
+        if [[ -f "$plist" ]]; then
+            launchctl unload "$plist" 2>/dev/null || true
+            mv "$plist" "${plist}.disabled"
+            ok "Disabled OpenClaw launchd service"
+        else
+            info "No OpenClaw launchd service found"
+        fi
+    else
+        if systemctl --user is-active openclaw-gateway &>/dev/null; then
+            systemctl --user stop openclaw-gateway
+            systemctl --user disable openclaw-gateway
+            ok "Disabled OpenClaw systemd service"
+        else
+            info "No OpenClaw systemd service running"
+        fi
+    fi
+
+    # Mark as disabled in config
+    if [[ -f "$OPENCLAW_DIR/openclaw.json" ]]; then
+        local tmp=$(mktemp)
+        jq '. + {metasphere_migrated: true, gateway_disabled: true}' "$OPENCLAW_DIR/openclaw.json" > "$tmp"
+        mv "$tmp" "$OPENCLAW_DIR/openclaw.json"
+        ok "Marked OpenClaw config as migrated"
+    fi
+}
+
+# =============================================================================
+# Full migration
+# =============================================================================
+
+run_migration() {
+    local disable_openclaw_flag=false
+
+    for arg in "$@"; do
+        case "$arg" in
+            --disable) disable_openclaw_flag=true ;;
+        esac
+    done
+
+    echo "Metasphere Migration"
+    echo "===================="
+    echo
+    echo "Source: $OPENCLAW_DIR"
+    echo "Target: $METASPHERE_DIR"
+    echo
+
+    # Check if already migrated
+    if [[ -f "$OPENCLAW_DIR/openclaw.json" ]]; then
+        if jq -e '.metasphere_migrated' "$OPENCLAW_DIR/openclaw.json" &>/dev/null; then
+            warn "Already migrated - running again may overwrite changes"
+            echo
+        fi
+    fi
+
+    # Run migration steps
+    migrate_telegram || true
+    migrate_soul || true
+    migrate_memory || true
+    parse_sessions || true
+
+    # Optionally disable OpenClaw
+    if $disable_openclaw_flag; then
+        disable_openclaw
+    fi
+
+    # Log migration event
+    "$SCRIPT_DIR/metasphere-events" log migration.complete "Migrated from OpenClaw" --agent @system 2>/dev/null || true
+
+    echo
+    echo "Migration complete!"
+    echo "==================="
+    echo
+    echo "Next steps:"
+    echo "  1. Start Metasphere: metasphere daemon start"
+    echo "  2. Check status: metasphere status"
+    if ! $disable_openclaw_flag; then
+        echo "  3. Disable OpenClaw: metasphere-migrate disable"
+    fi
+}
+
+# =============================================================================
+# Interactive disable prompt
+# =============================================================================
+
+prompt_disable() {
+    echo "Disable OpenClaw Gateway?"
+    echo "========================="
+    echo
+    echo "This will:"
+    echo "  - Stop the OpenClaw gateway service"
+    echo "  - Disable it from starting on boot"
+    echo "  - Mark the config as migrated"
+    echo
+    echo "OpenClaw data will NOT be deleted."
+    echo
+
+    read -p "Disable OpenClaw gateway? [y/N] " -n 1 -r
+    echo
+
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        disable_openclaw
+    else
+        info "Skipped - OpenClaw gateway still running"
+    fi
+}
+
+# =============================================================================
+# Main
+# =============================================================================
+
+case "${1:-detect}" in
+    detect|check)
+        detect_openclaw
+        ;;
+    run|migrate)
+        shift
+        run_migration "$@"
+        ;;
+    telegram|token)
+        migrate_telegram
+        ;;
+    sessions|cam)
+        parse_sessions
+        ;;
+    disable|stop)
+        if [[ "${2:-}" == "-y" || "${2:-}" == "--yes" ]]; then
+            disable_openclaw
+        else
+            prompt_disable
+        fi
+        ;;
+    *)
+        cat << 'EOF'
+metasphere-migrate - OpenClaw to Metasphere migration
+
+Usage:
+  metasphere-migrate detect            Check for OpenClaw installation
+  metasphere-migrate run [--disable]   Run full migration
+  metasphere-migrate telegram          Extract Telegram token only
+  metasphere-migrate sessions          Parse sessions with CAM
+  metasphere-migrate disable [-y]      Disable OpenClaw gateway
+
+The migration will:
+  - Extract Telegram bot token from openclaw.json
+  - Copy SOUL.md and agent profiles
+  - Import memory files
+  - Trigger CAM to index sessions
+
+Use --disable with 'run' to also disable OpenClaw after migration.
+EOF
+        exit 1
+        ;;
+esac

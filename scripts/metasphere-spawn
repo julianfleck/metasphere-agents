@@ -1,0 +1,185 @@
+#!/bin/bash
+# metasphere-spawn - Spawn a new agent at a specific scope (directory)
+#
+# Usage: metasphere-spawn @agent-name /scope/path/ "task description" [@parent]
+#
+# The agent will:
+#   - Work in the specified scope directory
+#   - See messages/tasks from that scope + parent scopes
+#   - Report to parent agent (or @orchestrator by default)
+
+set -e
+
+REPO_ROOT="${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+AGENT_ID="$1"
+SCOPE_PATH="$2"
+TASK="$3"
+PARENT="${4:-@orchestrator}"
+TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+if [[ -z "$AGENT_ID" || -z "$SCOPE_PATH" || -z "$TASK" ]]; then
+    cat << 'EOF'
+Usage: metasphere-spawn @agent-name /scope/path/ "task description" [@parent]
+
+Examples:
+  metasphere-spawn @researcher / "Research JWT security patterns"
+  metasphere-spawn @messaging-dev /core/messaging/ "Implement message tracking" @core-architect
+  metasphere-spawn @memory-dev /core/memory/ "Integrate CAM context injection" @core-architect
+
+The scope path is relative to the repo root.
+EOF
+    exit 1
+fi
+
+# Resolve scope to absolute path
+if [[ "$SCOPE_PATH" == /* ]]; then
+    SCOPE="$REPO_ROOT$SCOPE_PATH"
+else
+    SCOPE="$REPO_ROOT/$SCOPE_PATH"
+fi
+SCOPE="${SCOPE%/}"  # Remove trailing slash
+
+# Create scope directories if needed
+mkdir -p "$SCOPE/.tasks/active" "$SCOPE/.tasks/completed"
+mkdir -p "$SCOPE/.messages/inbox" "$SCOPE/.messages/outbox"
+
+# Create agent directory
+AGENT_DIR="$METASPHERE_DIR/agents/$AGENT_ID"
+mkdir -p "$AGENT_DIR"
+
+# Write agent metadata
+echo "$TASK" > "$AGENT_DIR/task"
+echo "spawned: $TASK" > "$AGENT_DIR/status"
+echo "$SCOPE" > "$AGENT_DIR/scope"
+echo "$PARENT" > "$AGENT_DIR/parent"
+echo "$TIMESTAMP" > "$AGENT_DIR/spawned_at"
+
+# Create message inbox for this agent (for named agent addressing)
+mkdir -p "$METASPHERE_DIR/messages/$AGENT_ID/inbox"
+
+# Generate the agent harness
+HARNESS="$AGENT_DIR/harness.md"
+cat > "$HARNESS" << EOF
+# Agent: $AGENT_ID
+
+You are **$AGENT_ID**, an autonomous agent working in the Metasphere system.
+
+## Your Context
+
+| Field | Value |
+|-------|-------|
+| Agent ID | $AGENT_ID |
+| Scope | \`$SCOPE_PATH\` |
+| Parent | $PARENT |
+| Spawned | $TIMESTAMP |
+
+## Your Task
+
+$TASK
+
+---
+
+## Communication
+
+You work in a **fractal hierarchy**. Messages and tasks are scoped by directory:
+- You see everything in your scope (\`$SCOPE_PATH\`) and parent scopes
+- You can send messages up (to parent), down (to children you spawn), or lateral (to siblings)
+
+### Check Messages & Tasks (runs automatically each turn)
+\`\`\`bash
+METASPHERE_SCOPE="$SCOPE" messages      # See incoming messages
+METASPHERE_SCOPE="$SCOPE" tasks         # See active tasks
+\`\`\`
+
+### Send Messages
+\`\`\`bash
+# To your parent
+messages send @.. !info "Status update: ..."
+
+# To a sibling (e.g., if you're at /core/messaging/, send to /core/memory/)
+messages send @/core/memory/ !query "Do you have context on X?"
+
+# To spawn a child task (creates message in child scope)
+messages send @/core/messaging/subsystem/ !task "Implement feature X"
+
+# Mark a message-task as done
+messages done <msg-id> "Completed: summary of what was done"
+\`\`\`
+
+### Manage Tasks
+\`\`\`bash
+# Create a task in your scope
+tasks new "Task title" !priority
+
+# Start working on a task
+tasks start <task-id>
+
+# Add progress update
+tasks update <task-id> "What you did"
+
+# Complete a task
+tasks done <task-id> "Summary of completion"
+\`\`\`
+
+### Update Your Status
+\`\`\`bash
+echo "working: description" > ~/.metasphere/agents/$AGENT_ID/status
+echo "waiting: need input on X" > ~/.metasphere/agents/$AGENT_ID/status
+echo "complete: summary" > ~/.metasphere/agents/$AGENT_ID/status
+\`\`\`
+
+---
+
+## Workflow (SPIRAL)
+
+1. **SAMPLE** - Check messages and tasks (automatic via precommand)
+2. **PURSUE** - Diverge: explore the problem space, gather information
+3. **INTEGRATE** - Connect findings to existing knowledge (\`cam search\`, \`cam context\`)
+4. **REFLECT** - Evaluate: is this good enough? Do I need help?
+5. **ABSTRACT** - Converge: synthesize findings, update tasks/messages
+6. **LOOP** - Report up, spawn down if needed, continue or complete
+
+---
+
+## Spawning Child Agents
+
+If your task is complex, spawn specialized child agents:
+
+\`\`\`bash
+# Spawn a child to handle a subtask
+metasphere-spawn @child-name $SCOPE_PATH/subdir/ "specific subtask" $AGENT_ID
+\`\`\`
+
+---
+
+## Completion Protocol
+
+When your task is complete:
+
+1. Update status: \`echo "complete: summary" > ~/.metasphere/agents/$AGENT_ID/status\`
+2. Complete any task you were assigned: \`tasks done <task-id> "summary"\`
+3. Notify parent: \`messages send @.. !done "Completed: what you accomplished"\`
+
+---
+
+*You are autonomous. Work through your task systematically, communicate status, ask for help if blocked, and complete your objective.*
+EOF
+
+# Send initial task message to the agent's scope
+"$SCRIPT_DIR/messages" send "@$SCOPE_PATH" !task "$TASK" 2>/dev/null || true
+
+echo "Spawned $AGENT_ID"
+echo ""
+echo "  Scope:   $SCOPE_PATH"
+echo "  Parent:  $PARENT"
+echo "  Task:    $TASK"
+echo "  Harness: $HARNESS"
+echo ""
+echo "To run interactively:"
+echo "  METASPHERE_AGENT_ID=$AGENT_ID METASPHERE_SCOPE=$SCOPE claude"
+echo ""
+echo "To run non-interactively:"
+echo "  METASPHERE_AGENT_ID=$AGENT_ID METASPHERE_SCOPE=$SCOPE claude -p \"\$(cat $HARNESS)\""

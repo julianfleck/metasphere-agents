@@ -1,0 +1,361 @@
+#!/bin/bash
+# metasphere-session - Manage interactive agent tmux sessions
+#
+# Agents can run in two modes:
+#   1. One-shot (claude -p) - stateless, for quick tasks
+#   2. Interactive (tmux + claude) - persistent, for ongoing work
+#
+# Interactive sessions maintain state, can receive heartbeats,
+# and allow human observation/intervention.
+#
+# Usage:
+#   metasphere session start @agent     Start interactive session
+#   metasphere session attach @agent    Attach to session
+#   metasphere session send @agent "msg" Send input to session
+#   metasphere session list             List active sessions
+#   metasphere session stop @agent      Stop session
+
+set -e
+
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Find tmux - check multiple locations
+TMUX_CMD=""
+if command -v tmux &>/dev/null; then
+    TMUX_CMD="tmux"
+elif [[ -x "/opt/homebrew/bin/tmux" ]]; then
+    TMUX_CMD="/opt/homebrew/bin/tmux"
+elif [[ -d "/opt/homebrew/Cellar/tmux" ]]; then
+    TMUX_CMD=$(find /opt/homebrew/Cellar/tmux -name "tmux" -type f -perm +111 2>/dev/null | head -1)
+elif [[ -x "/usr/local/bin/tmux" ]]; then
+    TMUX_CMD="/usr/local/bin/tmux"
+fi
+
+if [[ -z "$TMUX_CMD" ]]; then
+    echo "Error: tmux not found. Install with: brew install tmux"
+    exit 1
+fi
+
+# Colors
+if [[ -t 1 ]]; then
+    GREEN=$'\033[0;32m'
+    YELLOW=$'\033[1;33m'
+    CYAN=$'\033[0;36m'
+    DIM=$'\033[2m'
+    BOLD=$'\033[1m'
+    NC=$'\033[0m'
+else
+    GREEN='' YELLOW='' CYAN='' DIM='' BOLD='' NC=''
+fi
+
+# Get session name for agent
+session_name() {
+    local agent="$1"
+    echo "metasphere-${agent#@}"
+}
+
+# =============================================================================
+# Start interactive session
+# =============================================================================
+
+cmd_start() {
+    local agent="$1"
+    [[ -z "$agent" || "$agent" != @* ]] && {
+        echo "Usage: metasphere session start @agent"
+        exit 1
+    }
+
+    local session=$(session_name "$agent")
+    local agent_dir="$METASPHERE_DIR/agents/$agent"
+
+    # Check if already running
+    if $TMUX_CMD has-session -t "$session" 2>/dev/null; then
+        echo -e "${YELLOW}!${NC} Session already running: $session"
+        echo "  Attach: metasphere session attach $agent"
+        exit 0
+    fi
+
+    # Get agent config
+    local scope=$(cat "$agent_dir/scope" 2>/dev/null || echo "$PWD")
+    local task=$(cat "$agent_dir/task" 2>/dev/null || echo "general assistance")
+    local sandbox=$(cat "$agent_dir/sandbox" 2>/dev/null || echo "none")
+    local soul=""
+    [[ -f "$agent_dir/SOUL.md" ]] && soul=$(cat "$agent_dir/SOUL.md")
+
+    # Sandbox tool restrictions
+    local allowed_tools="Read,Write,Edit,Bash,Glob,Grep"
+    local allowed_paths=""
+    case "$sandbox" in
+        readonly)
+            allowed_tools="Read,Glob,Grep"
+            ;;
+        scoped)
+            allowed_paths="$scope"
+            ;;
+        nobash)
+            allowed_tools="Read,Write,Edit,Glob,Grep"
+            ;;
+    esac
+
+    # Build initial prompt
+    local init_prompt="You are $agent, an agent in the Metasphere system.
+
+## Your Task
+$task
+
+## Your Scope
+Working directory: $scope
+Sandbox level: $sandbox
+
+## Soul
+$soul
+
+## Available Commands
+
+### Status & Overview
+- metasphere status              # Full system status
+- metasphere ls                  # Project landscape
+- metasphere ls @agent           # Agent-specific view
+- metasphere logs                # View all logs
+- metasphere logs events -f      # Follow event stream
+
+### Tasks
+- tasks                          # List active tasks
+- tasks new \"title\" !priority    # Create task (!urgent, !high, !normal, !low)
+- tasks start ID                 # Start working on task
+- tasks update ID \"note\"         # Add progress update
+- tasks done ID \"summary\"        # Complete task
+- tasks tree                     # Show task tree across scopes
+
+### Messages
+- messages send @target !label \"msg\"   # Send to another agent
+- messages inbox                        # Check your inbox
+- messages read ID                      # Read message
+
+### Agent Self-Management
+- metasphere agent update $agent --status \"working: X\"   # Update your status
+- metasphere agent report $agent \"progress note\"          # Report to parent
+- metasphere agent spawn @child --task \"X\" --parent $agent # Spawn child agent
+
+### Events
+- metasphere events log TYPE \"msg\" --agent $agent   # Log an event
+- metasphere events tail 20                          # Recent events
+
+### Communication
+- messages send @orchestrator !report \"status update\"     # Report to orchestrator
+- metasphere-telegram-stream send \"message\"               # Send to user via Telegram
+
+## Instructions
+You are in an interactive session. You will receive:
+- Periodic heartbeats with system state
+- Direct messages from other agents
+- Commands from the orchestrator
+
+Guidelines:
+- Update your status when starting/finishing work
+- Use tasks to track deliverables
+- Report blockers immediately
+- Communicate progress to parent agent
+- No emojis in communication
+
+Begin by acknowledging your task and getting started."
+
+    # Create tmux session with claude
+    echo -e "${GREEN}✓${NC} Starting session: $session"
+    echo "  Scope: $scope"
+    echo "  Sandbox: $sandbox"
+    echo "  Attach: metasphere session attach $agent"
+
+    # Build claude command
+    local claude_cmd="cd '$scope' && claude"
+    [[ -n "$allowed_tools" ]] && claude_cmd="$claude_cmd --allowedTools '$allowed_tools'"
+
+    # Start tmux session
+    $TMUX_CMD new-session -d -s "$session" -c "$scope"
+
+    # Configure tmux for agent use
+    $TMUX_CMD set-option -t "$session" mouse on
+    $TMUX_CMD set-option -t "$session" history-limit 50000
+
+    # Start claude in the session
+    $TMUX_CMD send-keys -t "$session" "$claude_cmd" Enter
+
+    # Wait a moment for claude to start
+    sleep 2
+
+    # Send initial prompt
+    $TMUX_CMD send-keys -t "$session" "$init_prompt" Enter
+
+    # Update agent status
+    echo "active: interactive session" > "$agent_dir/status"
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$agent_dir/session_started"
+
+    echo -e "${GREEN}✓${NC} Session started"
+}
+
+# =============================================================================
+# Attach to session
+# =============================================================================
+
+cmd_attach() {
+    local agent="$1"
+    [[ -z "$agent" || "$agent" != @* ]] && {
+        echo "Usage: metasphere session attach @agent"
+        exit 1
+    }
+
+    local session=$(session_name "$agent")
+
+    if ! $TMUX_CMD has-session -t "$session" 2>/dev/null; then
+        echo "No session for $agent"
+        echo "Start one: metasphere session start $agent"
+        exit 1
+    fi
+
+    echo -e "${CYAN}Attaching to $session...${NC}"
+    echo -e "${DIM}Detach: Ctrl+b d${NC}"
+    echo
+
+    $TMUX_CMD attach-session -t "$session"
+}
+
+# =============================================================================
+# Send message to session
+# =============================================================================
+
+cmd_send() {
+    local agent="$1"
+    shift
+    local message="$*"
+
+    [[ -z "$agent" || "$agent" != @* ]] && {
+        echo "Usage: metasphere session send @agent \"message\""
+        exit 1
+    }
+
+    local session=$(session_name "$agent")
+
+    if ! $TMUX_CMD has-session -t "$session" 2>/dev/null; then
+        echo "No session for $agent"
+        exit 1
+    fi
+
+    # Send message as input
+    $TMUX_CMD send-keys -t "$session" "$message" Enter
+    echo -e "${GREEN}✓${NC} Sent to $agent"
+}
+
+# =============================================================================
+# List sessions
+# =============================================================================
+
+cmd_list() {
+    echo -e "${BOLD}Active Agent Sessions${NC}"
+    echo
+
+    local found=false
+    $TMUX_CMD list-sessions 2>/dev/null | grep "^metasphere-" | while read -r line; do
+        found=true
+        local session=$(echo "$line" | cut -d: -f1)
+        local agent="@${session#metasphere-}"
+        local info=$(echo "$line" | cut -d: -f2-)
+
+        echo -e "  ${GREEN}●${NC} $agent"
+        echo -e "    ${DIM}$info${NC}"
+    done
+
+    if ! $TMUX_CMD list-sessions 2>/dev/null | grep -q "^metasphere-"; then
+        echo -e "  ${DIM}(no active sessions)${NC}"
+        echo
+        echo "Start one: metasphere session start @agent"
+    fi
+}
+
+# =============================================================================
+# Stop session
+# =============================================================================
+
+cmd_stop() {
+    local agent="$1"
+    [[ -z "$agent" || "$agent" != @* ]] && {
+        echo "Usage: metasphere session stop @agent"
+        exit 1
+    }
+
+    local session=$(session_name "$agent")
+    local agent_dir="$METASPHERE_DIR/agents/$agent"
+
+    if ! $TMUX_CMD has-session -t "$session" 2>/dev/null; then
+        echo "No session for $agent"
+        exit 0
+    fi
+
+    # Send exit command gracefully
+    $TMUX_CMD send-keys -t "$session" "/exit" Enter
+    sleep 1
+
+    # Kill if still running
+    $TMUX_CMD kill-session -t "$session" 2>/dev/null || true
+
+    # Update agent status
+    echo "idle" > "$agent_dir/status"
+
+    echo -e "${GREEN}✓${NC} Stopped session for $agent"
+}
+
+# =============================================================================
+# Main dispatch
+# =============================================================================
+
+case "${1:-}" in
+    start|new)
+        shift
+        cmd_start "$@"
+        ;;
+    attach|a)
+        shift
+        cmd_attach "$@"
+        ;;
+    send|msg)
+        shift
+        cmd_send "$@"
+        ;;
+    list|ls)
+        cmd_list
+        ;;
+    stop|kill)
+        shift
+        cmd_stop "$@"
+        ;;
+    *)
+        cat << 'EOF'
+metasphere-session - Interactive agent sessions
+
+Usage:
+  metasphere session start @agent       Start interactive session
+  metasphere session attach @agent      Attach to session (Ctrl+b d to detach)
+  metasphere session send @agent "msg"  Send input to session
+  metasphere session list               List active sessions
+  metasphere session stop @agent        Stop session
+
+Interactive sessions:
+  - Run in tmux with persistent state
+  - Receive heartbeats automatically
+  - Can be observed/controlled by human
+  - Support sandbox restrictions
+
+Sandbox levels (set in agent config):
+  none     - Full access (default)
+  scoped   - Restricted to agent's scope directory
+  nobash   - No Bash tool (safer for untrusted tasks)
+  readonly - Only Read, Glob, Grep tools
+
+Example:
+  metasphere agent spawn @coder --scope /project --sandbox=scoped
+  metasphere session start @coder
+  metasphere session attach @coder
+EOF
+        exit 1
+        ;;
+esac

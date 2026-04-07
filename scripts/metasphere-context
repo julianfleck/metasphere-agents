@@ -1,0 +1,57 @@
+#!/bin/bash
+# metasphere-context - Precommand hook that injects messages + tasks + CAM + Telegram
+# Called before each agent turn via Claude Code UserPromptSubmit hook
+#
+# Injection order (most actionable first):
+#   1. Telegram (human can intervene every turn)
+#   2. Agent messages (inter-agent communication)
+#   3. Tasks (what needs doing)
+#   4. CAM (relevant memory)
+
+REPO_ROOT="${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+AGENT="${METASPHERE_AGENT_ID:-@user}"
+SCOPE="${METASPHERE_SCOPE:-$REPO_ROOT}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Export for child scripts
+export METASPHERE_REPO_ROOT="$REPO_ROOT"
+export METASPHERE_SCOPE="$SCOPE"
+export METASPHERE_AGENT_ID="$AGENT"
+
+# 0. Telegram - last message from human (always check first, user can intervene)
+if [[ -x "$SCRIPT_DIR/metasphere-telegram-stream" ]]; then
+    "$SCRIPT_DIR/metasphere-telegram-stream" context 2>/dev/null
+    echo ""
+fi
+
+# 1. Show messages
+"$SCRIPT_DIR/messages" 2>/dev/null || echo "## Messages: Error loading messages"
+
+echo ""
+
+# 2. Show tasks
+"$SCRIPT_DIR/tasks" 2>/dev/null || echo "## Tasks: Error loading tasks"
+
+# 3. CAM context - based on task, repo name, or recent activity
+echo ""
+echo "## Memory Context (CAM)"
+
+TASK_FILE="$METASPHERE_DIR/agents/$AGENT/task"
+if [[ -f "$TASK_FILE" ]]; then
+    # Use current task as query
+    QUERY=$(cat "$TASK_FILE")
+elif [[ -n "$REPO_ROOT" ]]; then
+    # Fall back to repo/project name
+    QUERY=$(basename "$REPO_ROOT")
+else
+    # Last resort: recent activity
+    QUERY="@claude [1h]"
+fi
+
+# Get CAM context (limit output to keep context manageable)
+if command -v cam &>/dev/null; then
+    cam context "$QUERY" 2>/dev/null | head -40 || echo "No relevant memory found."
+else
+    echo "CAM not installed. Run: pip install collective-agent-memory"
+fi

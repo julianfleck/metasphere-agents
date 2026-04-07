@@ -1,0 +1,340 @@
+#!/bin/bash
+# metasphere-telegram-groups - Telegram Forum/Group management for projects
+#
+# Uses Telegram Forum Topics to create project/task workspaces:
+#   - Each project gets a topic in the forum
+#   - Agents can post updates to their topic
+#   - Users can interact via slash commands
+#   - Deep links allow jumping to specific topics
+#
+# Setup:
+#   1. Create a Telegram Group
+#   2. Convert to Supergroup (happens automatically with topics)
+#   3. Enable Topics in group settings
+#   4. Add the bot as admin with "Manage Topics" permission
+#   5. Run: metasphere telegram groups setup
+#
+# Usage:
+#   metasphere telegram groups setup              Configure forum group
+#   metasphere telegram groups create "Project"   Create topic for project
+#   metasphere telegram groups list               List all topics
+#   metasphere telegram groups send TOPIC "msg"   Send message to topic
+#   metasphere telegram groups link TOPIC         Get deep link to topic
+
+set -e
+
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+GROUPS_DIR="$METASPHERE_DIR/telegram/groups"
+TOPICS_FILE="$GROUPS_DIR/topics.json"
+
+mkdir -p "$GROUPS_DIR"
+[[ -f "$TOPICS_FILE" ]] || echo '{}' > "$TOPICS_FILE"
+
+# Load config
+[[ -f "$METASPHERE_DIR/config/telegram.env" ]] && source "$METASPHERE_DIR/config/telegram.env"
+[[ -f "$METASPHERE_DIR/config/telegram_forum_id" ]] && FORUM_CHAT_ID=$(cat "$METASPHERE_DIR/config/telegram_forum_id")
+
+# Colors
+if [[ -t 1 ]]; then
+    GREEN=$'\033[0;32m'
+    YELLOW=$'\033[1;33m'
+    CYAN=$'\033[0;36m'
+    DIM=$'\033[2m'
+    NC=$'\033[0m'
+else
+    GREEN='' YELLOW='' CYAN='' DIM='' NC=''
+fi
+
+ok() { echo -e "${GREEN}✓${NC} $*"; }
+warn() { echo -e "${YELLOW}!${NC} $*"; }
+err() { echo -e "${YELLOW}✗${NC} $*" >&2; exit 1; }
+
+# Telegram API helper
+tg_api() {
+    local method="$1"
+    shift
+
+    [[ -z "$TELEGRAM_BOT_TOKEN" ]] && err "TELEGRAM_BOT_TOKEN not set"
+
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}" "$@"
+}
+
+# Create a forum topic
+create_topic() {
+    local name="$1"
+    local icon_emoji="${2:-📋}"
+
+    [[ -z "$name" ]] && err "Usage: metasphere telegram groups create \"Topic Name\" [emoji]"
+    [[ -z "$FORUM_CHAT_ID" ]] && err "Forum not configured. Run: metasphere telegram groups setup"
+
+    local response
+    response=$(tg_api "createForumTopic" \
+        -d "chat_id=$FORUM_CHAT_ID" \
+        -d "name=$name" \
+        -d "icon_custom_emoji_id=" 2>/dev/null || \
+        tg_api "createForumTopic" \
+        -d "chat_id=$FORUM_CHAT_ID" \
+        -d "name=$name")
+
+    local topic_ok=$(echo "$response" | jq -r '.ok')
+    if [[ "$topic_ok" == "true" ]]; then
+        local topic_id=$(echo "$response" | jq -r '.result.message_thread_id')
+        local topic_name=$(echo "$response" | jq -r '.result.name')
+
+        # Save to topics file
+        local topics=$(cat "$TOPICS_FILE")
+        echo "$topics" | jq --arg id "$topic_id" --arg name "$name" \
+            '. + {($name): {id: $id, name: $name, created: now}}' > "$TOPICS_FILE"
+
+        ok "Created topic: $topic_name (ID: $topic_id)"
+
+        # Generate deep link
+        local bot_username=$(tg_api "getMe" | jq -r '.result.username')
+        echo "  Link: https://t.me/c/${FORUM_CHAT_ID#-100}/$topic_id"
+
+        echo "$topic_id"
+    else
+        local error=$(echo "$response" | jq -r '.description // "Unknown error"')
+        err "Failed to create topic: $error"
+    fi
+}
+
+# Send message to a topic
+send_to_topic() {
+    local topic="$1"
+    local text="$2"
+    local agent="${METASPHERE_AGENT_ID:-orchestrator}"
+
+    [[ -z "$topic" || -z "$text" ]] && err "Usage: metasphere telegram groups send TOPIC \"message\""
+    [[ -z "$FORUM_CHAT_ID" ]] && err "Forum not configured"
+
+    # Resolve topic name to ID if needed
+    local topic_id="$topic"
+    if ! [[ "$topic" =~ ^[0-9]+$ ]]; then
+        topic_id=$(jq -r --arg name "$topic" '.[$name].id // empty' "$TOPICS_FILE")
+        [[ -z "$topic_id" ]] && err "Topic not found: $topic"
+    fi
+
+    # Format message with agent attribution
+    local formatted="*[${agent}]*
+
+$text"
+
+    local response
+    response=$(tg_api "sendMessage" \
+        -d "chat_id=$FORUM_CHAT_ID" \
+        -d "message_thread_id=$topic_id" \
+        -d "parse_mode=Markdown" \
+        --data-urlencode "text=$formatted")
+
+    local send_ok=$(echo "$response" | jq -r '.ok')
+    if [[ "$send_ok" == "true" ]]; then
+        ok "Sent to topic $topic"
+    else
+        local error=$(echo "$response" | jq -r '.description // "Unknown error"')
+        err "Failed to send: $error"
+    fi
+}
+
+# List all topics
+list_topics() {
+    echo -e "${CYAN}Forum Topics${NC}"
+    echo
+
+    if [[ ! -f "$TOPICS_FILE" ]] || [[ $(jq 'length' "$TOPICS_FILE") -eq 0 ]]; then
+        echo -e "${DIM}  (no topics created)${NC}"
+        return
+    fi
+
+    jq -r 'to_entries[] | "  \(.value.id)\t\(.key)"' "$TOPICS_FILE" | while IFS=$'\t' read -r id name; do
+        echo "  📋 $name"
+        echo -e "     ${DIM}ID: $id | Link: https://t.me/c/${FORUM_CHAT_ID#-100}/$id${NC}"
+    done
+}
+
+# Get deep link to topic
+get_link() {
+    local topic="$1"
+    [[ -z "$topic" ]] && err "Usage: metasphere telegram groups link TOPIC"
+    [[ -z "$FORUM_CHAT_ID" ]] && err "Forum not configured"
+
+    # Resolve topic name to ID if needed
+    local topic_id="$topic"
+    if ! [[ "$topic" =~ ^[0-9]+$ ]]; then
+        topic_id=$(jq -r --arg name "$topic" '.[$name].id // empty' "$TOPICS_FILE")
+        [[ -z "$topic_id" ]] && err "Topic not found: $topic"
+    fi
+
+    # Telegram deep link format for forum topics
+    # Format: https://t.me/c/CHAT_ID_WITHOUT_-100/TOPIC_ID
+    local chat_id_clean="${FORUM_CHAT_ID#-100}"
+    echo "https://t.me/c/${chat_id_clean}/${topic_id}"
+}
+
+# Setup wizard
+setup_forum() {
+    echo "Telegram Forum Setup"
+    echo "===================="
+    echo
+    echo "To use project groups, you need a Telegram Forum (supergroup with topics)."
+    echo
+    echo "Steps:"
+    echo "  1. Create a new Telegram Group"
+    echo "  2. Go to Group Settings → Topics → Enable"
+    echo "  3. Add your bot as admin with 'Manage Topics' permission"
+    echo "  4. Get the group ID (forward a message to @userinfobot or similar)"
+    echo
+
+    read -p "Enter Forum Group ID (starts with -100): " forum_id
+
+    if [[ -n "$forum_id" ]]; then
+        # Verify we can access the group
+        local response=$(tg_api "getChat" -d "chat_id=$forum_id")
+        local chat_ok=$(echo "$response" | jq -r '.ok')
+
+        if [[ "$chat_ok" == "true" ]]; then
+            local chat_type=$(echo "$response" | jq -r '.result.type')
+            local chat_title=$(echo "$response" | jq -r '.result.title')
+            local is_forum=$(echo "$response" | jq -r '.result.is_forum // false')
+
+            if [[ "$is_forum" == "true" ]]; then
+                echo "$forum_id" > "$METASPHERE_DIR/config/telegram_forum_id"
+                ok "Forum configured: $chat_title"
+                echo
+                echo "You can now create topics:"
+                echo "  metasphere telegram groups create \"Project Alpha\""
+            else
+                warn "Group found but topics not enabled"
+                echo "Enable topics in: Group Settings → Topics"
+
+                # Save anyway, user might enable topics later
+                read -p "Save anyway? [y/N] " -n 1 -r
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    echo "$forum_id" > "$METASPHERE_DIR/config/telegram_forum_id"
+                    ok "Saved (enable topics to use)"
+                fi
+            fi
+        else
+            local error=$(echo "$response" | jq -r '.description // "Unknown error"')
+            err "Could not access group: $error"
+        fi
+    fi
+}
+
+# Create topic for a project/task and return link
+create_workspace() {
+    local type="$1"  # project, task, agent
+    local name="$2"
+    local id="$3"
+
+    [[ -z "$FORUM_CHAT_ID" ]] && return 1
+
+    local emoji="📋"
+    case "$type" in
+        project) emoji="📁" ;;
+        task) emoji="✅" ;;
+        agent) emoji="🤖" ;;
+    esac
+
+    local topic_name="$name"
+    [[ -n "$id" ]] && topic_name="$name [$id]"
+
+    local topic_id=$(create_topic "$topic_name" "$emoji" 2>/dev/null | tail -1)
+
+    if [[ -n "$topic_id" ]]; then
+        get_link "$topic_id"
+    fi
+}
+
+# Process commands received in forum topics
+process_forum_command() {
+    local topic_id="$1"
+    local command="$2"
+    local args="$3"
+
+    case "$command" in
+        /tasks|/t)
+            # List tasks relevant to this topic
+            "$SCRIPT_DIR/tasks" list 2>/dev/null || echo "No tasks"
+            ;;
+        /status|/s)
+            # Show status
+            "$SCRIPT_DIR/metasphere" status 2>/dev/null | head -30
+            ;;
+        /agents|/a)
+            # List agents
+            "$SCRIPT_DIR/metasphere" agents 2>/dev/null
+            ;;
+        /help|/h)
+            cat << 'EOF'
+Available commands:
+  /tasks, /t     - List active tasks
+  /status, /s    - System status
+  /agents, /a    - List agents
+  /help, /h      - This help
+
+Or just send a message to chat with the team.
+EOF
+            ;;
+        *)
+            echo "Unknown command. Try /help"
+            ;;
+    esac
+}
+
+# Main dispatch
+case "${1:-}" in
+    setup)
+        setup_forum
+        ;;
+    create|new)
+        shift
+        create_topic "$@"
+        ;;
+    list|ls)
+        list_topics
+        ;;
+    send|msg)
+        shift
+        send_to_topic "$@"
+        ;;
+    link|url)
+        shift
+        get_link "$@"
+        ;;
+    workspace)
+        shift
+        create_workspace "$@"
+        ;;
+    process-cmd)
+        shift
+        process_forum_command "$@"
+        ;;
+    *)
+        cat << 'EOF'
+metasphere-telegram-groups - Forum/Topic management for Metasphere
+
+Usage:
+  metasphere telegram groups setup              Configure forum group
+  metasphere telegram groups create "Name"      Create a topic
+  metasphere telegram groups list               List all topics
+  metasphere telegram groups send TOPIC "msg"   Send to topic
+  metasphere telegram groups link TOPIC         Get deep link
+
+Setup:
+  1. Create a Telegram Group
+  2. Enable Topics in group settings
+  3. Add bot as admin with "Manage Topics" permission
+  4. Run: metasphere telegram groups setup
+
+Topics allow project-specific conversations:
+  - Each project/task gets its own topic
+  - Agents post updates to relevant topics
+  - Users can use /commands within topics
+  - Deep links jump directly to topics
+EOF
+        exit 1
+        ;;
+esac

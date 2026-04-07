@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/julian/Tresors/Privat/Code/metasphere-agents/scripts/metasphere-context"
+          }
+        ]
+      }
+    ]
+  }
+}

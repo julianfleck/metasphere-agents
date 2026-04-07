@@ -1,0 +1,292 @@
+#!/bin/bash
+# metasphere-events - Centralized event log for all agent activity
+#
+# All hooks, agents, and scripts can log events here.
+# The orchestrator uses this as primary source of truth for what's happening.
+#
+# Event types:
+#   agent.spawn, agent.sunset, agent.status
+#   task.create, task.start, task.complete
+#   message.send, message.receive
+#   git.commit, git.push, git.pr
+#   error, warning, info
+#   user.message, user.command
+#
+# Usage:
+#   metasphere events log TYPE "message" [--agent @name] [--meta key=value]
+#   metasphere events tail [N]
+#   metasphere events search "pattern"
+#   metasphere events since "1h" | "2024-01-01"
+#   metasphere events context          # For orchestrator injection
+
+set -e
+
+METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+EVENTS_DIR="$METASPHERE_DIR/events"
+EVENTS_LOG="$EVENTS_DIR/events.jsonl"
+EVENTS_INDEX="$EVENTS_DIR/index"
+
+mkdir -p "$EVENTS_DIR" "$EVENTS_INDEX"
+
+# =============================================================================
+# Log an event
+# =============================================================================
+
+cmd_log() {
+    local event_type="$1"
+    shift
+    local message="$1"
+    shift
+
+    local agent="${METASPHERE_AGENT_ID:-@system}"
+    local scope="${METASPHERE_SCOPE:-}"
+    local meta="{}"
+
+    # Parse additional args
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --agent|-a)
+                agent="$2"
+                shift 2
+                ;;
+            --scope|-s)
+                scope="$2"
+                shift 2
+                ;;
+            --meta|-m)
+                # key=value format
+                local key="${2%%=*}"
+                local value="${2#*=}"
+                meta=$(echo "$meta" | jq --arg k "$key" --arg v "$value" '. + {($k): $v}')
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local event_id="evt-$(date +%s)-$$"
+
+    # Create event JSON (compact, single line)
+    local event=$(jq -c -n \
+        --arg id "$event_id" \
+        --arg ts "$timestamp" \
+        --arg type "$event_type" \
+        --arg msg "$message" \
+        --arg agent "$agent" \
+        --arg scope "$scope" \
+        --argjson meta "$meta" \
+        '{id: $id, timestamp: $ts, type: $type, message: $msg, agent: $agent, scope: $scope, meta: $meta}')
+
+    # Append to log
+    echo "$event" >> "$EVENTS_LOG"
+
+    # Index by type
+    echo "$event_id:$timestamp:$message" >> "$EVENTS_INDEX/$event_type.log"
+
+    # Index by agent
+    mkdir -p "$EVENTS_INDEX/agents"
+    echo "$event_id:$timestamp:$event_type:$message" >> "$EVENTS_INDEX/agents/${agent#@}.log"
+
+    echo "$event_id"
+}
+
+# =============================================================================
+# Tail recent events
+# =============================================================================
+
+cmd_tail() {
+    local count="${1:-20}"
+
+    if [[ ! -f "$EVENTS_LOG" ]]; then
+        echo "(no events)"
+        return
+    fi
+
+    tail -n "$count" "$EVENTS_LOG" | jq -r '"\(.timestamp | split("T")[1] | split(".")[0]) [\(.type)] \(.agent): \(.message)"'
+}
+
+# =============================================================================
+# Search events
+# =============================================================================
+
+cmd_search() {
+    local pattern="$*"
+
+    if [[ ! -f "$EVENTS_LOG" ]]; then
+        echo "(no events)"
+        return
+    fi
+
+    grep -i "$pattern" "$EVENTS_LOG" | jq -r '"\(.timestamp) [\(.type)] \(.agent): \(.message)"' | head -50
+}
+
+# =============================================================================
+# Events since time
+# =============================================================================
+
+cmd_since() {
+    local since="$1"
+    local since_ts
+
+    # Parse relative time (1h, 30m, 1d) or absolute
+    case "$since" in
+        *h)
+            local hours="${since%h}"
+            since_ts=$(date -v-${hours}H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -d "$hours hours ago" +%Y-%m-%dT%H:%M:%SZ)
+            ;;
+        *m)
+            local mins="${since%m}"
+            since_ts=$(date -v-${mins}M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -d "$mins minutes ago" +%Y-%m-%dT%H:%M:%SZ)
+            ;;
+        *d)
+            local days="${since%d}"
+            since_ts=$(date -v-${days}d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -d "$days days ago" +%Y-%m-%dT%H:%M:%SZ)
+            ;;
+        *)
+            since_ts="$since"
+            ;;
+    esac
+
+    if [[ ! -f "$EVENTS_LOG" ]]; then
+        echo "(no events)"
+        return
+    fi
+
+    jq -r --arg since "$since_ts" 'select(.timestamp >= $since) | "\(.timestamp | split("T")[1] | split(".")[0]) [\(.type)] \(.agent): \(.message)"' "$EVENTS_LOG"
+}
+
+# =============================================================================
+# Context for orchestrator
+# =============================================================================
+
+cmd_context() {
+    local count="${1:-15}"
+
+    echo "## Recent Events"
+    echo
+
+    if [[ ! -f "$EVENTS_LOG" ]]; then
+        echo "(no events recorded)"
+        return
+    fi
+
+    tail -n "$count" "$EVENTS_LOG" | jq -r '"\(.timestamp | split("T")[1] | split(".")[0]) \(.type) - \(.agent): \(.message)"'
+}
+
+# =============================================================================
+# Stats
+# =============================================================================
+
+cmd_stats() {
+    if [[ ! -f "$EVENTS_LOG" ]]; then
+        echo "(no events)"
+        return
+    fi
+
+    echo "Event Statistics"
+    echo
+
+    echo "By type:"
+    jq -r '.type' "$EVENTS_LOG" | sort | uniq -c | sort -rn | head -10
+
+    echo
+    echo "By agent:"
+    jq -r '.agent' "$EVENTS_LOG" | sort | uniq -c | sort -rn | head -10
+
+    echo
+    local total=$(wc -l < "$EVENTS_LOG" | tr -d ' ')
+    echo "Total: $total events"
+}
+
+# =============================================================================
+# Clear old events
+# =============================================================================
+
+cmd_prune() {
+    local keep_days="${1:-7}"
+
+    if [[ ! -f "$EVENTS_LOG" ]]; then
+        echo "No events to prune"
+        return
+    fi
+
+    local cutoff=$(date -v-${keep_days}d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -d "$keep_days days ago" +%Y-%m-%dT%H:%M:%SZ)
+
+    local before=$(wc -l < "$EVENTS_LOG" | tr -d ' ')
+    jq -c --arg cutoff "$cutoff" 'select(.timestamp >= $cutoff)' "$EVENTS_LOG" > "$EVENTS_LOG.tmp"
+    mv "$EVENTS_LOG.tmp" "$EVENTS_LOG"
+    local after=$(wc -l < "$EVENTS_LOG" | tr -d ' ')
+
+    echo "Pruned $((before - after)) events older than $keep_days days"
+}
+
+# =============================================================================
+# Main dispatch
+# =============================================================================
+
+case "${1:-}" in
+    log|add|emit)
+        shift
+        cmd_log "$@"
+        ;;
+    tail|recent)
+        shift
+        cmd_tail "$@"
+        ;;
+    search|find|grep)
+        shift
+        cmd_search "$@"
+        ;;
+    since|after)
+        shift
+        cmd_since "$@"
+        ;;
+    context|ctx)
+        shift
+        cmd_context "$@"
+        ;;
+    stats|summary)
+        cmd_stats
+        ;;
+    prune|clean)
+        shift
+        cmd_prune "$@"
+        ;;
+    *)
+        cat << 'EOF'
+metasphere-events - Centralized event log
+
+Usage:
+  metasphere events log TYPE "message" [options]   Log an event
+  metasphere events tail [N]                       Show recent events
+  metasphere events search "pattern"               Search events
+  metasphere events since "1h"                     Events since time
+  metasphere events context                        For orchestrator
+  metasphere events stats                          Event statistics
+  metasphere events prune [days]                   Remove old events
+
+Event types:
+  agent.spawn, agent.sunset, agent.status
+  task.create, task.start, task.complete
+  message.send, message.receive
+  git.commit, git.push, git.pr
+  trace.error, trace.warning
+  user.message, user.command
+
+Options:
+  --agent, -a @name    Agent that generated event
+  --scope, -s /path    Scope/directory context
+  --meta, -m key=val   Additional metadata
+
+Examples:
+  metasphere events log agent.spawn "Created @coder" --agent @orchestrator
+  metasphere events log git.commit "feat: add login" --meta sha=abc123
+  metasphere events tail 30
+  metasphere events since 2h
+EOF
+        exit 1
+        ;;
+esac
