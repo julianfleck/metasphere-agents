@@ -50,7 +50,13 @@ _mts_has_pending_paste() {
 }
 
 # submit_to_tmux <session> <message>
-# Atomically delivers the message and ensures Enter actually submits.
+# Delivers a message to a claude TUI in tmux and ensures it actually submits.
+#
+# Strategy: use `tmux send-keys -l` (literal mode) to type the message
+# character-by-character. This entirely bypasses bracketed-paste, so there
+# is no "[Pasted text #N +M lines]" placeholder and no Enter race. Newlines
+# in the message are sent as literal C-j (newline-in-buffer) so they don't
+# prematurely submit; final submit is a single Enter.
 submit_to_tmux() {
     local session="$1"
     local message="$2"
@@ -58,40 +64,53 @@ submit_to_tmux() {
     tmux_bin=$(_mts_find_tmux)
     [[ -z "$tmux_bin" ]] && { echo "submit_to_tmux: tmux not found" >&2; return 1; }
 
-    # Verify session exists
     if ! "$tmux_bin" has-session -t "$session" 2>/dev/null; then
         echo "submit_to_tmux: no session $session" >&2
         return 1
     fi
 
-    # 1. Atomic paste
-    printf '%s' "$message" | "$tmux_bin" load-buffer -
-    "$tmux_bin" paste-buffer -t "$session"
+    # Split on newlines; for each line send literal text then C-j (newline
+    # within the input buffer, not submit). After the last line, send Enter
+    # to submit.
+    local IFS=$'\n'
+    local -a lines=()
+    # Read preserving empty trailing lines
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        lines+=("$line")
+    done <<< "$message"
 
-    # 2. Settle delay so claude TUI consumes bracketed-paste end marker
-    sleep 0.5
+    local i n=${#lines[@]}
+    for (( i=0; i<n; i++ )); do
+        local line="${lines[$i]}"
+        if [[ -n "$line" ]]; then
+            "$tmux_bin" send-keys -t "$session" -l -- "$line"
+        fi
+        if (( i < n - 1 )); then
+            # Newline-in-buffer (does NOT submit in claude TUI)
+            "$tmux_bin" send-keys -t "$session" C-j
+        fi
+    done
 
-    # 3. First submit attempt
+    # Settle, then submit
+    sleep 0.3
     "$tmux_bin" send-keys -t "$session" Enter
-    sleep 0.5
+    sleep 0.4
 
-    # 4. Verify and retry if still pending
+    # Belt-and-suspenders: if a stale "[Pasted text #" placeholder is
+    # somehow still visible (e.g. from a prior buggy injection), force
+    # additional Enters via the watchdog.
     local attempt=0
-    local max_attempts=3
-    while (( attempt < max_attempts )); do
+    while (( attempt < 3 )); do
         if ! _mts_has_pending_paste "$session" "$tmux_bin"; then
             return 0
         fi
         attempt=$((attempt + 1))
-        # Stuck placeholder - send another Enter
-        sleep 0.5
         "$tmux_bin" send-keys -t "$session" Enter
-        sleep 0.5
+        sleep 0.4
     done
 
-    # Final check
     if _mts_has_pending_paste "$session" "$tmux_bin"; then
-        echo "submit_to_tmux: WARNING placeholder still pending in $session after $max_attempts retries" >&2
+        echo "submit_to_tmux: WARNING placeholder still pending in $session" >&2
         return 2
     fi
     return 0

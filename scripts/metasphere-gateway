@@ -494,7 +494,7 @@ run_watchdog() {
 
 daemon_mode() {
     local interval="${1:-3}"
-    local watchdog_interval=60
+    local watchdog_interval=5
     local last_watchdog=0
 
     log "Starting gateway daemon (poll: ${interval}s, mode: $SESSION_MODE)"
