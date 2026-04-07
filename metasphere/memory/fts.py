@@ -70,6 +70,34 @@ def _walk_md(dirs: list[Path]) -> list[Path]:
     return files
 
 
+_FILE_CACHE: dict[str, tuple[float, str, str]] = {}
+
+
+def _read_cached(fp: Path) -> tuple[str, str] | None:
+    """Return ``(text, lower)`` for ``fp``, cached by ``(path, mtime)``.
+
+    Each context-build turn re-reads the entire markdown corpus from
+    disk; on a 1k-file repo that's tens of thousands of syscalls per
+    minute. Caching by mtime keeps the per-turn cost flat as the corpus
+    grows; entries auto-invalidate when files are touched.
+    """
+    key = str(fp)
+    try:
+        mtime = fp.stat().st_mtime
+    except OSError:
+        return None
+    cached = _FILE_CACHE.get(key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1], cached[2]
+    try:
+        text = fp.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    lower = text.lower()
+    _FILE_CACHE[key] = (mtime, text, lower)
+    return text, lower
+
+
 class TokenOverlapStrategy(MemoryStrategy):
     """Distinct-token-overlap scorer over markdown files in the metasphere corpus."""
 
@@ -91,25 +119,32 @@ class TokenOverlapStrategy(MemoryStrategy):
             return []
 
         total_tokens = len(tokens)
+        # Word-boundary alternation matches the bash `rg -w` semantics:
+        # `quokka` must NOT match `quokkas` and `cam` must NOT match
+        # `camera`. Plain substring scoring inflates short tokens and
+        # silently reorders results vs the bash version.
+        token_re = re.compile(
+            r"\b(" + "|".join(re.escape(t) for t in tokens) + r")\b"
+        )
         results: list[MemoryHit] = []
         for fp in files:
-            try:
-                text = fp.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
+            cached = _read_cached(fp)
+            if cached is None:
                 continue
-            lower = text.lower()
-            distinct = sum(1 for t in tokens if t in lower)
-            if distinct == 0:
+            text, lower = cached
+            matches = token_re.findall(lower)
+            if not matches:
                 continue
+            distinct_set = set(matches)
+            distinct = len(distinct_set)
             # Find first matching line for the excerpt.
             best_line = ""
             for line in text.splitlines():
-                low = line.lower()
-                if any(t in low for t in tokens):
+                if token_re.search(line.lower()):
                     best_line = line.strip()
                     break
             # Hit count as weak tiebreaker.
-            hits = sum(lower.count(t) for t in tokens)
+            hits = len(matches)
             tiebreak = hits / (hits + 5.0)
             # Normalize to 0..1: distinct/total_tokens dominates,
             # tiebreak adds <0.05 so it never crosses a distinct boundary.

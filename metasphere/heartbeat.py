@@ -16,13 +16,13 @@ flipped to ``python -m metasphere.cli.heartbeat``.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as _dt
 import os
 import shlex
 import subprocess
 import time
 from pathlib import Path
-from typing import Iterable
 
 from .agents import AgentRecord, list_agents, session_alive, session_name_for
 from .context import build_context
@@ -85,16 +85,37 @@ def already_notified(paths: Paths, key: str) -> bool:
     return key in _read_state_keys(paths)
 
 
+_STATE_COMPACT_THRESHOLD = 5000
+
+
 def mark_notified(paths: Paths, key: str) -> None:
-    """Append ``key`` to the dedupe state file under flock (idempotent)."""
+    """Append ``key`` to the dedupe state file under flock (idempotent).
+
+    Append-only with lazy compaction: each new key is a single
+    ``open(..., "a")`` write under flock — O(1) instead of rewriting
+    the whole file. Compaction (dedupe + sort) only happens when the
+    file exceeds ``_STATE_COMPACT_THRESHOLD`` lines, preserving forensic
+    discovery order in the common case while keeping the file bounded.
+    """
     p = _state_file(paths)
     p.parent.mkdir(parents=True, exist_ok=True)
     with file_lock(p.with_suffix(p.suffix + ".lock")):
         keys = _read_state_keys(paths)
         if key in keys:
             return
-        keys.add(key)
-        p.write_text("\n".join(sorted(keys)) + "\n", encoding="utf-8")
+        with open(p, "a", encoding="utf-8") as fh:
+            fh.write(key + "\n")
+        # Lazy compaction.
+        try:
+            line_count = sum(1 for _ in p.open("r", encoding="utf-8"))
+        except OSError:
+            return
+        if line_count > _STATE_COMPACT_THRESHOLD:
+            try:
+                deduped = _read_state_keys(paths)
+                p.write_text("\n".join(sorted(deduped)) + "\n", encoding="utf-8")
+            except OSError:
+                pass
 
 
 def clear_notified(paths: Paths, key: str) -> None:
@@ -250,8 +271,18 @@ def log_status_to_disk(paths: Paths) -> None:
 
 
 def heartbeat_once(paths: Paths | None = None, invoke_agent: bool = False) -> None:
-    """Run one heartbeat tick: scan, dedupe-notify, optionally invoke."""
+    """Run one heartbeat tick: scan, dedupe-notify, optionally invoke.
+
+    The heartbeat daemon always scans the *whole repo* regardless of the
+    cwd it was started from. The bash version uses ``find "$REPO_ROOT"``;
+    the Python equivalent normalises ``paths.scope`` to ``paths.repo``
+    here so a daemon launched from a nested cwd (or with
+    ``METASPHERE_SCOPE`` set) doesn't under-report urgent items in
+    sibling scopes.
+    """
     paths = paths or resolve()
+    if paths.scope != paths.repo:
+        paths = dataclasses.replace(paths, scope=paths.repo)
 
     new_urgent: list[Message] = []
     for m in check_urgent_messages(paths):

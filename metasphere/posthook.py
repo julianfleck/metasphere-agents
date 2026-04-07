@@ -130,16 +130,6 @@ def route_to_telegram(text: str, paths: Paths) -> None:
         pass
 
     try:
-        atomic_write_text(last_file, digest + "\n")
-    except OSError:
-        # If we can't persist the hash we still attempt the send,
-        # accepting potential duplicates over silent failures.
-        pass
-
-    try:
-        # Imported lazily so tests can patch metasphere.telegram.api.send_message
-        # cleanly without dragging the urllib stack into module load.
-        from . import telegram as _tg_pkg  # noqa: F401
         from .telegram import api as telegram_api
 
         chat_id = _resolve_chat_id(paths)
@@ -148,11 +138,49 @@ def route_to_telegram(text: str, paths: Paths) -> None:
             return
         telegram_api.send_message(chat_id, text)
     except Exception as exc:  # noqa: BLE001 — must never raise
+        # Persist nothing on failure: a transient send error must not
+        # poison the dedupe state and silently swallow the next retry.
         _log_telegram_error(paths, f"{type(exc).__name__}: {exc}")
+        return
+
+    # Only persist the dedupe hash after a confirmed-good send.
+    try:
+        atomic_write_text(last_file, digest + "\n")
+    except OSError:
+        pass
 
 
 def _resolve_chat_id(paths: Paths) -> str | None:
-    """Read the Telegram chat id from the standard config locations."""
+    """Read the Telegram chat id from the standard config locations.
+
+    Resolution order matches the install-script defaults:
+
+    1. ``$paths.config/telegram.env`` parsed for ``TELEGRAM_CHAT_ID=...``
+       (the canonical openclaw/install-script layout — KEY=VALUE env file).
+    2. ``$paths.config/telegram_chat_id`` (one-line bare value).
+    3. ``$paths.root/telegram_chat_id`` (legacy fallback).
+
+    The bash posthook delegated to ``metasphere-telegram-stream send``,
+    which loads the chat id from ``telegram.env``. The Python port
+    previously only read the bare one-line file, so on hosts where only
+    ``telegram.env`` was populated it would silently log "no chat_id
+    configured" and deliver nothing.
+    """
+    env_file = paths.config / "telegram.env"
+    try:
+        if env_file.exists():
+            for raw in env_file.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                if k.strip() == "TELEGRAM_CHAT_ID":
+                    v = v.strip().strip('"').strip("'")
+                    if v:
+                        return v
+    except OSError:
+        pass
+
     candidates = [
         paths.config / "telegram_chat_id",
         paths.root / "telegram_chat_id",
