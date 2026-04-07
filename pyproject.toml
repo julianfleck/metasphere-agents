@@ -27,6 +27,11 @@ metasphere-agent          = "metasphere.cli.agents:main"
 metasphere-spawn          = "metasphere.cli.agents:spawn_main"
 metasphere-wake           = "metasphere.cli.agents:wake_main"
 
+[tool.pytest.ini_options]
+markers = [
+  "live: tests that hit external services",
+]
+
 [tool.setuptools]
 packages = [
   "metasphere",
