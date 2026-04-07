@@ -42,6 +42,27 @@ def _utcnow() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _notify_user(text: str, paths: Paths) -> None:
+    """Send a heartbeat-class notification to the user via Telegram.
+
+    Mirrors the bash ``notify()`` helper. Failures are swallowed —
+    heartbeat ticks must never raise. Looks up the chat id via the
+    posthook resolver so the heartbeat and posthook share the same
+    config-file precedence.
+    """
+    try:
+        from .posthook import _resolve_chat_id
+        from .telegram import api as telegram_api
+
+        chat_id = _resolve_chat_id(paths)
+        if chat_id is None:
+            return
+        telegram_api.send_message(chat_id, text)
+    except Exception:
+        # Swallow: notification is best-effort.
+        pass
+
+
 def _state_file(paths: Paths) -> Path:
     return paths.state / "heartbeat_state"
 
@@ -259,6 +280,10 @@ def heartbeat_once(paths: Paths | None = None, invoke_agent: bool = False) -> No
                 )
             except Exception:
                 pass
+            _notify_user(
+                f"[heartbeat] {urgent_tasks} urgent task(s) pending ({total_tasks} total)",
+                paths,
+            )
 
     for m in new_urgent:
         try:
@@ -270,6 +295,10 @@ def heartbeat_once(paths: Paths | None = None, invoke_agent: bool = False) -> No
             )
         except Exception:
             pass
+        _notify_user(
+            f"[URGENT] message from {m.from_}\n{(m.body or '').strip()[:500]}",
+            paths,
+        )
     for a in new_blocked:
         try:
             log_event(
@@ -280,6 +309,7 @@ def heartbeat_once(paths: Paths | None = None, invoke_agent: bool = False) -> No
             )
         except Exception:
             pass
+        _notify_user(f"[heartbeat] agent {a.name} {a.status}", paths)
 
     log_status_to_disk(paths)
 
@@ -294,9 +324,45 @@ def heartbeat_daemon(
     paths: Paths | None = None,
     interval_seconds: int = 30,
     invoke_agent: bool = False,
+    with_telegram_poll: bool = False,
 ) -> None:
-    """Run :func:`heartbeat_once` forever on ``interval_seconds`` cadence."""
+    """Run :func:`heartbeat_once` forever on ``interval_seconds`` cadence.
+
+    The bash daemon historically did double duty: heartbeat ticks plus
+    Telegram inbound long-polling on a 5s cadence. The Python port
+    prefers single-responsibility daemons (run
+    ``python -m metasphere.cli.telegram poll`` from a sibling unit), but
+    callers can opt into the combined behaviour with
+    ``with_telegram_poll=True`` to ease cutover from a single systemd
+    unit.
+    """
     paths = paths or resolve()
+
+    if with_telegram_poll:
+        import threading
+
+        def _poll_loop() -> None:
+            try:
+                from .telegram import poller as _poller
+                from .cli.telegram import _handle_update
+            except Exception:
+                return
+            while True:
+                try:
+                    offset = _poller.load_offset()
+                    updates = _poller.get_updates(offset=offset, timeout=1)
+                    for u in updates:
+                        try:
+                            _handle_update(u)
+                        except Exception:
+                            pass
+                        _poller.save_offset(u.update_id + 1)
+                except Exception:
+                    pass
+                time.sleep(5)
+
+        threading.Thread(target=_poll_loop, name="telegram-poll", daemon=True).start()
+
     while True:
         try:
             heartbeat_once(paths, invoke_agent=invoke_agent)

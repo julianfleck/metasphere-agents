@@ -29,6 +29,13 @@ def main(argv: list[str] | None = None) -> int:
         invoke_agent = True
         args = [a for a in args if a != "--invoke-agent"]
 
+    with_telegram_poll = (
+        os.environ.get("HEARTBEAT_WITH_TELEGRAM_POLL", "").lower() == "true"
+    )
+    if "--with-telegram-poll" in args:
+        with_telegram_poll = True
+        args = [a for a in args if a != "--with-telegram-poll"]
+
     paths = resolve()
 
     if not args or args[0] in ("once", "check"):
@@ -43,7 +50,12 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError:
                 print(f"invalid interval: {args[1]}", file=sys.stderr)
                 return 2
-        heartbeat_daemon(paths, interval_seconds=interval, invoke_agent=invoke_agent)
+        heartbeat_daemon(
+            paths,
+            interval_seconds=interval,
+            invoke_agent=invoke_agent,
+            with_telegram_poll=with_telegram_poll,
+        )
         return 0
 
     print(__doc__, file=sys.stderr)
