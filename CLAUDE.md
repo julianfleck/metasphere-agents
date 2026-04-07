@@ -273,6 +273,33 @@ LEARNINGS.md captures patterns that should inform future behavior. CHANGELOG.md 
 
 ---
 
+## Legacy OpenClaw Integration
+
+If this host was previously running [openclaw](https://docs.openclaw.ai/), the installer registers it as a **live legacy context source** rather than copying files out of it. The arrangement:
+
+| Openclaw path | How metasphere uses it |
+|---|---|
+| `~/.openclaw/workspace/SOUL.md` | Injected per turn by `metasphere-context` (your persona). Also seeds `~/.metasphere/agents/@orchestrator/SOUL.md` once at install. |
+| `~/.openclaw/workspace/IDENTITY.md` | Injected per turn (name, role, ID metadata). |
+| `~/.openclaw/workspace/USER.md` | Injected per turn (who the human is). |
+| `~/.openclaw/workspace/TOOLS.md` | Injected per turn (local conventions, channel IDs, device nicknames). |
+| `~/.openclaw/workspace/AGENTS.md` | First 50 lines injected per turn; full file at the registered path — `Read` it when relevant. |
+| `~/.openclaw/workspace/MEMORY.md` | Injected per turn (curated long-term memory). |
+| `~/.openclaw/memory/main.sqlite` | Path registered at `~/.metasphere/config/openclaw_memory_db` for CAM/FTS to read in place. |
+| `~/.openclaw/skills/<name>/` | Symlinked into `~/.metasphere/skills/<name>/` (non-destructive — edits in either location are visible from both). |
+| `~/.openclaw/openclaw.json` `channels.telegram.botToken` | Migrated to `~/.metasphere/config/telegram.env` at install. |
+
+**Implications you need to internalize as @orchestrator:**
+
+1. **Edits to openclaw workspace files take effect on the next turn.** If the user updates `SOUL.md` or `AGENTS.md` in their openclaw workspace, you'll see the new version immediately — no migration step needed.
+2. **Don't duplicate openclaw data into `~/.metasphere/`.** The whole point is to keep one source of truth. If you find yourself copying workspace files, stop.
+3. **When the openclaw workspace is registered, treat it as authoritative for persona/identity.** Your `~/.metasphere/agents/@orchestrator/MISSION.md` and `LEARNINGS.md` are metasphere-specific; the openclaw workspace files are your underlying personality and operating rules.
+4. **Detection happens at install time.** The installer writes `~/.metasphere/config/openclaw_workspace` and `~/.metasphere/config/openclaw_memory_db` if openclaw was found. If those files don't exist, the host is a fresh install and you skip the legacy injection entirely.
+
+If you're starting fresh on a system without openclaw, none of this applies — the per-turn context comes only from `~/.metasphere/agents/@orchestrator/` and the fractal `.messages/` + `.tasks/` directories.
+
+---
+
 ## Completion Protocol
 
 When a task/session completes:

@@ -28,6 +28,81 @@ echo "# Metasphere Context ($AGENT)"
 echo ""
 
 # =============================================================================
+# 0. Legacy openclaw workspace (read live, never copied)
+# =============================================================================
+# If the host previously ran openclaw, the user's authoritative SOUL/IDENTITY/
+# AGENTS/USER/TOOLS/MEMORY files live in ~/.openclaw/workspace/. We register
+# that path during install (via metasphere-migrate) and inject the relevant
+# files here on every turn so the agent inherits the openclaw persona and
+# operating rules without us copying them. This keeps openclaw and metasphere
+# in lockstep if the user keeps editing the workspace files.
+OPENCLAW_WS=""
+if [[ -f "$METASPHERE_DIR/config/openclaw_workspace" ]]; then
+    OPENCLAW_WS=$(cat "$METASPHERE_DIR/config/openclaw_workspace" 2>/dev/null)
+elif [[ -d "$HOME/.openclaw/workspace" ]]; then
+    OPENCLAW_WS="$HOME/.openclaw/workspace"
+fi
+
+if [[ -n "$OPENCLAW_WS" && -d "$OPENCLAW_WS" ]]; then
+    echo "## OpenClaw Workspace (legacy harness)"
+    echo ""
+    echo "_Source: \`$OPENCLAW_WS\` — edits to these files are picked up live._"
+    echo ""
+
+    # SOUL: who you are. Always inject in full if reasonable size.
+    if [[ -f "$OPENCLAW_WS/SOUL.md" ]]; then
+        echo "### SOUL"
+        head -60 "$OPENCLAW_WS/SOUL.md"
+        echo ""
+    fi
+
+    # IDENTITY: name, role, ID metadata.
+    if [[ -f "$OPENCLAW_WS/IDENTITY.md" ]]; then
+        echo "### IDENTITY"
+        head -30 "$OPENCLAW_WS/IDENTITY.md"
+        echo ""
+    fi
+
+    # USER: who the human is.
+    if [[ -f "$OPENCLAW_WS/USER.md" ]]; then
+        echo "### USER"
+        head -40 "$OPENCLAW_WS/USER.md"
+        echo ""
+    fi
+
+    # TOOLS: local conventions, channel IDs, device nicknames.
+    if [[ -f "$OPENCLAW_WS/TOOLS.md" ]]; then
+        echo "### TOOLS / local conventions"
+        head -40 "$OPENCLAW_WS/TOOLS.md"
+        echo ""
+    fi
+
+    # AGENTS: procedural rules. This is the largest workspace file (~17K on
+    # the reference install). Inject as a header pointer with first 50 lines
+    # so the agent knows it exists and can Read it in full when relevant.
+    if [[ -f "$OPENCLAW_WS/AGENTS.md" ]]; then
+        echo "### AGENTS (operational rules — first 50 lines, full file at \`$OPENCLAW_WS/AGENTS.md\`)"
+        head -50 "$OPENCLAW_WS/AGENTS.md"
+        echo ""
+    fi
+
+    # MEMORY: curated long-term memory. Inject in full if short.
+    if [[ -f "$OPENCLAW_WS/MEMORY.md" ]]; then
+        local mem_lines
+        mem_lines=$(wc -l < "$OPENCLAW_WS/MEMORY.md" | tr -d ' ')
+        echo "### MEMORY"
+        if [[ $mem_lines -le 60 ]]; then
+            cat "$OPENCLAW_WS/MEMORY.md"
+        else
+            tail -40 "$OPENCLAW_WS/MEMORY.md"
+            echo ""
+            echo "_(truncated to last 40 lines of $mem_lines; full at \`$OPENCLAW_WS/MEMORY.md\`)_"
+        fi
+        echo ""
+    fi
+fi
+
+# =============================================================================
 # 1. Agent Identity - who you are and what you're doing
 # =============================================================================
 if [[ -d "$AGENT_DIR" ]]; then

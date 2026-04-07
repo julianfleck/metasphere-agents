@@ -146,17 +146,22 @@ extract_telegram_token() {
     # Try different possible locations for Telegram token
     local token=""
 
-    # Check telegram.botToken
-    token=$(jq -r '.telegram.botToken // empty' "$config" 2>/dev/null)
+    # Canonical openclaw location: channels.telegram.botToken
+    token=$(jq -r '.channels.telegram.botToken // empty' "$config" 2>/dev/null)
 
-    # Check TELEGRAM_BOT_TOKEN
+    # Legacy/alternate locations
+    [[ -z "$token" ]] && token=$(jq -r '.telegram.botToken // empty' "$config" 2>/dev/null)
     [[ -z "$token" ]] && token=$(jq -r '.TELEGRAM_BOT_TOKEN // empty' "$config" 2>/dev/null)
-
-    # Check telegram_bot_token
     [[ -z "$token" ]] && token=$(jq -r '.telegram_bot_token // empty' "$config" 2>/dev/null)
-
-    # Check env vars section
     [[ -z "$token" ]] && token=$(jq -r '.env.TELEGRAM_BOT_TOKEN // empty' "$config" 2>/dev/null)
+
+    # tokenFile pointer (must be a regular file, not a symlink)
+    if [[ -z "$token" ]]; then
+        local tokenfile=$(jq -r '.channels.telegram.tokenFile // empty' "$config" 2>/dev/null)
+        if [[ -n "$tokenfile" && -f "$tokenfile" && ! -L "$tokenfile" ]]; then
+            token=$(cat "$tokenfile" 2>/dev/null | tr -d '[:space:]')
+        fi
+    fi
 
     if [[ -n "$token" && "$token" != "null" ]]; then
         echo "$token"
@@ -213,26 +218,46 @@ migrate_telegram() {
 # =============================================================================
 
 migrate_soul() {
-    info "Migrating SOUL.md..."
+    info "Migrating openclaw workspace files..."
 
     local agent_dir="$METASPHERE_DIR/agents/@orchestrator"
     mkdir -p "$agent_dir"
 
-    # Check OpenClaw SOUL.md
-    if [[ -f "$OPENCLAW_DIR/SOUL.md" ]]; then
+    # Canonical openclaw location: ~/.openclaw/workspace/<file>.md
+    # Older layouts may have files at ~/.openclaw/<file>.md
+    local workspace_dir=""
+    if [[ -d "$OPENCLAW_DIR/workspace" ]]; then
+        workspace_dir="$OPENCLAW_DIR/workspace"
+    fi
+
+    # Files to harness from openclaw workspace into the orchestrator agent.
+    # We do NOT copy them by default - we register the source path so
+    # metasphere-context can read them live and stay in sync if the user
+    # keeps editing them in their openclaw workspace.
+    local workspace_files=(SOUL.md IDENTITY.md AGENTS.md USER.md TOOLS.md MEMORY.md HEARTBEAT.md)
+
+    if [[ -n "$workspace_dir" ]]; then
+        # Register the openclaw workspace as a legacy context source.
+        echo "$workspace_dir" > "$METASPHERE_DIR/config/openclaw_workspace"
+        ok "Registered openclaw workspace: $workspace_dir"
+
+        # For SOUL.md specifically: copy it once into the agent dir if absent,
+        # so the agent has its own owned identity file. The hook will still
+        # prefer the live workspace version when present.
+        if [[ -f "$workspace_dir/SOUL.md" && ! -f "$agent_dir/SOUL.md" ]]; then
+            cp "$workspace_dir/SOUL.md" "$agent_dir/SOUL.md"
+            ok "Seeded @orchestrator SOUL.md from openclaw workspace"
+        fi
+    elif [[ -f "$OPENCLAW_DIR/SOUL.md" ]]; then
+        # Pre-workspace layout fallback
         if [[ ! -f "$agent_dir/SOUL.md" ]]; then
             cp "$OPENCLAW_DIR/SOUL.md" "$agent_dir/SOUL.md"
-            ok "Migrated SOUL.md to @orchestrator"
-        else
-            # Merge or ask
-            warn "SOUL.md already exists - keeping both"
-            cp "$OPENCLAW_DIR/SOUL.md" "$agent_dir/SOUL.openclaw.md"
-            ok "Saved OpenClaw SOUL.md as SOUL.openclaw.md"
+            ok "Migrated legacy SOUL.md to @orchestrator"
         fi
     fi
 
-    # Check for agent-specific SOUL files
-    for soul in "$OPENCLAW_DIR"/agents/*/SOUL.md 2>/dev/null; do
+    # Check for agent-specific SOUL files (per-persona)
+    for soul in "$OPENCLAW_DIR"/agents/*/SOUL.md; do
         [[ -f "$soul" ]] || continue
         local agent_name=$(basename "$(dirname "$soul")")
         local target_dir="$METASPHERE_DIR/agents/@$agent_name"
@@ -246,31 +271,69 @@ migrate_soul() {
 }
 
 # =============================================================================
+# Skills migration (~/.openclaw/skills -> ~/.metasphere/skills)
+# =============================================================================
+
+migrate_skills() {
+    info "Migrating openclaw skills..."
+
+    local src="$OPENCLAW_DIR/skills"
+    local dst="$METASPHERE_DIR/skills"
+
+    if [[ ! -d "$src" ]]; then
+        info "No openclaw skills directory found"
+        return 0
+    fi
+
+    mkdir -p "$dst"
+    local migrated=0
+    for skill in "$src"/*/; do
+        [[ -d "$skill" ]] || continue
+        local name=$(basename "$skill")
+        # Skip _disabled directory
+        [[ "$name" == _* ]] && continue
+        if [[ ! -e "$dst/$name" ]]; then
+            # Symlink rather than copy - keeps openclaw and metasphere in sync
+            ln -s "$skill" "$dst/$name" 2>/dev/null && ((migrated++))
+        fi
+    done
+
+    if [[ $migrated -gt 0 ]]; then
+        ok "Linked $migrated openclaw skills into $dst"
+    else
+        info "No new skills to link (all already present)"
+    fi
+}
+
+# =============================================================================
 # Memory migration
 # =============================================================================
 
 migrate_memory() {
-    info "Migrating memory files..."
+    info "Registering openclaw memory store..."
 
+    mkdir -p "$METASPHERE_DIR/memory"
+
+    # Canonical openclaw memory: ~/.openclaw/memory/main.sqlite
+    if [[ -f "$OPENCLAW_DIR/memory/main.sqlite" ]]; then
+        # Don't copy - register the path so CAM/FTS can read it in place.
+        echo "$OPENCLAW_DIR/memory/main.sqlite" > "$METASPHERE_DIR/config/openclaw_memory_db"
+        ok "Registered openclaw memory db: $OPENCLAW_DIR/memory/main.sqlite"
+    fi
+
+    # Pre-sqlite era: loose memory files
     local migrated=0
-
-    # Memory files in OpenClaw
-    for mem in "$OPENCLAW_DIR"/*.memory "$OPENCLAW_DIR"/memory.json "$OPENCLAW_DIR"/agents/*/memory.json 2>/dev/null; do
+    shopt -s nullglob
+    for mem in "$OPENCLAW_DIR"/*.memory "$OPENCLAW_DIR"/memory.json "$OPENCLAW_DIR"/agents/*/memory.json; do
         [[ -f "$mem" ]] || continue
-
         local basename=$(basename "$mem")
         local target="$METASPHERE_DIR/memory/$basename"
-        mkdir -p "$METASPHERE_DIR/memory"
-
         cp "$mem" "$target"
         ((migrated++))
     done
+    shopt -u nullglob
 
-    if [[ $migrated -gt 0 ]]; then
-        ok "Migrated $migrated memory files"
-    else
-        info "No memory files to migrate"
-    fi
+    [[ $migrated -gt 0 ]] && ok "Also migrated $migrated legacy memory files"
 }
 
 # =============================================================================
@@ -357,9 +420,13 @@ run_migration() {
         fi
     fi
 
+    # Ensure config dir exists - migration steps write registration files here
+    mkdir -p "$METASPHERE_DIR/config"
+
     # Run migration steps
     migrate_telegram || true
     migrate_soul || true
+    migrate_skills || true
     migrate_memory || true
     parse_sessions || true
 

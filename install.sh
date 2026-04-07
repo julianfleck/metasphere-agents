@@ -288,9 +288,9 @@ detect_openclaw() {
     if [[ -d "$OPENCLAW_DIR" ]]; then
         OPENCLAW_DETECTED=true
 
-        # Check for Telegram token
+        # Check for Telegram token (canonical: channels.telegram.botToken)
         if [[ -f "$OPENCLAW_DIR/openclaw.json" ]]; then
-            if jq -e '.telegram.botToken // .TELEGRAM_BOT_TOKEN // .env.TELEGRAM_BOT_TOKEN' "$OPENCLAW_DIR/openclaw.json" &>/dev/null 2>&1; then
+            if jq -e '.channels.telegram.botToken // .telegram.botToken // .TELEGRAM_BOT_TOKEN // .env.TELEGRAM_BOT_TOKEN' "$OPENCLAW_DIR/openclaw.json" &>/dev/null 2>&1; then
                 OPENCLAW_HAS_TELEGRAM=true
             fi
         fi
@@ -352,10 +352,10 @@ migrate_openclaw_inline() {
     # Inline migration for when script isn't installed yet
     info "Migrating OpenClaw configuration..."
 
-    # Extract Telegram token
+    # Extract Telegram token (canonical openclaw schema: channels.telegram.botToken)
     if [[ -f "$OPENCLAW_DIR/openclaw.json" ]] && $OPENCLAW_HAS_TELEGRAM; then
         local token=""
-        token=$(jq -r '.telegram.botToken // .TELEGRAM_BOT_TOKEN // .env.TELEGRAM_BOT_TOKEN // empty' "$OPENCLAW_DIR/openclaw.json" 2>/dev/null)
+        token=$(jq -r '.channels.telegram.botToken // .telegram.botToken // .TELEGRAM_BOT_TOKEN // .env.TELEGRAM_BOT_TOKEN // empty' "$OPENCLAW_DIR/openclaw.json" 2>/dev/null)
 
         if [[ -n "$token" && "$token" != "null" ]]; then
             mkdir -p "$METASPHERE_DIR/config"
@@ -366,13 +366,44 @@ migrate_openclaw_inline() {
         fi
     fi
 
-    # Migrate SOUL.md
-    if [[ -f "$OPENCLAW_DIR/SOUL.md" ]]; then
-        mkdir -p "$METASPHERE_DIR/agents/@orchestrator"
-        if [[ ! -f "$METASPHERE_DIR/agents/@orchestrator/SOUL.md" ]]; then
-            cp "$OPENCLAW_DIR/SOUL.md" "$METASPHERE_DIR/agents/@orchestrator/SOUL.md"
-            ok "Migrated SOUL.md"
-        fi
+    # Register openclaw workspace as live legacy context source
+    mkdir -p "$METASPHERE_DIR/config"
+    if [[ -d "$OPENCLAW_DIR/workspace" ]]; then
+        echo "$OPENCLAW_DIR/workspace" > "$METASPHERE_DIR/config/openclaw_workspace"
+        ok "Registered openclaw workspace for live context injection"
+    fi
+    if [[ -f "$OPENCLAW_DIR/memory/main.sqlite" ]]; then
+        echo "$OPENCLAW_DIR/memory/main.sqlite" > "$METASPHERE_DIR/config/openclaw_memory_db"
+        ok "Registered openclaw memory db"
+    fi
+
+    # Seed @orchestrator SOUL.md from workspace if absent
+    mkdir -p "$METASPHERE_DIR/agents/@orchestrator"
+    local soul_src=""
+    if [[ -f "$OPENCLAW_DIR/workspace/SOUL.md" ]]; then
+        soul_src="$OPENCLAW_DIR/workspace/SOUL.md"
+    elif [[ -f "$OPENCLAW_DIR/SOUL.md" ]]; then
+        soul_src="$OPENCLAW_DIR/SOUL.md"
+    fi
+    if [[ -n "$soul_src" && ! -f "$METASPHERE_DIR/agents/@orchestrator/SOUL.md" ]]; then
+        cp "$soul_src" "$METASPHERE_DIR/agents/@orchestrator/SOUL.md"
+        ok "Seeded SOUL.md from $soul_src"
+    fi
+
+    # Symlink openclaw skills into ~/.metasphere/skills (non-destructive)
+    if [[ -d "$OPENCLAW_DIR/skills" ]]; then
+        mkdir -p "$METASPHERE_DIR/skills"
+        local linked=0
+        shopt -s nullglob
+        for skill in "$OPENCLAW_DIR/skills"/*/; do
+            local name=$(basename "$skill")
+            [[ "$name" == _* ]] && continue
+            if [[ ! -e "$METASPHERE_DIR/skills/$name" ]]; then
+                ln -s "$skill" "$METASPHERE_DIR/skills/$name" 2>/dev/null && ((linked++))
+            fi
+        done
+        shopt -u nullglob
+        [[ $linked -gt 0 ]] && ok "Linked $linked openclaw skills"
     fi
 
     # Mark as migrated
