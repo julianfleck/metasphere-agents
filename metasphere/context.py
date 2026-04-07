@@ -363,9 +363,71 @@ def _render_memory_fts(paths: Paths, agent: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _render_project(paths: Paths) -> str:
+    """Project header for the per-turn context block.
+
+    Walks upward from ``paths.scope`` to find the enclosing project; if
+    found, emits name/goal/members/recent activity. Empty string when
+    the current scope is not inside any project (keeps the turn block
+    unchanged for non-project agents).
+    """
+    from . import project as _project
+    from . import agents as _agents
+
+    proj = _project.project_for_scope(paths.scope, paths=paths)
+    if proj is None:
+        return ""
+
+    out = [f"## Project: {proj.name}"]
+    if proj.goal:
+        out.append(f"Goal: {proj.goal}")
+
+    # Members with alive/dormant marker. Alive = tmux session exists.
+    if proj.members:
+        parts: list[str] = []
+        for m in proj.members:
+            marker = ""
+            if m.persistent:
+                try:
+                    alive = _agents.session_alive(_agents.session_name_for(m.id))
+                except Exception:
+                    alive = False
+                marker = ", alive" if alive else ", dormant"
+            parts.append(f"{m.id} ({m.role}{marker})")
+        out.append("Members: " + ", ".join(parts))
+    else:
+        out.append("Members: (none)")
+
+    # Recent activity: count of active tasks + last commit subject.
+    from . import tasks as _tasks
+    try:
+        active = _tasks.list_tasks(Path(proj.path), paths.repo,
+                                   include_completed=False)
+        task_n = len(active)
+    except Exception:
+        task_n = 0
+    last_commit = ""
+    git_dir = Path(proj.path) / ".git"
+    if git_dir.exists():
+        try:
+            res = subprocess.run(
+                ["git", "-C", proj.path, "log", "-1", "--pretty=%s"],
+                capture_output=True, text=True, timeout=3, check=False,
+            )
+            last_commit = res.stdout.strip().splitlines()[0] if res.stdout.strip() else ""
+        except (subprocess.SubprocessError, OSError):
+            pass
+    activity = f"{task_n} tasks active"
+    if last_commit:
+        activity += f", last commit: {last_commit}"
+    out.append(f"Recent: {activity}")
+    return "\n".join(out) + "\n"
+
+
 SECTION_NAMES = (
     "status",
     "drift",
+    "project",
     "telegram",
     "messages",
     "tasks",
@@ -384,6 +446,8 @@ def build_context(paths: Paths | None = None, *, budget: int = DEFAULT_SECTION_B
     sections.append(truncate_section(_render_status_header(paths, agent), budget))
     drift = _render_drift_warning(paths)
     sections.append(truncate_section(drift, budget) if drift else "")
+    project_block = _render_project(paths)
+    sections.append(truncate_section(project_block, budget) if project_block else "")
     sections.append(truncate_section(_render_telegram(paths), budget))
     sections.append(truncate_section(_render_messages(paths), budget))
     sections.append(truncate_section(_render_tasks(paths), budget))
