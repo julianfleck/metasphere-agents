@@ -57,21 +57,18 @@ def _read_env_file(path: str, key: str) -> Optional[str]:
 def _load_token() -> str:
     """Load the bot token.
 
-    Resolution order (post-cutover canonical-first with rewrite back-compat):
+    Resolution order (canonical-first; rewrite token is opt-in only):
 
-    1. ``TELEGRAM_BOT_TOKEN_REWRITE`` env var (kept for tests that explicitly
-       opt into the rewrite bot during parallel testing).
-    2. ``TELEGRAM_BOT_TOKEN`` env var (canonical @spotspotbotbot — what the
+    1. ``TELEGRAM_BOT_TOKEN`` env var (canonical @spotspotbotbot — what the
        live orchestrator and human channel use).
-    3. ``~/.metasphere/config/telegram.env`` ``TELEGRAM_BOT_TOKEN``.
+    2. ``~/.metasphere/config/telegram.env`` ``TELEGRAM_BOT_TOKEN``.
+    3. ``TELEGRAM_BOT_TOKEN_REWRITE`` env var (explicit opt-in for the
+       parallel-track sandbox bot during dev/testing only).
     4. ``~/.metasphere/config/telegram-rewrite.env`` ``TELEGRAM_BOT_TOKEN_REWRITE``.
 
-    After the cutover the python stack must reach the canonical bot by
-    default so the orchestrator does not lose its telegram channel.
+    After cutover the canonical bot MUST win by default so daemons that
+    inherit a clean systemd env never accidentally talk to the dev bot.
     """
-    tok = os.environ.get("TELEGRAM_BOT_TOKEN_REWRITE")
-    if tok:
-        return tok
     tok = os.environ.get("TELEGRAM_BOT_TOKEN")
     if tok:
         return tok
@@ -79,6 +76,9 @@ def _load_token() -> str:
         os.path.expanduser("~/.metasphere/config/telegram.env"),
         "TELEGRAM_BOT_TOKEN",
     )
+    if tok:
+        return tok
+    tok = os.environ.get("TELEGRAM_BOT_TOKEN_REWRITE")
     if tok:
         return tok
     tok = _read_env_file(

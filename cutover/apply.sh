@@ -99,6 +99,19 @@ done
 systemctl --user daemon-reload
 systemctl --user restart metasphere-heartbeat.service metasphere-telegram.service metasphere-schedule.service
 
+# Disable legacy openclaw units. Their config was migrated into ~/.metasphere/
+# at install time, but the units themselves keep running and race the metasphere
+# daemons (notably openclaw-gateway shares TELEGRAM_BOT_TOKEN, which causes a
+# getUpdates conflict and a stream of legacy-cron spam to the user's chat).
+# Discovered 2026-04-07 — see daily log.
+for legacy in openclaw-gateway.service rage-bridge.service rage-bridge.timer telegram-watchdog.service; do
+  if systemctl --user list-unit-files "$legacy" >/dev/null 2>&1; then
+    systemctl --user stop "$legacy" 2>/dev/null || true
+    systemctl --user disable "$legacy" 2>/dev/null || true
+    echo "[apply] legacy: stopped + disabled $legacy"
+  fi
+done
+
 # Repo .claude/settings.local.json hook flip — point at console-script names.
 if [ -f "$REPO_SETTINGS" ]; then
   cp -a "$REPO_SETTINGS" "$BACKUP_DIR/settings.local.json"
