@@ -1,26 +1,3 @@
 {
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/Users/julian/Tresors/Privat/Code/metasphere-agents/scripts/metasphere-context"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/Users/julian/Tresors/Privat/Code/metasphere-agents/scripts/metasphere-posthook"
-          }
-        ]
-      }
-    ]
-  }
+  "_comment": "Hooks live in .claude/settings.local.json (per-machine, gitignored). install.sh writes it with absolute paths to scripts/metasphere-context and scripts/metasphere-posthook for this machine's checkout. The committed settings.json must NOT contain hardcoded paths — they don't work cross-machine and claude-code merges both files, so a wrong path here causes a duplicate hook + error every turn."
 }
