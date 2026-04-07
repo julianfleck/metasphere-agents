@@ -274,7 +274,16 @@ metasphere-agents/
 
 ## License
 
-MIT
+[Functional Source License, Version 1.1, Apache 2.0 Future License](LICENSE)
+(`FSL-1.1-Apache-2.0`).
+
+You can read, fork, modify, and use the code for anything *except* offering
+it as a commercial product or service that competes with what we offer using
+the same software. Two years after each release we publish, that release
+auto-converts to the standard Apache License 2.0 — fully open source.
+
+See [`LICENSE`](LICENSE) for the full text and <https://fsl.software/> for
+background on the license shape.
 
 ## Contributing
 
