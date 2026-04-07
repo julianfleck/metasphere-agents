@@ -27,7 +27,7 @@ LATEST_NAME = "latest.json"
 
 
 def _today_path(base: str) -> str:
-    day = _dt.datetime.utcnow().strftime("%Y-%m-%d")
+    day = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
     return os.path.join(base, STREAM_SUBDIR, f"{day}.jsonl")
 
 
@@ -66,7 +66,7 @@ def save_latest(message: dict, base_dir: str = DEFAULT_DIR) -> str:
         "from": frm.get("username") or frm.get("first_name"),
         "text": message.get("text"),
         "date": message.get("date"),
-        "timestamp": _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "timestamp": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "chat_id": (message.get("chat") or {}).get("id"),
     }
     fd, tmp = tempfile.mkstemp(prefix=".latest.", dir=base_dir)
@@ -89,7 +89,7 @@ def archive_outgoing(
         "from": {"username": agent.lstrip("@")},
         "text": text,
         "chat": {"id": chat_id},
-        "date": int(_dt.datetime.utcnow().timestamp()),
+        "date": int(_dt.datetime.now(_dt.timezone.utc).timestamp()),
         "outgoing": True,
     }
     return archive_message(payload, base_dir=base_dir)

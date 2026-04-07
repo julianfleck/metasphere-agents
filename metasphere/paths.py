@@ -27,10 +27,19 @@ def metasphere_dir() -> Path:
     return _env_path("METASPHERE_DIR", Path.home() / ".metasphere")
 
 
+_repo_root_cache: dict[tuple[str, str], Path] = {}
+
+
 def repo_root() -> Path:
+    """Resolve the repo root, caching the git shell-out per (env, cwd) pair."""
     v = os.environ.get("METASPHERE_REPO_ROOT")
     if v:
         return Path(v).expanduser()
+    cwd = os.getcwd()
+    key = ("", cwd)
+    cached = _repo_root_cache.get(key)
+    if cached is not None:
+        return cached
     try:
         out = subprocess.check_output(
             ["git", "rev-parse", "--show-toplevel"],
@@ -38,10 +47,14 @@ def repo_root() -> Path:
             text=True,
         ).strip()
         if out:
-            return Path(out)
+            result = Path(out)
+            _repo_root_cache[key] = result
+            return result
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass
-    return Path.cwd()
+    result = Path(cwd)
+    _repo_root_cache[key] = result
+    return result
 
 
 def scope() -> Path:

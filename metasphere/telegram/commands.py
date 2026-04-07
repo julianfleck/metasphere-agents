@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import subprocess
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
@@ -167,7 +166,7 @@ def cmd_groups(args: str, ctx: Context) -> str:
     script = os.path.join(SCRIPTS_DIR, "metasphere-telegram-groups")
     if not args.strip():
         return _run([script, "list"])
-    sub = shlex.split(args.strip())
+    sub = args.strip().split()
     return _run([script, *sub])
 
 
