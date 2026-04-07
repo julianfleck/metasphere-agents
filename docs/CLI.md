@@ -675,10 +675,10 @@ Capture command output for review agents.
 ### Subcommands
 
 ```
-metasphere-trace run|exec "command"
-metasphere-trace list|ls [--errors|-e] [--limit|-n N]
-metasphere-trace show|get TRACE_ID
-metasphere-trace search|find "pattern"
+metasphere-trace capture|run|exec "command"
+metasphere-trace list [--errors] [--limit N]
+metasphere-trace search "pattern"
+metasphere-trace prune <days>
 ```
 
 Detects errors via non-zero exit code or regex `error|failed|exception|fatal` in stdout/stderr. On error, sends messages to scope-local `@reviewer` and `@orchestrator`.
