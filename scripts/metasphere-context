@@ -114,34 +114,30 @@ if [[ -x "$SCRIPT_DIR/metasphere-events" ]]; then
 fi
 
 # =============================================================================
-# 6. CAM context - keyed to current task
+# 6. Memory Context - fast FTS+BM25 ranker over local corpus
 # =============================================================================
-echo "## Memory Context (CAM)"
+# Per-turn memory uses metasphere-fts (ripgrep + token-overlap scoring) for
+# sub-500ms latency. `cam search <query>` remains available for explicit,
+# entity-enriched discovery when an agent needs deeper semantic recall.
+echo "## Memory Context (FTS)"
 
-# Build query from task + recent messages
+# Build query from task + project name
 QUERY=""
-
-# Primary: current task
 TASK_FILE="$AGENT_DIR/task"
 if [[ -f "$TASK_FILE" ]]; then
     QUERY=$(cat "$TASK_FILE")
 fi
-
-# Secondary: add project context
 if [[ -n "$REPO_ROOT" ]]; then
     QUERY="$QUERY $(basename "$REPO_ROOT")"
 fi
-
-# Trim and clean query
 QUERY=$(echo "$QUERY" | tr '\n' ' ' | sed 's/  */ /g' | head -c 200)
 
 if [[ -z "$QUERY" ]]; then
-    QUERY="@$AGENT [1h]"
+    QUERY="@$AGENT"
 fi
 
-# Get CAM context (limit output to keep context manageable)
-if command -v cam &>/dev/null; then
-    cam context "$QUERY" 2>/dev/null | head -30 || echo "No relevant memory found."
+if [[ -x "$SCRIPT_DIR/metasphere-fts" ]]; then
+    "$SCRIPT_DIR/metasphere-fts" "$QUERY" 5 2>/dev/null || echo "No relevant memory found."
 else
-    echo "CAM not installed. Run: pip install collective-agent-memory"
+    echo "metasphere-fts not found. (Tip: \`cam search <query>\` for deeper recall.)"
 fi
