@@ -9,23 +9,30 @@ description = "Metasphere agent system (Python rewrite)"
 requires-python = ">=3.11"
 
 [project.scripts]
-messages                  = "metasphere.cli.messages:main"
-tasks                     = "metasphere.cli.tasks:main"
-metasphere-context        = "metasphere.cli.context:main"
-metasphere-posthook       = "metasphere.cli.posthook:main"
-metasphere-heartbeat      = "metasphere.cli.heartbeat:main"
-metasphere-schedule       = "metasphere.cli.schedule:main"
-metasphere-telegram       = "metasphere.cli.telegram:main"
-metasphere-trace          = "metasphere.cli.trace:main"
-metasphere-session        = "metasphere.cli.session:main"
-metasphere-project        = "metasphere.cli.project:main"
-metasphere-telegram-groups = "metasphere.cli.telegram_groups:main"
-metasphere-git-hooks      = "metasphere.cli.git_hooks:main"
-metasphere-gateway        = "metasphere.cli.gateway:main"
-metasphere-fts            = "metasphere.cli.memory:main"
-metasphere-agent          = "metasphere.cli.agents:main"
-metasphere-spawn          = "metasphere.cli.agents:spawn_main"
-metasphere-wake           = "metasphere.cli.agents:wake_main"
+# Unified entry point — see metasphere/cli/main.py
+metasphere               = "metasphere.cli.main:main"
+
+# Deprecation shims (see metasphere/cli/_shims.py). Each prints a one-line
+# notice on TTY stderr and forwards into the unified dispatcher. Kept so
+# systemd units, hooks, and shell aliases keep working until individually
+# migrated.
+messages                  = "metasphere.cli._shims:messages_shim"
+tasks                     = "metasphere.cli._shims:tasks_shim"
+metasphere-context        = "metasphere.cli._shims:metasphere_context"
+metasphere-posthook       = "metasphere.cli._shims:metasphere_posthook"
+metasphere-heartbeat      = "metasphere.cli._shims:metasphere_heartbeat"
+metasphere-schedule       = "metasphere.cli._shims:metasphere_schedule"
+metasphere-telegram       = "metasphere.cli._shims:metasphere_telegram"
+metasphere-trace          = "metasphere.cli._shims:metasphere_trace"
+metasphere-session        = "metasphere.cli._shims:metasphere_session"
+metasphere-project        = "metasphere.cli._shims:metasphere_project"
+metasphere-telegram-groups = "metasphere.cli._shims:metasphere_telegram_groups"
+metasphere-git-hooks      = "metasphere.cli._shims:metasphere_git_hooks"
+metasphere-gateway        = "metasphere.cli._shims:metasphere_gateway"
+metasphere-fts            = "metasphere.cli._shims:metasphere_fts"
+metasphere-agent          = "metasphere.cli._shims:metasphere_agent"
+metasphere-spawn          = "metasphere.cli._shims:metasphere_spawn"
+metasphere-wake           = "metasphere.cli._shims:metasphere_wake"
 
 [tool.pytest.ini_options]
 # Live tests hit the real telegram API and send 6KB of yyyy spam to the
