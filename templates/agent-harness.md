@@ -41,6 +41,15 @@ messages status
 - `!query` - Asking for information
 - `!done` - Task completion notification
 
+## Task System
+
+Two task systems exist - do not confuse them:
+
+- **metasphere tasks** (`tasks` CLI, `.tasks/active/` files) = canonical, persistent, git-versioned. Use for anything that should outlive this session.
+- **Claude Code TaskCreate** = scratch only, dies with the conversation. Use only for breaking down a single turn's work.
+
+Rule: anything cross-session MUST be a metasphere task. When in doubt, use `tasks new "title" !priority`.
+
 ## Your Workflow (SPIRAL)
 
 1. **SAMPLE** - Check messages and memory context (automatic via precommand)
