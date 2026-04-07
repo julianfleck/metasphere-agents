@@ -29,11 +29,18 @@ resolve_repo_root() {
         return
     fi
     local git_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
-    if [[ "$git_root" == "$HOME" || -z "$git_root" ]]; then
-        echo "$PWD"
-    else
+    if [[ -n "$git_root" && "$git_root" != "$HOME" ]]; then
         echo "$git_root"
+        return
     fi
+    # Fallbacks for when daemon runs without a cwd inside the repo (e.g. launchctl)
+    for candidate in "$HOME/Code/metasphere-agents" "$HOME/code/metasphere-agents" "$PWD"; do
+        if [[ -d "$candidate/.claude" || -d "$candidate/scripts" ]]; then
+            echo "$candidate"
+            return
+        fi
+    done
+    echo "$PWD"
 }
 REPO_ROOT=$(resolve_repo_root)
 
@@ -66,8 +73,23 @@ SESSION_MODE="${METASPHERE_SESSION_MODE:-persistent}"
 RESPONSE_FILE="$METASPHERE_DIR/gateway/pending_response"
 OFFSET_FILE="$METASPHERE_DIR/telegram/offset"
 LOG_FILE="$METASPHERE_DIR/logs/gateway.log"
+SUPERVISOR_LOG="$METASPHERE_DIR/logs/supervisor.log"
+CONFIG_MTIME_FILE="$METASPHERE_DIR/state/last_config_mtime"
+STUCK_PASTE_STATE="$METASPHERE_DIR/state/stuck_paste_seen"
 
-mkdir -p "$METASPHERE_DIR/logs" "$METASPHERE_DIR/telegram" "$METASPHERE_DIR/gateway"
+# Files to watch for config changes - if any change, restart claude in session
+WATCHED_CONFIG_FILES=(
+    "$REPO_ROOT/.claude/settings.local.json"
+    "$REPO_ROOT/.claude/settings.json"
+    "$REPO_ROOT/scripts/metasphere-context"
+    "$REPO_ROOT/scripts/metasphere-tmux-submit"
+)
+
+mkdir -p "$METASPHERE_DIR/logs" "$METASPHERE_DIR/telegram" "$METASPHERE_DIR/gateway" "$METASPHERE_DIR/state"
+
+supervisor_log() {
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >> "$SUPERVISOR_LOG"
+}
 
 # Source the reliable tmux submit helper (provides submit_to_tmux + tmux_submit_watchdog)
 # shellcheck source=/dev/null
@@ -462,6 +484,134 @@ poll_telegram() {
 }
 
 # =============================================================================
+# Supervisor: config-change + stuck-prompt detection
+# =============================================================================
+
+# Compute a stable signature of all watched config file mtimes.
+compute_config_signature() {
+    local sig=""
+    for f in "${WATCHED_CONFIG_FILES[@]}"; do
+        if [[ -f "$f" ]]; then
+            local mt
+            mt=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)
+            sig+="$f:$mt;"
+        else
+            sig+="$f:missing;"
+        fi
+    done
+    echo "$sig"
+}
+
+# Restart only the claude process inside the orchestrator tmux session,
+# leaving the tmux session itself intact. The watchdog/start_session logic
+# will not see the session as dead, so we re-run claude manually here.
+restart_claude_in_session() {
+    local reason="$1"
+    if ! session_alive; then
+        supervisor_log "restart_claude_in_session: session not alive, will let revive logic spawn it ($reason)"
+        return 0
+    fi
+
+    supervisor_log "Restarting claude in $SESSION_NAME: $reason"
+    "$SCRIPT_DIR/metasphere-events" log supervisor.restart_claude "$reason" --agent @daemon-supervisor 2>/dev/null || true
+
+    # Send Ctrl-C twice to interrupt + exit any prompt, then exit the claude REPL
+    $TMUX_CMD send-keys -t "$SESSION_NAME" C-c 2>/dev/null || true
+    sleep 0.3
+    $TMUX_CMD send-keys -t "$SESSION_NAME" C-c 2>/dev/null || true
+    sleep 0.3
+    # Try graceful /exit first
+    $TMUX_CMD send-keys -t "$SESSION_NAME" "/exit" Enter 2>/dev/null || true
+    sleep 1
+    # Hard kill any lingering claude child of the tmux pane
+    local pane_pid
+    pane_pid=$($TMUX_CMD display-message -t "$SESSION_NAME" -p '#{pane_pid}' 2>/dev/null || echo "")
+    if [[ -n "$pane_pid" ]]; then
+        # Kill any claude descendants of the pane
+        pkill -P "$pane_pid" -f "claude" 2>/dev/null || true
+    fi
+    sleep 0.5
+
+    # Relaunch claude
+    $TMUX_CMD send-keys -t "$SESSION_NAME" "claude --allowedTools 'Read,Write,Edit,Bash,Glob,Grep'" Enter
+    sleep 3
+
+    local context
+    context=$(build_initial_context)
+    inject_to_session "$context" || true
+
+    supervisor_log "Claude restart sequence complete in $SESSION_NAME"
+}
+
+# Watch config files; if any mtime changed since last tick, restart claude.
+check_config_changes() {
+    local current_sig
+    current_sig=$(compute_config_signature)
+
+    local last_sig=""
+    [[ -f "$CONFIG_MTIME_FILE" ]] && last_sig=$(cat "$CONFIG_MTIME_FILE")
+
+    if [[ -z "$last_sig" ]]; then
+        # First run - just record baseline
+        echo "$current_sig" > "$CONFIG_MTIME_FILE"
+        return 0
+    fi
+
+    if [[ "$current_sig" != "$last_sig" ]]; then
+        supervisor_log "Config change detected"
+        supervisor_log "  old: $last_sig"
+        supervisor_log "  new: $current_sig"
+        echo "$current_sig" > "$CONFIG_MTIME_FILE"
+        restart_claude_in_session "config file mtime changed"
+    fi
+}
+
+# Detect known stuck-prompt patterns in tmux pane and auto-resolve.
+check_stuck_prompts() {
+    session_alive || return 0
+
+    local pane
+    pane=$($TMUX_CMD capture-pane -t "$SESSION_NAME" -p -S -50 2>/dev/null || echo "")
+    [[ -z "$pane" ]] && return 0
+
+    # Safety-hooks / generic confirmation prompt: auto-approve "1"
+    if echo "$pane" | grep -qE "(Do you want to proceed\?|\[plugin:safety-hooks\]|^[[:space:]]*1\.[[:space:]]+Yes\b)"; then
+        # Avoid spamming: only intervene if we haven't just intervened
+        local marker="$METASPHERE_DIR/state/last_safety_hook_intervention"
+        local now=$(date +%s)
+        local last=0
+        [[ -f "$marker" ]] && last=$(cat "$marker")
+        if (( now - last >= 10 )); then
+            supervisor_log "Stuck safety-hooks confirmation detected; sending '1' Enter"
+            "$SCRIPT_DIR/metasphere-events" log supervisor.auto_approve "Safety-hooks confirmation auto-approved" --agent @daemon-supervisor 2>/dev/null || true
+            $TMUX_CMD send-keys -t "$SESSION_NAME" "1" 2>/dev/null || true
+            sleep 0.2
+            $TMUX_CMD send-keys -t "$SESSION_NAME" Enter 2>/dev/null || true
+            echo "$now" > "$marker"
+        fi
+        return 0
+    fi
+
+    # Stuck "[Pasted text #N" placeholder for >15s
+    if echo "$pane" | grep -qE "\[Pasted text #[0-9]+"; then
+        local now=$(date +%s)
+        local first=0
+        [[ -f "$STUCK_PASTE_STATE" ]] && first=$(cat "$STUCK_PASTE_STATE")
+        if (( first == 0 )); then
+            echo "$now" > "$STUCK_PASTE_STATE"
+        elif (( now - first >= 15 )); then
+            supervisor_log "Stuck [Pasted text] placeholder >15s; force Enter"
+            "$SCRIPT_DIR/metasphere-events" log supervisor.force_enter "Stuck pasted-text placeholder cleared" --agent @daemon-supervisor 2>/dev/null || true
+            $TMUX_CMD send-keys -t "$SESSION_NAME" Enter 2>/dev/null || true
+            rm -f "$STUCK_PASTE_STATE"
+        fi
+    else
+        # No placeholder - clear timer
+        [[ -f "$STUCK_PASTE_STATE" ]] && rm -f "$STUCK_PASTE_STATE"
+    fi
+}
+
+# =============================================================================
 # Watchdog
 # =============================================================================
 
@@ -485,7 +635,22 @@ run_watchdog() {
             log "Watchdog: stuck paste in $SESSION_NAME could not be cleared"
             "$SCRIPT_DIR/metasphere-events" log watchdog.stuck_paste "Stuck [Pasted text] placeholder" --agent @watchdog 2>/dev/null || true
         fi
+
+        # Supervisor behaviors
+        check_config_changes
+        check_stuck_prompts
     fi
+}
+
+# Restart claude inside the orchestrator session on demand (CLI)
+restart_orchestrator_claude() {
+    if ! session_alive; then
+        echo "Session $SESSION_NAME not alive; starting fresh"
+        start_session
+        return 0
+    fi
+    restart_claude_in_session "explicit CLI restart-orchestrator"
+    echo "Restart triggered. Watch: tail -f $SUPERVISOR_LOG"
 }
 
 # =============================================================================
@@ -501,6 +666,16 @@ daemon_mode() {
 
     # Ensure session on startup
     [[ "$SESSION_MODE" == "persistent" ]] && ensure_session
+
+    # Force a fresh Claude REPL on daemon boot. Project files (CLAUDE.md,
+    # .claude/settings.json, the UserPromptSubmit hook script) are loaded
+    # once at REPL start, so an existing REPL will keep using its baked-in
+    # harness even after we ship updates. Killing and respawning here
+    # guarantees daemon restart == fresh harness pickup. The tmux session
+    # itself stays alive so spot-chat / external attachers don't drop.
+    if [[ "$SESSION_MODE" == "persistent" ]] && session_alive; then
+        restart_claude_in_session "daemon startup"
+    fi
 
     while true; do
         poll_telegram 2>/dev/null || true
@@ -544,6 +719,9 @@ case "${1:-}" in
         else
             echo "No session running"
         fi
+        ;;
+    restart-orchestrator|restart-claude)
+        restart_orchestrator_claude
         ;;
     kill|stop)
         $TMUX_CMD kill-session -t "$SESSION_NAME" 2>/dev/null || true
