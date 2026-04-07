@@ -23,7 +23,8 @@ def _env_path(name: str, default: Path) -> Path:
     return Path(v).expanduser() if v else default
 
 
-def metasphere_dir() -> Path:
+def home() -> Path:
+    """Return the metasphere runtime root (``$METASPHERE_DIR`` or ``~/.metasphere``)."""
     return _env_path("METASPHERE_DIR", Path.home() / ".metasphere")
 
 
@@ -129,7 +130,7 @@ class Paths:
 
 def resolve() -> Paths:
     """Build a Paths bundle from current env / cwd."""
-    return Paths(root=metasphere_dir(), repo=repo_root(), scope=scope())
+    return Paths(root=home(), repo=repo_root(), scope=scope())
 
 
 def rel_path(path: Path, repo_root: Path) -> str:
