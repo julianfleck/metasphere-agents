@@ -30,7 +30,7 @@ from .io import (
     write_frontmatter_file,
     write_json,
 )
-from .paths import Paths, resolve
+from .paths import Paths, rel_path as _rel_path, resolve  # noqa: F401  (re-export)
 
 # ---------------------------------------------------------------------------
 # Model
@@ -168,17 +168,6 @@ def update_status(msg_path: Path, field: str, value: str) -> Message:
 # ---------------------------------------------------------------------------
 # Scope walking
 # ---------------------------------------------------------------------------
-
-
-def _rel_path(path: Path, repo_root: Path) -> str:
-    try:
-        rel = Path(path).resolve().relative_to(Path(repo_root).resolve())
-        s = "/" + str(rel)
-    except ValueError:
-        s = str(path)
-    if s == "/.":
-        return "/"
-    return s.rstrip("/") or "/"
 
 
 def collect_inbox(scope: Path, repo_root: Path) -> list[Message]:

@@ -56,13 +56,14 @@ def _cmd_list(args: list[str]) -> int:
 
 
 def _cmd_new(args: list[str]) -> int:
-    title = ""
     priority = _tasks.PRIORITY_DEFAULT
+    title_parts: list[str] = []
     for a in args:
         if a in _tasks.VALID_PRIORITIES:
             priority = a
-        elif not title:
-            title = a
+        else:
+            title_parts.append(a)
+    title = " ".join(title_parts)
     if not title:
         print('Usage: tasks new "title" [!priority]', file=sys.stderr)
         return 1

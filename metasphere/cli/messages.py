@@ -44,7 +44,7 @@ def _print_inbox(show_all: bool) -> int:
         print("## Messages: No messages in scope")
         return 0
     print(f"## Messages ({unread} unread, {total} total)")
-    print(f"## Scope: {_msgs._rel_path(p.scope, p.repo)}")
+    print(f"## Scope: {_paths.rel_path(p.scope, p.repo)}")
     print()
     for m in msgs:
         if not show_all and m.status != _msgs.STATUS_UNREAD:
@@ -113,7 +113,7 @@ def _cmd_read(args: list[str]) -> int:
 def _cmd_tree(_args: list[str]) -> int:
     p, _ = _ctx()
     print("## Message Tree")
-    print(f"## Scope: {_msgs._rel_path(p.scope, p.repo)}")
+    print(f"## Scope: {_paths.rel_path(p.scope, p.repo)}")
     print()
     for msg_dir in sorted(Path(p.repo).rglob(".messages")):
         if not msg_dir.is_dir():
@@ -124,7 +124,7 @@ def _cmd_tree(_args: list[str]) -> int:
         if inbox_count == 0 and outbox_count == 0:
             continue
         marker = " ← you are here" if scope_dir.resolve() == p.scope.resolve() else ""
-        print(f"{_msgs._rel_path(scope_dir, p.repo)}{marker}")
+        print(f"{_paths.rel_path(scope_dir, p.repo)}{marker}")
         print(f"  inbox: {inbox_count} | outbox: {outbox_count}")
     return 0
 

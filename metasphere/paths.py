@@ -117,3 +117,18 @@ class Paths:
 def resolve() -> Paths:
     """Build a Paths bundle from current env / cwd."""
     return Paths(root=metasphere_dir(), repo=repo_root(), scope=scope())
+
+
+def rel_path(path: Path, repo_root: Path) -> str:
+    """Render ``path`` as a ``/``-prefixed scope string relative to
+    ``repo_root``. Falls back to the absolute path string if ``path`` is
+    outside ``repo_root``. Used everywhere a scope label is printed.
+    """
+    try:
+        rel = Path(path).resolve().relative_to(Path(repo_root).resolve())
+        s = "/" + str(rel)
+    except ValueError:
+        s = str(path)
+    if s == "/.":
+        return "/"
+    return s.rstrip("/") or "/"

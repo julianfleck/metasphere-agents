@@ -115,6 +115,13 @@ def poll(
             time.sleep(2)
             continue
         for u in updates:
-            yield u
-            offset = u.update_id + 1
-            save_offset(offset, offset_path)
+            try:
+                yield u
+                offset = u.update_id + 1
+                save_offset(offset, offset_path)
+            except (KeyError, TypeError, ValueError) as e:
+                # Malformed payload — log and skip rather than crashing
+                # the poll loop. Without this guard a bad update_id field
+                # would tear down the daemon.
+                print(f"[poller] skipping malformed update: {e}", flush=True)
+                continue
