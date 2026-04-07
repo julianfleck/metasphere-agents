@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from typing import Iterable
 
@@ -21,10 +22,13 @@ _MARKER = "# Metasphere managed hook"
 
 
 def _shim(event: str) -> str:
+    # Bake the absolute interpreter path captured at install time so the
+    # shim works inside venvs / pipx installs (M4, wave-4 review).
+    py = sys.executable or "python3"
     return (
         "#!/bin/bash\n"
         f"{_MARKER}\n"
-        f'exec python3 -m metasphere.cli.git_hooks {event} "$@"\n'
+        f'exec {py} -m metasphere.cli.git_hooks {event} "$@"\n'
     )
 
 

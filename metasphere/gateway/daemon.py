@@ -17,6 +17,8 @@ from typing import Callable, Optional
 from ..events import log_event
 from ..paths import Paths, resolve
 from ..telegram import poller as _poller
+from ..telegram.commands import Context as _CmdContext, dispatch as _dispatch_command
+from ..telegram.api import send_message as _tg_send
 from ..telegram.inject import submit_to_tmux
 from .session import ensure_session
 from .watchdog import run_watchdog
@@ -29,8 +31,25 @@ def _poll_once(timeout: int = 1) -> int:
     offset = _poller.load_offset()
     updates = _poller.get_updates(offset=offset, timeout=timeout)
     for u in updates:
-        if u.text and u.chat_id is not None and not u.text.startswith("/"):
-            submit_to_tmux(f"@{u.from_username or 'user'}", u.text)
+        if u.text and u.chat_id is not None:
+            if u.text.startswith("/"):
+                # Route slash commands through the command dispatcher (M5,
+                # wave-4 review). Previously these were silently dropped.
+                try:
+                    ctx = _CmdContext(
+                        chat_id=u.chat_id,
+                        from_user=u.from_username or "user",
+                    )
+                    reply = _dispatch_command(u.text, ctx)
+                    if reply:
+                        try:
+                            _tg_send(u.chat_id, reply)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            else:
+                submit_to_tmux(f"@{u.from_username or 'user'}", u.text)
         _poller.save_offset(u.update_id + 1)
     return len(updates)
 

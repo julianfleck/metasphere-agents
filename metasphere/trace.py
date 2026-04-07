@@ -192,14 +192,34 @@ def search_traces(
     paths: Paths | None = None,
     limit: int = 50,
 ) -> list[Trace]:
+    """Stream the trace index line-by-line and short-circuit at ``limit``.
+
+    M1 (wave-4 review): the previous implementation read up to 10 000 rows
+    into memory before filtering, silently truncating long histories. This
+    version reads `index.jsonl` line-at-a-time under a shared lock and
+    stops as soon as ``limit`` matches are collected.
+    """
     paths = paths or resolve()
     rx = re.compile(pattern, re.IGNORECASE)
-    out = []
-    for t in list_traces(limit=10_000, paths=paths):
-        if rx.search(t.command) or rx.search(t.error_summary or ""):
-            out.append(t)
-            if len(out) >= limit:
-                break
+    index = _traces_dir(paths) / "index.jsonl"
+    if not index.exists():
+        return []
+    out: list[Trace] = []
+    with file_lock(index, exclusive=False):
+        with index.open("r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cmd = d.get("command", "") or ""
+                summary = d.get("error_summary", "") or ""
+                if rx.search(cmd) or rx.search(summary):
+                    out.append(Trace(**{k: d.get(k) for k in Trace.__dataclass_fields__}))
+                    if len(out) >= limit:
+                        break
     return out
 
 

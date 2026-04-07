@@ -17,18 +17,16 @@ from metasphere.paths import Paths
 # ---------------------------------------------------------------------------
 
 def test_session_health_dead_when_no_session(tmp_paths: Paths):
-    fake = MagicMock(returncode=1, stdout="", stderr="")
-    with patch.object(gw_session, "_tmux", return_value=fake):
+    with patch.object(gw_session, "_agents_session_alive", return_value=False):
         alive, idle = gw_session.session_health(tmp_paths)
     assert alive is False
     assert idle == 0
 
 
 def test_session_health_alive_with_idle(tmp_paths: Paths):
-    # First call: has-session OK; second call: display-message returns activity
-    has = MagicMock(returncode=0, stdout="", stderr="")
     disp = MagicMock(returncode=0, stdout="0\n", stderr="")
-    with patch.object(gw_session, "_tmux", side_effect=[has, disp]):
+    with patch.object(gw_session, "_agents_session_alive", return_value=True), \
+         patch.object(gw_session, "_tmux", return_value=disp):
         alive, idle = gw_session.session_health(tmp_paths)
     assert alive is True
     assert idle >= 0

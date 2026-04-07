@@ -40,6 +40,20 @@ def test_changelog_writes_file(tmp_paths, tmp_path):
     assert "proj" in text
 
 
+def test_changelog_walks_completed_tasks(tmp_paths, tmp_path):
+    """M3 (wave-4 review): completed tasks come from .tasks/completed/*.task on disk."""
+    proj = tmp_path / "proj2"
+    proj.mkdir()
+    init_project(path=proj, paths=tmp_paths)
+    completed = proj / ".tasks" / "completed"
+    (completed / "task-1.task").write_text("title: Ship widget\nstatus: completed\n")
+    (completed / "task-2.task").write_text("title: Refactor frobber\nstatus: completed\n")
+    out = project_changelog("proj2", paths=tmp_paths)
+    body = out.read_text()
+    assert "Ship widget" in body
+    assert "Refactor frobber" in body
+
+
 def test_learnings_emits_agent_header_once(tmp_paths, tmp_path):
     proj = tmp_path / "lp"
     proj.mkdir()
