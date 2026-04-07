@@ -1,0 +1,267 @@
+"""Post-turn (Stop) hook: route assistant reply to Telegram + track activity.
+
+Python port of ``scripts/metasphere-posthook``. Two responsibilities:
+
+1. **Route** the final assistant text of a turn to Telegram for the
+   ``@orchestrator`` agent only. Sub-agents communicate via the messages
+   system, never Telegram.
+2. **Track** turn completion: bump per-agent activity counter, update
+   ``updated_at``, and log a heartbeat event every 10 turns.
+
+The hook **must never raise**. Any exception is logged and swallowed; the
+top-level entry point always returns ``0`` so claude-code's Stop pipeline
+keeps working even if metasphere is broken.
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import hashlib
+import json
+import traceback
+from pathlib import Path
+from typing import Any
+
+from .events import log_event
+from .identity import resolve_agent_id
+from .io import atomic_write_text, file_lock, read_json, write_json
+from .paths import Paths, resolve
+
+
+# ---------- payload + transcript parsing ----------
+
+def read_stop_hook_payload(stdin_bytes: bytes) -> dict:
+    """Parse the JSON Stop-hook payload from claude-code.
+
+    Empty / invalid input returns ``{}`` rather than raising — the hook
+    is occasionally invoked manually with no stdin.
+    """
+    if not stdin_bytes:
+        return {}
+    try:
+        return json.loads(stdin_bytes.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def extract_last_assistant_text(transcript_path: Path) -> str | None:
+    """Walk a JSONL transcript backwards and return the most recent
+    assistant message's concatenated text content.
+
+    Returns ``None`` if the file is missing, empty, or contains no
+    assistant message with text blocks.
+    """
+    p = Path(transcript_path)
+    if not p.exists():
+        return None
+    try:
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("type") != "assistant":
+            continue
+        msg = obj.get("message") or {}
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                t = block.get("text") or ""
+                if t:
+                    parts.append(t)
+        if parts:
+            return "\n".join(parts)
+        # No text blocks on the last assistant turn — turn ended on a
+        # tool call. Treat as silent and stop walking.
+        return None
+    return None
+
+
+# ---------- silent-tick filter ----------
+
+def should_skip_silent_tick(text: str | None) -> bool:
+    """Return True if the turn produced no user-facing text and should
+    not be routed to Telegram. Per CLAUDE.md "Heartbeat Turn Etiquette",
+    silent ticks must be silent — no placeholders.
+    """
+    if text is None:
+        return True
+    return not text.strip()
+
+
+# ---------- telegram routing ----------
+
+def _hash_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _last_sent_path(paths: Paths) -> Path:
+    return paths.state / "posthook_last_sent"
+
+
+def _telegram_error_log(paths: Paths) -> Path:
+    return paths.state / "posthook_telegram_errors.log"
+
+
+def route_to_telegram(text: str, paths: Paths) -> None:
+    """Send ``text`` to Telegram via the parallel-track bot, deduping
+    against the last-sent hash. Failures are logged, never raised.
+    """
+    if not text:
+        return
+
+    digest = _hash_text(text)
+    last_file = _last_sent_path(paths)
+    try:
+        if last_file.exists():
+            prev = last_file.read_text(encoding="utf-8").strip()
+            if prev == digest:
+                return
+    except OSError:
+        pass
+
+    try:
+        atomic_write_text(last_file, digest + "\n")
+    except OSError:
+        # If we can't persist the hash we still attempt the send,
+        # accepting potential duplicates over silent failures.
+        pass
+
+    try:
+        # Imported lazily so tests can patch metasphere.telegram.api.send_message
+        # cleanly without dragging the urllib stack into module load.
+        from . import telegram as _tg_pkg  # noqa: F401
+        from .telegram import api as telegram_api
+
+        chat_id = _resolve_chat_id(paths)
+        if chat_id is None:
+            _log_telegram_error(paths, "no chat_id configured (telegram_chat_id missing)")
+            return
+        telegram_api.send_message(chat_id, text)
+    except Exception as exc:  # noqa: BLE001 — must never raise
+        _log_telegram_error(paths, f"{type(exc).__name__}: {exc}")
+
+
+def _resolve_chat_id(paths: Paths) -> str | None:
+    """Read the Telegram chat id from the standard config locations."""
+    candidates = [
+        paths.config / "telegram_chat_id",
+        paths.root / "telegram_chat_id",
+    ]
+    for c in candidates:
+        try:
+            if c.exists():
+                v = c.read_text(encoding="utf-8").strip()
+                if v:
+                    return v
+        except OSError:
+            continue
+    return None
+
+
+def _log_telegram_error(paths: Paths, msg: str) -> None:
+    try:
+        log = _telegram_error_log(paths)
+        log.parent.mkdir(parents=True, exist_ok=True)
+        ts = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {msg}\n")
+    except OSError:
+        pass
+
+
+# ---------- activity tracking ----------
+
+def track_turn_completion(agent: str, paths: Paths) -> None:
+    """Bump the per-agent activity counter under flock and update
+    ``updated_at``. Logs an ``agent.heartbeat`` event every 10 turns.
+    """
+    agent_dir = paths.agent_dir(agent)
+    try:
+        agent_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+
+    activity_file = agent_dir / "activity.json"
+    turns = 0
+    try:
+        with file_lock(activity_file):
+            data: dict[str, Any] = {}
+            if activity_file.exists():
+                try:
+                    data = json.loads(activity_file.read_text(encoding="utf-8")) or {}
+                except (OSError, json.JSONDecodeError):
+                    data = {}
+            turns = int(data.get("turns") or 0) + 1
+            data["turns"] = turns
+            data["updated_at"] = _dt.datetime.now(_dt.timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            atomic_write_text(activity_file, json.dumps(data, indent=2, sort_keys=True) + "\n")
+    except OSError:
+        return
+
+    # Upgrade "spawned" → "active" and bump updated_at, mirroring the bash.
+    try:
+        status_file = agent_dir / "status"
+        if status_file.exists():
+            cur = status_file.read_text(encoding="utf-8").strip()
+            if cur == "spawned":
+                atomic_write_text(status_file, "active\n")
+        updated_at = agent_dir / "updated_at"
+        atomic_write_text(
+            updated_at,
+            _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") + "\n",
+        )
+    except OSError:
+        pass
+
+    if turns > 0 and turns % 10 == 0:
+        try:
+            log_event(
+                "agent.heartbeat",
+                f"{agent} turn {turns}",
+                agent=agent,
+                paths=paths,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
+# ---------- top-level entry ----------
+
+def run_posthook(stdin_bytes: bytes, paths: Paths | None = None) -> int:
+    """Top-level Stop-hook entry point. Always returns 0."""
+    try:
+        paths = paths or resolve()
+        payload = read_stop_hook_payload(stdin_bytes)
+
+        agent = resolve_agent_id(paths)
+
+        # Re-entrancy guard: bail if claude-code is already inside a Stop hook.
+        already_active = bool(payload.get("stop_hook_active"))
+
+        if not already_active and agent == "@orchestrator":
+            transcript = payload.get("transcript_path")
+            if transcript:
+                text = extract_last_assistant_text(Path(transcript))
+                if not should_skip_silent_tick(text):
+                    route_to_telegram(text or "", paths)
+
+        track_turn_completion(agent, paths)
+    except Exception:  # noqa: BLE001 — Stop hook must never break the host
+        try:
+            paths = paths or resolve()
+            _log_telegram_error(paths, "run_posthook crash: " + traceback.format_exc())
+        except Exception:  # noqa: BLE001
+            pass
+    return 0
