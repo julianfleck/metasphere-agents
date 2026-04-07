@@ -323,14 +323,18 @@ def _render_events(paths: Paths, n: int = 10) -> str:
 
 
 def _render_memory_fts(paths: Paths, agent: str) -> str:
-    """Shell out to ``scripts/metasphere-fts`` if present; else skip cleanly."""
-    fts = paths.repo / "scripts" / "metasphere-fts"
-    out = ["## Memory Context (FTS)"]
-    if not fts.is_file() or not os.access(fts, os.X_OK):
-        out.append("metasphere-fts not found. (Tip: `cam search <query>` for deeper recall.)")
-        return "\n".join(out) + "\n"
+    """Pull the memory section from ``metasphere.memory.context_for``.
 
-    # Build query from the agent's task file + repo basename, mirroring bash.
+    Replaces the previous shell-out to ``scripts/metasphere-fts``. The
+    memory module owns strategy selection (cam + token-overlap by
+    default) so this renderer just builds the query and formats.
+    """
+    from .memory import TokenOverlapStrategy, context_for as _memory_context_for
+
+    out = ["## Memory Context (FTS)"]
+
+    # Build query from the agent's task file + repo basename, mirroring the
+    # original bash hook.
     task_file = paths.agent_dir(agent) / "task"
     query_parts: list[str] = []
     if task_file.is_file():
@@ -342,16 +346,12 @@ def _render_memory_fts(paths: Paths, agent: str) -> str:
     query = " ".join(p for p in query_parts if p).replace("\n", " ")
     query = " ".join(query.split())[:200] or agent
 
-    try:
-        res = subprocess.run(
-            [str(fts), query, "5"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        body = res.stdout.strip()
-    except (subprocess.SubprocessError, OSError):
-        body = ""
+    # Use the stdlib token-overlap strategy directly so per-turn context
+    # build never shells out (no cam latency, no missing-binary noise).
+    # Callers wanting cam/hybrid recall use `metasphere memory context`.
+    body = _memory_context_for(
+        query, budget_chars=2048, strategies=[TokenOverlapStrategy(paths)]
+    ).strip()
     if not body:
         body = "No relevant memory found."
     out.append(body)
