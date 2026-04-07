@@ -18,7 +18,8 @@ set -e
 
 REPO_ROOT="${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
-AGENT="${METASPHERE_AGENT_ID:-@user}"
+source "$(dirname "$0")/metasphere-identity"
+AGENT="$(resolve_agent_id)"
 SCOPE="${METASPHERE_SCOPE:-$REPO_ROOT}"
 
 cd "$SCOPE" 2>/dev/null || cd "$REPO_ROOT"
@@ -56,7 +57,7 @@ gen_task_id() {
         fi
 
         # Get agent if set
-        if [[ "$AGENT" != "@user" && -n "$AGENT" ]]; then
+        if [[ "$AGENT" != "@user" && "$AGENT" != "@orchestrator" && -n "$AGENT" ]]; then
             agent_part="$AGENT"
         fi
 

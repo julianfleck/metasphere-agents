@@ -306,14 +306,14 @@ case "${1:-}" in
     daemon)
         combined_daemon "${2:-30}"
         ;;
-    once|check)
+    ""|once|check)
         heartbeat_once
         ;;
     notify)
         shift
         notify "$*"
         ;;
-    *)
+    help|-h|--help)
         cat << 'EOF'
 metasphere-heartbeat - Proactive monitoring daemon
 
@@ -331,6 +331,6 @@ Also polls Telegram for incoming messages (bidirectional bridge).
 
 Configure Telegram in ~/.metasphere/config/telegram.env
 EOF
-        exit 1
+        exit 0
         ;;
 esac
