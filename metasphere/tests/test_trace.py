@@ -21,14 +21,14 @@ def test_capture_success(tmp_paths):
 
 
 def test_capture_failure_marks_error(tmp_paths):
-    t = capture_trace("exit 3", paths=tmp_paths)
+    t = capture_trace("exit 3", paths=tmp_paths, shell=True)
     assert t.exit_code == 3
     assert t.error_detected
     assert t.error_type == "exit_code"
 
 
 def test_capture_stderr_pattern(tmp_paths):
-    t = capture_trace("echo 'fatal: boom' >&2", paths=tmp_paths)
+    t = capture_trace("echo 'fatal: boom' >&2", paths=tmp_paths, shell=True)
     assert t.error_detected
     assert "fatal" in t.error_summary.lower()
 
@@ -54,3 +54,12 @@ def test_prune(tmp_paths):
     removed = prune_traces(1, paths=tmp_paths)
     assert removed >= 1
     assert not old.exists()
+
+
+def test_capture_string_no_shell_expansion(tmp_paths, monkeypatch):
+    monkeypatch.delenv("UNSET_VAR", raising=False)
+    t = capture_trace("echo $UNSET_VAR done", paths=tmp_paths)
+    assert t.exit_code == 0
+    out = Path(t.stdout_file).read_text().strip()
+    # Without shell, $UNSET_VAR is passed literally, not expanded.
+    assert out == "$UNSET_VAR done"

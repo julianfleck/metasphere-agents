@@ -11,6 +11,7 @@ import datetime as _dt
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -78,15 +79,16 @@ def capture_trace(
 ) -> Trace:
     """Run ``command_argv`` capturing stdout/stderr to disk.
 
-    If ``command_argv`` is a string, runs via ``shell=True`` (matching
-    bash ``eval``); a list runs as argv. Errors detected via exit code
+    If ``command_argv`` is a string, it is parsed with ``shlex.split``
+    by default (no shell expansion). Pass ``shell=True`` explicitly to
+    opt back into shell evaluation. Errors detected via exit code
     or common error keywords in stderr/stdout.
     """
     paths = paths or resolve()
     if isinstance(command_argv, str):
         cmd_str = command_argv
-        run_shell = True if shell is None else shell
-        run_arg: list[str] | str = command_argv
+        run_shell = False if shell is None else shell
+        run_arg: list[str] | str = command_argv if run_shell else shlex.split(command_argv)
     else:
         cmd_str = " ".join(command_argv)
         run_shell = False if shell is None else shell
