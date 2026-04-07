@@ -639,6 +639,62 @@ EOF
 }
 
 # =============================================================================
+# Claude Code permissions seeding
+# =============================================================================
+
+seed_claude_permissions() {
+    info "Seeding Claude Code permissions..."
+
+    local target_dir="$SCRIPT_DIR/.claude"
+    local target_file="$target_dir/settings.local.json"
+    mkdir -p "$target_dir"
+
+    local entries='[
+        "Bash(git add:*)",
+        "Bash(git commit:*)",
+        "Bash(git status:*)",
+        "Bash(git diff:*)",
+        "Bash(git log:*)",
+        "Bash(git show:*)",
+        "Bash(git stash:*)",
+        "Bash(git restore:*)",
+        "Bash(git branch:*)",
+        "Bash(git switch:*)",
+        "Bash(git checkout:*)",
+        "Bash(messages:*)",
+        "Bash(tasks:*)",
+        "Bash(metasphere:*)",
+        "Bash(metasphere-*:*)"
+    ]'
+
+    if [[ ! -f "$target_file" ]]; then
+        jq -n --argjson new "$entries" '{permissions: {allow: $new}}' > "$target_file" \
+            && ok "Created $target_file" \
+            || warn "Failed to create $target_file"
+        return
+    fi
+
+    # Merge: union of existing allow and new entries, preserving order
+    local tmp=$(mktemp)
+    if jq --argjson new "$entries" '
+        .permissions = (.permissions // {}) |
+        .permissions.allow = ((.permissions.allow // []) + $new | unique_by(.))
+    ' "$target_file" > "$tmp" 2>/dev/null; then
+        # Preserve original ordering: existing first, then any new not present
+        jq --argjson new "$entries" '
+            .permissions = (.permissions // {}) |
+            .permissions.allow = ((.permissions.allow // []) as $cur |
+                $cur + ($new - $cur))
+        ' "$target_file" > "$tmp" && mv "$tmp" "$target_file" \
+            && ok "Updated $target_file" \
+            || { warn "Failed to update $target_file"; rm -f "$tmp"; }
+    else
+        rm -f "$tmp"
+        warn "Could not parse $target_file - leaving unchanged"
+    fi
+}
+
+# =============================================================================
 # Final setup
 # =============================================================================
 
@@ -679,6 +735,7 @@ main() {
     migrate_openclaw      # Before telegram - migration may provide token
     setup_telegram
     setup_orchestrator
+    seed_claude_permissions
     setup_daemon
     show_completion
 }
