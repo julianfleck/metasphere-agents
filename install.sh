@@ -769,7 +769,7 @@ EOF
 # =============================================================================
 
 seed_claude_permissions() {
-    info "Seeding Claude Code permissions..."
+    info "Seeding Claude Code permissions + hooks..."
 
     local target_dir="$SCRIPT_DIR/.claude"
     local target_file="$target_dir/settings.local.json"
@@ -793,26 +793,49 @@ seed_claude_permissions() {
         "Bash(metasphere-*:*)"
     ]'
 
+    # Hook paths must be absolute and point at THIS checkout's scripts/.
+    # The committed .claude/settings.json is empty by design — claude-code
+    # merges settings.json + settings.local.json so hardcoded paths in the
+    # committed file would fire on every other machine and error.
+    local context_path="$SCRIPT_DIR/scripts/metasphere-context"
+    local posthook_path="$SCRIPT_DIR/scripts/metasphere-posthook"
+    local hooks
+    hooks=$(jq -n \
+        --arg ctx "$context_path" \
+        --arg post "$posthook_path" \
+        '{
+            UserPromptSubmit: [
+                {
+                    matcher: "",
+                    hooks: [{ type: "command", command: $ctx }]
+                }
+            ],
+            Stop: [
+                {
+                    matcher: "",
+                    hooks: [{ type: "command", command: $post }]
+                }
+            ]
+        }')
+
     if [[ ! -f "$target_file" ]]; then
-        jq -n --argjson new "$entries" '{permissions: {allow: $new}}' > "$target_file" \
-            && ok "Created $target_file" \
+        jq -n --argjson new "$entries" --argjson hooks "$hooks" \
+            '{permissions: {allow: $new}, hooks: $hooks}' > "$target_file" \
+            && ok "Created $target_file (permissions + hooks)" \
             || warn "Failed to create $target_file"
         return
     fi
 
-    # Merge: union of existing allow and new entries, preserving order
+    # Merge: union of existing allow and new entries; replace hooks block
+    # with the current absolute paths (the checkout location may have moved).
     local tmp=$(mktemp)
-    if jq --argjson new "$entries" '
+    if jq --argjson new "$entries" --argjson hooks "$hooks" '
         .permissions = (.permissions // {}) |
-        .permissions.allow = ((.permissions.allow // []) + $new | unique_by(.))
+        .permissions.allow = ((.permissions.allow // []) as $cur |
+            $cur + ($new - $cur)) |
+        .hooks = $hooks
     ' "$target_file" > "$tmp" 2>/dev/null; then
-        # Preserve original ordering: existing first, then any new not present
-        jq --argjson new "$entries" '
-            .permissions = (.permissions // {}) |
-            .permissions.allow = ((.permissions.allow // []) as $cur |
-                $cur + ($new - $cur))
-        ' "$target_file" > "$tmp" && mv "$tmp" "$target_file" \
-            && ok "Updated $target_file" \
+        mv "$tmp" "$target_file" && ok "Updated $target_file (permissions + hooks)" \
             || { warn "Failed to update $target_file"; rm -f "$tmp"; }
     else
         rm -f "$tmp"

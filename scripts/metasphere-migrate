@@ -218,7 +218,7 @@ migrate_telegram() {
 # =============================================================================
 
 migrate_soul() {
-    info "Migrating openclaw workspace files..."
+    info "Migrating openclaw workspace files into native metasphere identity..."
 
     local agent_dir="$METASPHERE_DIR/agents/@orchestrator"
     mkdir -p "$agent_dir"
@@ -230,23 +230,33 @@ migrate_soul() {
         workspace_dir="$OPENCLAW_DIR/workspace"
     fi
 
-    # Files to harness from openclaw workspace into the orchestrator agent.
-    # We do NOT copy them by default - we register the source path so
-    # metasphere-context can read them live and stay in sync if the user
-    # keeps editing them in their openclaw workspace.
-    local workspace_files=(SOUL.md IDENTITY.md AGENTS.md USER.md TOOLS.md MEMORY.md HEARTBEAT.md)
+    # Canonical openclaw workspace files per docs.openclaw.ai/concepts/agent-workspace.
+    # We COPY (not symlink, not live-pointer) so metasphere becomes authoritative
+    # after migration. ~/.openclaw stays intact as backup. Future edits should
+    # happen in ~/.metasphere/agents/@orchestrator/.
+    local workspace_files=(SOUL.md IDENTITY.md USER.md TOOLS.md AGENTS.md HEARTBEAT.md MEMORY.md BOOT.md BOOTSTRAP.md)
+    local copied=0
 
     if [[ -n "$workspace_dir" ]]; then
-        # Register the openclaw workspace as a legacy context source.
-        echo "$workspace_dir" > "$METASPHERE_DIR/config/openclaw_workspace"
-        ok "Registered openclaw workspace: $workspace_dir"
+        for f in "${workspace_files[@]}"; do
+            local src="$workspace_dir/$f"
+            local dst="$agent_dir/$f"
+            if [[ -f "$src" && ! -f "$dst" ]]; then
+                cp "$src" "$dst"
+                ((copied++))
+            elif [[ -f "$src" && -f "$dst" ]]; then
+                # Already exists — don't clobber. Show that it was preserved.
+                :
+            fi
+        done
+        ok "Copied $copied workspace files from $workspace_dir to $agent_dir"
 
-        # For SOUL.md specifically: copy it once into the agent dir if absent,
-        # so the agent has its own owned identity file. The hook will still
-        # prefer the live workspace version when present.
-        if [[ -f "$workspace_dir/SOUL.md" && ! -f "$agent_dir/SOUL.md" ]]; then
-            cp "$workspace_dir/SOUL.md" "$agent_dir/SOUL.md"
-            ok "Seeded @orchestrator SOUL.md from openclaw workspace"
+        # Drop the legacy openclaw_workspace pointer if present. The whole
+        # point of the refactor is that metasphere no longer reads through
+        # openclaw at runtime — the per-host install owns its files.
+        if [[ -f "$METASPHERE_DIR/config/openclaw_workspace" ]]; then
+            rm -f "$METASPHERE_DIR/config/openclaw_workspace"
+            ok "Dropped openclaw_workspace pointer (migration is now copy-based)"
         fi
     elif [[ -f "$OPENCLAW_DIR/SOUL.md" ]]; then
         # Pre-workspace layout fallback
@@ -256,18 +266,177 @@ migrate_soul() {
         fi
     fi
 
-    # Check for agent-specific SOUL files (per-persona)
-    for soul in "$OPENCLAW_DIR"/agents/*/SOUL.md; do
-        [[ -f "$soul" ]] || continue
-        local agent_name=$(basename "$(dirname "$soul")")
-        local target_dir="$METASPHERE_DIR/agents/@$agent_name"
+    # Per-agent identity files: ~/.openclaw/agents/<id>/agent (or SOUL.md)
+    # → ~/.metasphere/agents/@<id>/. These are the cron/research agents
+    # documented in jobs.json (main, night, research-gather, etc.)
+    if [[ -d "$OPENCLAW_DIR/agents" ]]; then
+        local agent_count=0
+        for d in "$OPENCLAW_DIR"/agents/*/; do
+            [[ -d "$d" ]] || continue
+            local agent_name=$(basename "$d")
+            local target_dir="$METASPHERE_DIR/agents/@$agent_name"
+            mkdir -p "$target_dir"
 
-        mkdir -p "$target_dir"
-        if [[ ! -f "$target_dir/SOUL.md" ]]; then
-            cp "$soul" "$target_dir/SOUL.md"
-            ok "Migrated SOUL.md for @$agent_name"
+            # Copy the openclaw "agent" descriptor file if present
+            if [[ -f "$d/agent" && ! -f "$target_dir/agent" ]]; then
+                cp "$d/agent" "$target_dir/agent"
+                ((agent_count++))
+            fi
+            # Copy SOUL.md if present (older layouts)
+            if [[ -f "$d/SOUL.md" && ! -f "$target_dir/SOUL.md" ]]; then
+                cp "$d/SOUL.md" "$target_dir/SOUL.md"
+            fi
+            # Copy profile dir if present (main agent has this)
+            if [[ -d "$d/profile" && ! -d "$target_dir/profile" ]]; then
+                cp -r "$d/profile" "$target_dir/profile"
+            fi
+        done
+        [[ $agent_count -gt 0 ]] && ok "Migrated $agent_count openclaw agent identities to @-named metasphere agents"
+    fi
+
+    # Generate persona-index.md so the agent's CLAUDE.md (or per-turn hook)
+    # can @-reference it and the agent can lazy-Read individual files on
+    # demand. No content is inlined — just absolute paths the agent can
+    # use with the Read tool.
+    write_persona_index "$agent_dir"
+}
+
+write_persona_index() {
+    local agent_dir="$1"
+    local index="$agent_dir/persona-index.md"
+
+    {
+        echo "# Persona Index — $(basename "$agent_dir")"
+        echo
+        echo "_Generated by metasphere-migrate on $(date -u +%Y-%m-%dT%H:%M:%SZ)._"
+        echo "_Read these files with the Read tool ON DEMAND, not all at once._"
+        echo
+        echo "## Identity (read first when introducing yourself)"
+        for f in IDENTITY.md SOUL.md USER.md; do
+            [[ -f "$agent_dir/$f" ]] && echo "- $agent_dir/$f"
+        done
+        echo
+        echo "## Operating rules (read when you need to recall procedures)"
+        for f in AGENTS.md TOOLS.md BOOTSTRAP.md BOOT.md; do
+            [[ -f "$agent_dir/$f" ]] && echo "- $agent_dir/$f"
+        done
+        echo
+        echo "## Memory (read when you need historical context)"
+        for f in MEMORY.md HEARTBEAT.md LEARNINGS.md MISSION.md; do
+            [[ -f "$agent_dir/$f" ]] && echo "- $agent_dir/$f"
+        done
+        # Workspace memory dir (daily logs) if present from openclaw migration
+        if [[ -d "$OPENCLAW_DIR/workspace/memory" ]]; then
+            local mem_count
+            mem_count=$(find "$OPENCLAW_DIR/workspace/memory" -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+            echo "- $OPENCLAW_DIR/workspace/memory/  (daily logs, $mem_count files; read latest with: ls -t | head)"
         fi
-    done
+        echo
+        echo "## How to use this"
+        echo
+        echo "When the user asks something that touches your identity, persona, or"
+        echo "operating rules, Read the relevant file from the lists above. Do NOT"
+        echo "Read everything at session start — that wastes context. The whole"
+        echo "point of this index is lazy loading."
+    } > "$index"
+
+    ok "Wrote $index"
+}
+
+# =============================================================================
+# Cron migration: ~/.openclaw/cron/jobs.json → ~/.metasphere/schedule/jobs.json
+# =============================================================================
+
+migrate_cron() {
+    info "Migrating openclaw cron jobs to metasphere schedule..."
+
+    local src="$OPENCLAW_DIR/cron/jobs.json"
+    local schedule_dir="$METASPHERE_DIR/schedule"
+    local dst="$schedule_dir/jobs.json"
+
+    if [[ ! -f "$src" ]]; then
+        info "No openclaw cron jobs.json found"
+        return 0
+    fi
+
+    mkdir -p "$schedule_dir"
+
+    # Initialize empty schedule if missing
+    [[ -f "$dst" ]] || echo '[]' > "$dst"
+
+    local total enabled disabled portable nonportable
+    total=$(jq '.jobs | length' "$src" 2>/dev/null || echo 0)
+    enabled=$(jq '[.jobs[] | select(.enabled == true)] | length' "$src" 2>/dev/null || echo 0)
+    disabled=$((total - enabled))
+
+    info "  Found $total openclaw jobs ($enabled enabled, $disabled disabled)"
+
+    # Transform openclaw schema -> metasphere schedule schema. We preserve the
+    # original openclaw id, the agentId, name, cron expression, tz, and the
+    # full payload message + model. Disabled jobs are skipped entirely (we
+    # log them but don't carry them over). Anything previously imported with
+    # the same id gets replaced (idempotent re-run).
+    portable=0
+    nonportable=0
+
+    # Build the new entries as a JSON array
+    local new_entries
+    new_entries=$(jq -c --arg now "$(date +%s)" '
+        [
+            .jobs[]
+            | select(.enabled == true)
+            | select(.schedule.kind == "cron")
+            | select(.schedule.expr != null and .schedule.expr != "")
+            | {
+                id: ("openclaw-" + .id),
+                source: "openclaw-migrated",
+                source_id: .id,
+                agent_id: .agentId,
+                name: .name,
+                enabled: true,
+                kind: "cron",
+                cron_expr: .schedule.expr,
+                tz: (.schedule.tz // "UTC"),
+                payload_kind: (.payload.kind // "agentTurn"),
+                payload_message: (.payload.message // ""),
+                model: (.payload.model // null),
+                session_target: (.sessionTarget // "isolated"),
+                wake_mode: (.wakeMode // "next-heartbeat"),
+                imported_at: ($now | tonumber),
+                next_run: 0,
+                command: ("send @" + .agentId + " !task " + (.name | tojson)),
+                full_command: ""
+            }
+        ]
+    ' "$src" 2>/dev/null)
+
+    portable=$(echo "$new_entries" | jq 'length' 2>/dev/null || echo 0)
+
+    # Count non-portable enabled jobs (no cron expr or empty)
+    nonportable=$(jq '[.jobs[] | select(.enabled == true) | select(.schedule.kind != "cron" or .schedule.expr == null or .schedule.expr == "")] | length' "$src" 2>/dev/null || echo 0)
+
+    if [[ "$portable" -eq 0 ]]; then
+        warn "  No portable jobs (need kind=cron + non-empty expr)"
+    fi
+
+    # Merge: drop any previously-imported entries with the same source_id,
+    # then append new ones. Preserves any non-openclaw native schedule entries.
+    local merged
+    merged=$(jq --argjson new "$new_entries" '
+        [.[] | select(.source != "openclaw-migrated" or .source_id == null)]
+        + $new
+    ' "$dst" 2>/dev/null)
+
+    if [[ -n "$merged" ]]; then
+        echo "$merged" > "$dst"
+        ok "Imported $portable cron jobs → $dst (skipped $nonportable enabled non-cron + $disabled disabled)"
+    else
+        err "Failed to merge new jobs into $dst"
+        return 1
+    fi
+
+    # Print a summary of what was imported (name + expression + tz)
+    echo "$new_entries" | jq -r '.[] | "    [\(.agent_id)] \(.name) — \(.cron_expr) (\(.tz))"' 2>/dev/null
 }
 
 # =============================================================================
@@ -438,6 +607,7 @@ run_migration() {
     migrate_soul || true
     migrate_skills || true
     migrate_memory || true
+    migrate_cron || true
     parse_sessions || true
 
     # Optionally disable OpenClaw

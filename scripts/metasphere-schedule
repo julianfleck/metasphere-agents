@@ -129,13 +129,49 @@ cmd_list() {
         return
     fi
 
-    echo "$jobs" | jq -r '.[] | "\(.id)\t\(.next_run | tonumber | strftime("%Y-%m-%d %H:%M"))\t\(.repeat_human // "once")\t\(.command)"' | \
-    while IFS=$'\t' read -r id next_run repeat cmd; do
-        local repeat_badge=""
-        [[ "$repeat" != "once" && "$repeat" != "null" ]] && repeat_badge="${GREEN}[$repeat]${NC} "
-        echo -e "  ${DIM}$id${NC}"
-        echo -e "    $repeat_badge$cmd"
-        echo -e "    ${DIM}Next: $next_run${NC}"
+    # New cron-format jobs (kind=cron) are listed first, then legacy interval jobs.
+    echo "$jobs" | jq -r '
+        .[] |
+        if (.kind // "interval") == "cron" then
+            [
+                .id,
+                "cron",
+                .cron_expr,
+                .tz,
+                ("[" + (.agent_id // "main") + "] " + (.name // "unnamed")),
+                (.enabled | tostring),
+                ((.last_fired_at // 0) | tostring)
+            ] | @tsv
+        else
+            [
+                .id,
+                "interval",
+                ((.next_run // 0) | tonumber | strftime("%Y-%m-%d %H:%M")),
+                "",
+                (.command // ""),
+                ((.enabled // true) | tostring),
+                "0"
+            ] | @tsv
+        end
+    ' | sort -k2 | while IFS=$'\t' read -r id kind a b cmd enabled last_fired; do
+        local en=""
+        if [[ "$enabled" == "false" ]]; then
+            en="${DIM}(disabled)${NC} "
+        fi
+        if [[ "$kind" == "cron" ]]; then
+            echo -e "  ${DIM}$id${NC}"
+            echo -e "    ${GREEN}[cron]${NC} $en$cmd"
+            echo -e "    ${DIM}Expr: $a ($b)${NC}"
+            if [[ "$last_fired" != "0" ]]; then
+                local lf
+                lf=$(date -r "$last_fired" "+%Y-%m-%d %H:%M" 2>/dev/null || date -d "@$last_fired" "+%Y-%m-%d %H:%M" 2>/dev/null || echo "?")
+                echo -e "    ${DIM}Last fired: $lf${NC}"
+            fi
+        else
+            echo -e "  ${DIM}$id${NC}"
+            echo -e "    $en$cmd"
+            echo -e "    ${DIM}Next: $a${NC}"
+        fi
         echo
     done
 }
@@ -223,7 +259,127 @@ cmd_remove() {
     echo -e "${GREEN}Removed${NC}: $id"
 }
 
-# Run due jobs
+# Should a cron-format job fire right now? Returns 0 (yes) or 1 (no).
+# Uses Python + croniter if available (most reliable), else falls back to a
+# small bash matcher that handles `*`, `*/N`, comma lists, ranges, and exact
+# values for the standard 5 cron fields. Does NOT handle full cron syntax
+# like @reboot or named months.
+cron_should_fire() {
+    local expr="$1"
+    local tz="${2:-UTC}"
+    local last_fired_at="${3:-0}"
+    local now_epoch
+    now_epoch=$(date +%s)
+
+    # Don't fire twice in the same minute
+    local elapsed=$((now_epoch - last_fired_at))
+    [[ $elapsed -lt 60 ]] && return 1
+
+    # Try Python + croniter first (most accurate, handles tz + DST)
+    if command -v python3 >/dev/null 2>&1; then
+        local result
+        result=$(python3 - "$expr" "$tz" "$last_fired_at" 2>/dev/null <<'PY'
+import sys
+try:
+    from croniter import croniter
+except ImportError:
+    sys.exit(2)  # signal "no croniter"
+import datetime
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    sys.exit(2)
+
+expr = sys.argv[1]
+tz = sys.argv[2]
+last = int(sys.argv[3] or 0)
+
+try:
+    zone = ZoneInfo(tz)
+except Exception:
+    zone = ZoneInfo("UTC")
+
+now = datetime.datetime.now(tz=zone)
+# croniter gives us "what's the most recent fire time at or before now?"
+itr = croniter(expr, now)
+prev = itr.get_prev(datetime.datetime)
+prev_epoch = int(prev.timestamp())
+
+# Fire if the most recent expected fire time is within the last 90 seconds
+# AND we haven't already fired since then. (90s window protects against
+# minor scheduler tick drift.)
+import time
+delta = int(time.time()) - prev_epoch
+if 0 <= delta < 90 and prev_epoch > last:
+    sys.exit(0)
+sys.exit(1)
+PY
+        )
+        local rc=$?
+        # rc=0 → fire, rc=1 → don't fire, rc=2 → croniter not installed (fallback)
+        if [[ $rc -eq 0 || $rc -eq 1 ]]; then
+            return $rc
+        fi
+    fi
+
+    # Bash fallback: parse 5 fields, check current time. tz is honored via
+    # `TZ=` env on the date call so weekday/hour are local-time-correct.
+    local cur_min cur_hour cur_dom cur_mon cur_dow
+    cur_min=$(TZ="$tz" date +%-M)
+    cur_hour=$(TZ="$tz" date +%-H)
+    cur_dom=$(TZ="$tz" date +%-d)
+    cur_mon=$(TZ="$tz" date +%-m)
+    cur_dow=$(TZ="$tz" date +%-w)  # 0=Sun
+
+    read -r f_min f_hour f_dom f_mon f_dow <<<"$expr"
+    [[ -z "$f_dow" ]] && return 1  # malformed
+
+    _cron_field_match "$f_min" "$cur_min" 0 59 || return 1
+    _cron_field_match "$f_hour" "$cur_hour" 0 23 || return 1
+    _cron_field_match "$f_dom" "$cur_dom" 1 31 || return 1
+    _cron_field_match "$f_mon" "$cur_mon" 1 12 || return 1
+    _cron_field_match "$f_dow" "$cur_dow" 0 6 || return 1
+
+    return 0
+}
+
+# Match a single cron field against a current numeric value.
+# Supports: `*`, `N`, `N-M`, `*/N`, `N,M,...`
+_cron_field_match() {
+    local field="$1"
+    local value="$2"
+    local min="$3"
+    local max="$4"
+
+    # Comma list — match any
+    if [[ "$field" == *,* ]]; then
+        local IFS=','
+        local -a parts
+        # shellcheck disable=SC2206
+        parts=($field)
+        for p in "${parts[@]}"; do
+            _cron_field_match "$p" "$value" "$min" "$max" && return 0
+        done
+        return 1
+    fi
+
+    case "$field" in
+        \*)  return 0 ;;
+        \*/*)
+            local step="${field#*/}"
+            (( value % step == 0 )) && return 0 || return 1
+            ;;
+        *-*)
+            local lo="${field%-*}" hi="${field#*-}"
+            (( value >= lo && value <= hi )) && return 0 || return 1
+            ;;
+        *)
+            (( value == field )) && return 0 || return 1
+            ;;
+    esac
+}
+
+# Run due jobs (handles both legacy `repeat_secs` jobs and new `kind=cron` jobs)
 cmd_run() {
     local now=$(date +%s)
     local jobs=$(cat "$SCHEDULE_FILE")
@@ -231,24 +387,68 @@ cmd_run() {
 
     echo "$jobs" | jq -c '.[]' | while read -r job; do
         local id=$(echo "$job" | jq -r '.id')
-        local next_run=$(echo "$job" | jq -r '.next_run')
-        local repeat_secs=$(echo "$job" | jq -r '.repeat_secs')
-        local full_cmd=$(echo "$job" | jq -r '.full_command')
-        local orig_cmd=$(echo "$job" | jq -r '.command')
+        local kind=$(echo "$job" | jq -r '.kind // "interval"')
+        local enabled=$(echo "$job" | jq -r '.enabled // true')
 
-        if [[ $next_run -le $now ]]; then
-            echo "[$(date -u +%H:%M:%S)] Running: $orig_cmd"
+        # Skip disabled jobs (preserved in file but not run)
+        if [[ "$enabled" == "false" ]]; then
+            updated_jobs=$(echo "$updated_jobs" | jq --argjson job "$job" '. + [$job]')
+            continue
+        fi
 
-            # Execute the command
-            eval "$full_cmd" 2>&1 | head -20 || true
+        local should_run=false
+        local orig_cmd=$(echo "$job" | jq -r '.command // ""')
 
-            # If repeating, update next_run
-            if [[ $repeat_secs -gt 0 ]]; then
-                local new_next=$((now + repeat_secs))
-                job=$(echo "$job" | jq --argjson next "$new_next" '.next_run = $next')
-            else
-                # One-time job, mark as done
-                job=$(echo "$job" | jq '.done = true')
+        if [[ "$kind" == "cron" ]]; then
+            # New schema: raw cron expression + tz + named agent payload
+            local cron_expr=$(echo "$job" | jq -r '.cron_expr')
+            local tz=$(echo "$job" | jq -r '.tz // "UTC"')
+            local last_fired=$(echo "$job" | jq -r '.last_fired_at // 0')
+
+            if cron_should_fire "$cron_expr" "$tz" "$last_fired"; then
+                should_run=true
+                # Update last_fired_at to prevent re-firing this minute
+                job=$(echo "$job" | jq --argjson now "$now" '.last_fired_at = $now')
+            fi
+
+            # For cron jobs, the command we actually execute is "spawn the
+            # named agent with the payload message as its task"
+            local agent_id=$(echo "$job" | jq -r '.agent_id // "main"')
+            local payload=$(echo "$job" | jq -r '.payload_message // ""')
+            local name=$(echo "$job" | jq -r '.name // "unnamed"')
+            # Truncate payload for display
+            local payload_summary=${payload:0:80}
+            orig_cmd="[cron] @$agent_id: $name"
+
+            if $should_run; then
+                echo "[$(TZ=$tz date +%Y-%m-%dT%H:%M:%S)] Firing cron job: $orig_cmd"
+                # Log to events
+                "$SCRIPT_DIR/metasphere-events" log schedule.cron_fire "$name" --agent "@$agent_id" 2>/dev/null || true
+                # Spawn the agent with the payload as task. Skip if already running.
+                if ! "$SCRIPT_DIR/metasphere-agent" status "@$agent_id" >/dev/null 2>&1; then
+                    "$SCRIPT_DIR/metasphere-spawn" "@$agent_id" "/" "$payload" "@orchestrator" 2>&1 | head -3 || true
+                else
+                    # Agent exists — just send the payload as a task message
+                    "$SCRIPT_DIR/messages" send "@$agent_id" "!task" "$payload" 2>&1 | head -3 || true
+                fi
+            fi
+        else
+            # Legacy interval/once schema
+            local next_run=$(echo "$job" | jq -r '.next_run')
+            local repeat_secs=$(echo "$job" | jq -r '.repeat_secs')
+            local full_cmd=$(echo "$job" | jq -r '.full_command')
+
+            if [[ $next_run -le $now ]]; then
+                should_run=true
+                echo "[$(date -u +%H:%M:%S)] Running: $orig_cmd"
+                eval "$full_cmd" 2>&1 | head -20 || true
+
+                if [[ $repeat_secs -gt 0 ]]; then
+                    local new_next=$((now + repeat_secs))
+                    job=$(echo "$job" | jq --argjson next "$new_next" '.next_run = $next')
+                else
+                    job=$(echo "$job" | jq '.done = true')
+                fi
             fi
         fi
 
