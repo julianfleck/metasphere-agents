@@ -2,6 +2,48 @@
 
 The metasphere CLI surface as of 2026-04-07. This document covers every executable script in `scripts/` and the verbs routed through the unified `metasphere` dispatcher. All scripts are bash. State lives under `$METASPHERE_DIR` (default `~/.metasphere`) and fractal `.messages/` + `.tasks/` directories at every scope level in the repo.
 
+## Unified CLI (`metasphere <subcommand>`)
+
+As of the CLI unification tranche, every Python entry point is reachable through a single `metasphere` console script (`metasphere.cli.main:main`). The dispatcher is a thin argparse-free router with a lazy-import registry — startup is ~30ms because no subcommand module is imported until it is invoked.
+
+| New form | Replaces |
+|---|---|
+| `metasphere status` | (legacy bash, delegated to `~/.metasphere/bin/metasphere`) |
+| `metasphere ls [path]` | (legacy bash, delegated) |
+| `metasphere agent spawn @name /scope/ "task" [@parent]` | `metasphere-spawn` |
+| `metasphere agent wake @name ["first task"]` | `metasphere-wake` |
+| `metasphere agent list` / `metasphere agent status` | `metasphere-agent list/status` |
+| `metasphere msg send|list|done|reply|all ...` | `messages` |
+| `metasphere task new|start|update|done|list ...` | `tasks` |
+| `metasphere telegram send|poll|once|getme ...` | `metasphere-telegram` |
+| `metasphere telegram groups ...` | `metasphere-telegram-groups` |
+| `metasphere hooks posthook ...` | `metasphere-posthook` |
+| `metasphere hooks context ...` | `metasphere-context` |
+| `metasphere hooks git install|uninstall|status` | `metasphere-git-hooks` |
+| `metasphere schedule list|run|daemon` | `metasphere-schedule` |
+| `metasphere heartbeat tick|daemon` | `metasphere-heartbeat` |
+| `metasphere memory search|index` | `metasphere-fts` |
+| `metasphere trace capture|list|search|prune` | `metasphere-trace` |
+| `metasphere session ...` | `metasphere-session` |
+| `metasphere project ...` | `metasphere-project` |
+| `metasphere gateway status|daemon` | `metasphere-gateway` |
+
+`metasphere status` and `metasphere ls` are forwarded by the Python dispatcher to the legacy bash CLI at `~/.metasphere/bin/metasphere`. Porting them to Python is tracked as a follow-up; the dispatcher exec's the bash script with the original args so behaviour is byte-identical.
+
+### Deprecated shims (legacy `metasphere-*` scripts)
+
+Every old console script remains registered in `pyproject.toml` and now points at a thin shim function in `metasphere.cli._shims`. Each shim:
+
+1. Prints a one-line deprecation notice on stderr — **only when stderr is a TTY**, so systemd units, hooks, and other non-interactive callers stay silent.
+2. Forwards `sys.argv[1:]` to the unified dispatcher with the new subcommand prefix prepended.
+
+Concretely: `metasphere-posthook --dry-run` is equivalent to `metasphere hooks posthook --dry-run`. Existing systemd units (`metasphere-heartbeat.service`, etc.), `.claude/settings.local.json` hooks, and shell aliases keep working without modification. A follow-up tranche migrates the four known callers (settings.local.json + 3 systemd units) to the new form so the shims can eventually be retired.
+
+The per-script sections below document the *old* command surfaces, which remain accurate because the shims are pure forwards.
+
+---
+
+
 ## Contents
 
 - [metasphere (dispatcher)](#metasphere-dispatcher)
