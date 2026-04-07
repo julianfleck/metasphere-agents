@@ -51,6 +51,7 @@ REGISTRY: dict[str, str] = {
     "session":   "metasphere.cli.session:main",
     "project":   "metasphere.cli.project:main",
     "gateway":   "metasphere.cli.gateway:main",
+    "update":    "metasphere.cli.update:main",
     "status":    "metasphere.cli.main:_legacy_bash",
     "ls":        "metasphere.cli.main:_legacy_bash",
 }
