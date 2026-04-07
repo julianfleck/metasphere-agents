@@ -24,16 +24,26 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as _dt
+import json
 import logging
 import os
 import subprocess
 import time
-from dataclasses import dataclass, field
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterator
+
+try:
+    from croniter import croniter
+except ImportError as e:  # pragma: no cover
+    raise ImportError(
+        "metasphere.schedule requires the 'croniter' package "
+        "(see PORTING.md — stdlib + croniter only)."
+    ) from e
 
 from .events import log_event
-from .io import file_lock, read_json, write_json
+from .io import atomic_write_text, file_lock, write_json
 from .messages import send_message
 from .paths import Paths, resolve
 
@@ -87,35 +97,63 @@ class FireResult:
 
 # ---------- load / save ----------
 
-def load_jobs(paths: Paths | None = None) -> list[Job]:
-    paths = paths or resolve()
-    jobs_path = paths.schedule_jobs
+def _read_jobs_unlocked(jobs_path: Path) -> list[Job]:
     if not jobs_path.exists():
         return []
-    raw = read_json(jobs_path, default=[])
+    try:
+        raw = json.loads(jobs_path.read_text(encoding="utf-8") or "[]")
+    except (OSError, json.JSONDecodeError):
+        return []
     if not isinstance(raw, list):
         return []
     return [Job.from_dict(j) for j in raw if isinstance(j, dict)]
 
 
-def save_jobs(jobs: list[Job], paths: Paths | None = None, *, _input_count: int | None = None) -> None:
-    """Write jobs.json atomically. Refuses to write 0 jobs if input had >0."""
+def _write_jobs_unlocked(jobs_path: Path, jobs: list[Job], *, input_count: int) -> None:
+    """Write jobs.json without acquiring a lock. Caller must hold one.
+
+    Honors the shrink-detection guard.
+    """
+    if input_count > 0 and len(jobs) == 0:
+        raise RuntimeError(
+            f"refusing to wipe jobs.json: input had {input_count} jobs, output has 0"
+        )
+    payload = json.dumps([j.to_dict() for j in jobs], indent=2, sort_keys=True) + "\n"
+    atomic_write_text(jobs_path, payload)
+
+
+def load_jobs(paths: Paths | None = None) -> list[Job]:
+    """Snapshot read of jobs.json under a shared lock."""
     paths = paths or resolve()
     jobs_path = paths.schedule_jobs
+    with file_lock(jobs_path, exclusive=False):
+        return _read_jobs_unlocked(jobs_path)
 
-    # Shrink-detection guard. If caller did not pass _input_count, infer it
-    # from the on-disk file (best-effort — under a held lock would be ideal,
-    # but write_json takes its own lock and we don't want to nest).
-    if _input_count is None:
-        existing = read_json(jobs_path, default=[])
-        _input_count = len(existing) if isinstance(existing, list) else 0
 
-    if _input_count > 0 and len(jobs) == 0:
-        raise RuntimeError(
-            f"refusing to wipe jobs.json: input had {_input_count} jobs, output has 0"
-        )
+@contextmanager
+def with_locked_jobs(paths: Paths | None = None) -> Iterator[list[Job]]:
+    """Hold a single exclusive lock for the entire load→mutate→save cycle.
 
-    write_json(jobs_path, [j.to_dict() for j in jobs])
+    Yields the current jobs list. Callers commit by calling
+    :func:`save_jobs` *inside* the block — that path skips relocking and
+    uses the surrounding lock as the only critical section.
+    """
+    paths = paths or resolve()
+    jobs_path = paths.schedule_jobs
+    with file_lock(jobs_path):
+        yield _read_jobs_unlocked(jobs_path)
+
+
+def save_jobs(jobs: list[Job], paths: Paths | None = None, *, _input_count: int) -> None:
+    """Write jobs.json. Refuses to wipe if ``_input_count`` > 0 and ``jobs`` is empty.
+
+    ``_input_count`` is mandatory: callers compute it under the lock they
+    hold around the load, eliminating the TOCTOU window M1/M2 flagged.
+    Must be called from within a :func:`with_locked_jobs` block (or the
+    caller must otherwise hold the schedule_jobs flock).
+    """
+    paths = paths or resolve()
+    _write_jobs_unlocked(paths.schedule_jobs, jobs, input_count=_input_count)
 
 
 # ---------- cron evaluation ----------
@@ -141,7 +179,6 @@ def cron_should_fire(
     ``CRON_WINDOW_SECS`` seconds AND we have not already fired since then
     (``prev_epoch > last_fired_at``).
     """
-    from croniter import croniter
     try:
         from zoneinfo import ZoneInfo
     except ImportError:  # pragma: no cover - py < 3.9
@@ -258,50 +295,49 @@ def run_due_jobs(paths: Paths | None = None, *, now: int | None = None) -> list[
     """
     paths = paths or resolve()
     now = int(now if now is not None else time.time())
-
-    jobs = load_jobs(paths)
-    input_count = len(jobs)
     results: list[FireResult] = []
 
-    for job in jobs:
-        if not job.enabled or job.kind != "cron":
-            continue
-        if not cron_should_fire(job.cron_expr, job.tz, job.last_fired_at, now=now):
-            continue
+    with with_locked_jobs(paths) as jobs:
+        input_count = len(jobs)
+        for job in jobs:
+            if not job.enabled or job.kind != "cron":
+                continue
+            if not cron_should_fire(job.cron_expr, job.tz, job.last_fired_at, now=now):
+                continue
 
-        target = resolve_target_agent(job)
-        job.last_fired_at = now
+            target = resolve_target_agent(job)
+            job.last_fired_at = now
 
-        try:
-            log_event(
-                "schedule.cron_fire",
-                job.name or job.id,
-                agent=target,
-                meta={"job_id": job.id, "cron_expr": job.cron_expr, "tz": job.tz},
+            try:
+                log_event(
+                    "schedule.cron_fire",
+                    job.name or job.id,
+                    agent=target,
+                    meta={"job_id": job.id, "cron_expr": job.cron_expr, "tz": job.tz},
+                    paths=paths,
+                )
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("log_event failed: %s", e)
+
+            ok = dispatch_to_agent(
+                target,
+                job.payload_message,
                 paths=paths,
+                job_name=job.name,
             )
-        except Exception as e:  # pragma: no cover - defensive
-            logger.warning("log_event failed: %s", e)
-
-        ok = dispatch_to_agent(
-            target,
-            job.payload_message,
-            paths=paths,
-            job_name=job.name,
-        )
-        results.append(
-            FireResult(
-                job_id=job.id,
-                name=job.name,
-                target_agent=target,
-                fired=True,
-                dispatched=ok,
-                error="" if ok else "dispatch failed",
+            results.append(
+                FireResult(
+                    job_id=job.id,
+                    name=job.name,
+                    target_agent=target,
+                    fired=True,
+                    dispatched=ok,
+                    error="" if ok else "dispatch failed",
+                )
             )
-        )
 
-    if results:
-        save_jobs(jobs, paths, _input_count=input_count)
+        if results:
+            save_jobs(jobs, paths, _input_count=input_count)
 
     return results
 
@@ -314,14 +350,14 @@ def list_jobs(paths: Paths | None = None) -> list[Job]:
 
 def set_enabled(job_id: str, enabled: bool, paths: Paths | None = None) -> bool:
     paths = paths or resolve()
-    jobs = load_jobs(paths)
-    input_count = len(jobs)
-    found = False
-    for j in jobs:
-        if j.id == job_id:
-            j.enabled = enabled
-            found = True
-            break
-    if found:
-        save_jobs(jobs, paths, _input_count=input_count)
+    with with_locked_jobs(paths) as jobs:
+        input_count = len(jobs)
+        found = False
+        for j in jobs:
+            if j.id == job_id:
+                j.enabled = enabled
+                found = True
+                break
+        if found:
+            save_jobs(jobs, paths, _input_count=input_count)
     return found

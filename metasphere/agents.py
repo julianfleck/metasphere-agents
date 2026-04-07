@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import shlex
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -408,11 +409,12 @@ def wake_persistent(
     _tmux_run("set-option", "-t", session, "mouse", "on")
     _tmux_run("set-option", "-t", session, "history-limit", "100000")
 
+    # shlex.quote each value so apostrophes in scope/path don't break the shell.
     env_export = (
-        f"export METASPHERE_AGENT_ID='{agent_id}' "
-        f"METASPHERE_SCOPE='{scope_str}' "
-        f"METASPHERE_REPO_ROOT='{paths.repo}' "
-        f"METASPHERE_DIR='{paths.root}'"
+        f"export METASPHERE_AGENT_ID={shlex.quote(agent_id)} "
+        f"METASPHERE_SCOPE={shlex.quote(scope_str)} "
+        f"METASPHERE_REPO_ROOT={shlex.quote(str(paths.repo))} "
+        f"METASPHERE_DIR={shlex.quote(str(paths.root))}"
     )
     _tmux_run("send-keys", "-t", session, env_export, "Enter")
 

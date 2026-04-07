@@ -14,6 +14,7 @@ Pure stdlib. No third-party deps.
 
 from __future__ import annotations
 
+import collections as _collections
 import datetime as _dt
 import hashlib
 import json
@@ -174,7 +175,7 @@ def _render_telegram(paths: Paths, history: int = 3) -> str:
         except (subprocess.SubprocessError, OSError):
             body = ""
         if not body.strip():
-            return ""
+            return "## Telegram (recent conversation)\n(no recent messages)\n"
         data = body.encode("utf-8")[:_TELEGRAM_BYTE_CAP]
         return data.decode("utf-8", errors="ignore").rstrip() + "\n"
 
@@ -182,17 +183,17 @@ def _render_telegram(paths: Paths, history: int = 3) -> str:
     today = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
     archive = paths.telegram_stream / f"{today}.jsonl"
     if not archive.is_file():
-        return ""
+        return "## Telegram (recent conversation)\n(no recent messages)\n"
     try:
         lines = archive.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return ""
+        return "## Telegram (recent conversation)\n(no recent messages)\n"
     # The bash version uses `tail -n` over JSON-lines but the file actually
     # contains pretty-printed JSON for outgoing messages. Be defensive: walk
     # the file as a stream of objects, then take the last `history` of them.
     objs = _parse_jsonl_loose(lines)
     if not objs:
-        return ""
+        return "## Telegram (recent conversation)\n(no recent messages)\n"
     objs = objs[-history:]
     out = ["## Telegram (recent conversation)", ""]
     for o in objs:
@@ -296,10 +297,10 @@ def _render_events(paths: Paths, n: int = 10) -> str:
         return "## Recent Events\n(no recent events)\n"
     try:
         with open(log, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+            # Constant memory single-pass tail (M5).
+            tail = list(_collections.deque(f, maxlen=n))
     except OSError:
         return "## Recent Events\n(no recent events)\n"
-    tail = lines[-n:]
     out = ["## Recent Events", ""]
     for line in tail:
         line = line.strip()
