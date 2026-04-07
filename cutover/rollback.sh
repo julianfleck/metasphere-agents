@@ -21,12 +21,15 @@ echo "[rollback] using $BACKUP_DIR"
 
 # Restore bin shims (only files at the top level — systemd/ and settings live alongside).
 for f in "$BACKUP_DIR"/*; do
-  [ -f "$f" ] || continue
+  # Files OR symlinks (the backup may contain symlinks into the repo).
+  if [ ! -e "$f" ] && [ ! -L "$f" ]; then continue; fi
+  if [ -d "$f" ] && [ ! -L "$f" ]; then continue; fi
   name="$(basename "$f")"
   case "$name" in
-    settings.local.json) continue ;;
+    settings.local.json|systemd) continue ;;
   esac
-  cp -a "$f" "$BIN_DIR/$name"
+  rm -f "$BIN_DIR/$name"
+  cp -P "$f" "$BIN_DIR/$name"
   echo "[rollback] restored $name"
 done
 

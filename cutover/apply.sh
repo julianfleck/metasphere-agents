@@ -57,8 +57,16 @@ echo "[apply] backup dir: $BACKUP_DIR"
 
 for name in "${BINARIES[@]}"; do
   target="$BIN_DIR/$name"
-  if [ -e "$target" ]; then
+  # IMPORTANT: pre-cutover, $BIN_DIR/$name is often a symlink into the repo
+  # (scripts/<name>). We must back up the link AS A LINK and then unlink it,
+  # otherwise `cat > "$target"` would follow the symlink and overwrite the
+  # tracked file in the repo working tree.
+  if [ -L "$target" ]; then
+    cp -P "$target" "$BACKUP_DIR/$name"
+    rm "$target"
+  elif [ -e "$target" ]; then
     cp -a "$target" "$BACKUP_DIR/$name"
+    rm -f "$target"
   fi
   cat > "$target" <<EOF
 #!/usr/bin/env bash
