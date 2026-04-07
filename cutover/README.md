@@ -37,3 +37,22 @@ bash /home/openclaw/Code/metasphere-agents/cutover/rollback.sh
 
 By default it uses the most recent `~/.metasphere/bin.backup-cutover-*`
 directory; pass an explicit path as `$1` to pin a specific snapshot.
+
+## Post-merge follow-up: retire `~/.metasphere/bin/` shims
+
+`apply.sh` installs thin shell shims at `~/.metasphere/bin/metasphere-*`
+that just `exec` into the venv binaries. Now that the package is
+installed via `pip install -e .` and the entry points (declared in
+`pyproject.toml [project.scripts]`) put `metasphere-*` directly on
+`PATH`, these shims are vestigial.
+
+After `python-rewrite` merges to `main` and the cutover has been stable
+for a release cycle, the shim directory can be removed:
+
+```
+rm -rf ~/.metasphere/bin
+# (and drop the install step from cutover/apply.sh)
+```
+
+The shims live OUTSIDE the repo so they were intentionally NOT touched
+in the cleanup-final pass.
