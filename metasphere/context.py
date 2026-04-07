@@ -150,8 +150,35 @@ def _render_drift_warning(paths: Paths) -> str:
     )
 
 
-def _render_telegram(paths: Paths, history: int = 5) -> str:
-    """Render the last ``history`` messages from today's stream JSONL."""
+_TELEGRAM_BYTE_CAP = 1024
+
+
+def _render_telegram(paths: Paths, history: int = 3) -> str:
+    """Render the recent telegram conversation.
+
+    Mirrors the bash hook (scripts/metasphere-context ~88-105): shells out to
+    ``scripts/metasphere-telegram-stream context --history 3`` and caps at
+    1024 bytes. Falls back to inline JSONL parsing only if the script is
+    missing — that keeps test environments without the bash side working.
+    """
+    streamer = paths.repo / "scripts" / "metasphere-telegram-stream"
+    if streamer.is_file() and os.access(streamer, os.X_OK):
+        try:
+            res = subprocess.run(
+                [str(streamer), "context", "--history", str(history)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            body = res.stdout
+        except (subprocess.SubprocessError, OSError):
+            body = ""
+        if not body.strip():
+            return ""
+        data = body.encode("utf-8")[:_TELEGRAM_BYTE_CAP]
+        return data.decode("utf-8", errors="ignore").rstrip() + "\n"
+
+    # Fallback: parse today's archive directly.
     today = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
     archive = paths.telegram_stream / f"{today}.jsonl"
     if not archive.is_file():
