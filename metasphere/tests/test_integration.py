@@ -1,10 +1,11 @@
 """End-to-end integration tests for the metasphere/ Python rewrite.
 
-NOT mocked. Real file IO + real Telegram API calls (to the parallel-track
-@metabotmetabotmetabot bot whose token lives in
-~/.metasphere/config/telegram-rewrite.env).
+NOT mocked. Real file IO + real Telegram API calls (to a configured test
+bot whose token lives in ~/.metasphere/config/telegram-rewrite.env).
 
-Run live telegram tests by default; gate via `-m "not live"` to skip.
+Live telegram tests require ``METASPHERE_TEST_CHAT_ID`` to be set in the
+environment; otherwise they are skipped. Gate via ``-m "not live"`` to
+skip live tests entirely.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from metasphere.telegram import api as tg_api
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-LIVE_CHAT_ID = "228838013"
+LIVE_CHAT_ID = os.environ.get("METASPHERE_TEST_CHAT_ID")
 TEST_MARKER = "INTEGRATION-TEST-METASPHERE-REWRITE"
 
 
@@ -127,6 +128,7 @@ def test_task_lifecycle_with_slash_title(tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.live
+@pytest.mark.skipif(not LIVE_CHAT_ID, reason="METASPHERE_TEST_CHAT_ID not set")
 def test_telegram_send_live():
     nonce = uuid.uuid4().hex[:8]
     text = f"{TEST_MARKER} single-msg nonce={nonce}"
@@ -140,6 +142,7 @@ def test_telegram_send_live():
 
 
 @pytest.mark.live
+@pytest.mark.skipif(not LIVE_CHAT_ID, reason="METASPHERE_TEST_CHAT_ID not set")
 def test_telegram_send_live_chunked():
     nonce = uuid.uuid4().hex[:8]
     # 5KB > 3900 char chunk limit -> must split into >=2 parts

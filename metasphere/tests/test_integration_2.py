@@ -4,8 +4,10 @@ Builds on metasphere/tests/test_integration.py but pushes harder on
 cross-module interop, real on-disk data, and the higher-level subsystems
 (spawn, schedule, heartbeat, posthook, gateway, trace, memory).
 
-Live telegram tests use the parallel-track @metabotmetabotmetabot bot
-(token in ~/.metasphere/config/telegram-rewrite.env).
+Live telegram tests use a configured test bot (token in
+~/.metasphere/config/telegram-rewrite.env). They additionally require
+``METASPHERE_TEST_CHAT_ID`` to be set in the environment; otherwise
+they are skipped.
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ from metasphere.telegram import api as tg_api
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-LIVE_CHAT_ID = "228838013"
+LIVE_CHAT_ID = os.environ.get("METASPHERE_TEST_CHAT_ID")
 TEST_MARKER = "INTEGRATION-TEST-2"
 
 
@@ -144,6 +146,7 @@ def test_bash_task_md_files_roundtrip(tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.live
+@pytest.mark.skipif(not LIVE_CHAT_ID, reason="METASPHERE_TEST_CHAT_ID not set")
 def test_telegram_live_single():
     nonce = uuid.uuid4().hex[:8]
     text = f"{TEST_MARKER} single nonce={nonce}"
@@ -155,6 +158,7 @@ def test_telegram_live_single():
 
 
 @pytest.mark.live
+@pytest.mark.skipif(not LIVE_CHAT_ID, reason="METASPHERE_TEST_CHAT_ID not set")
 def test_telegram_live_chunked_6kb():
     nonce = uuid.uuid4().hex[:8]
     body = (

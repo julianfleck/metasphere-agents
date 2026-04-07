@@ -121,7 +121,7 @@ def test_build_context_emits_all_sections_in_order(tmp_paths: Paths):
     tg_file.parent.mkdir(parents=True, exist_ok=True)
     tg_file.write_text(
         json.dumps(
-            {"from": {"username": "j0lian"}, "text": "hello", "date": 1775539062}
+            {"from": {"username": "testuser"}, "text": "hello", "date": 1775539062}
         )
         + "\n"
     )
