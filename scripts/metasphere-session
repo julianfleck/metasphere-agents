@@ -184,8 +184,12 @@ Begin by acknowledging your task and getting started."
     # Wait a moment for claude to start
     sleep 2
 
-    # Send initial prompt
-    $TMUX_CMD send-keys -t "$session" "$init_prompt" Enter
+    # Send initial prompt as a SINGLE atomic paste.
+    # CRITICAL: Do NOT send multi-line content via send-keys directly — that
+    # turns each line into a separate user prompt to claude (line-shredding bug).
+    printf '%s' "$init_prompt" | $TMUX_CMD load-buffer -
+    $TMUX_CMD paste-buffer -t "$session"
+    $TMUX_CMD send-keys -t "$session" Enter
 
     # Update agent status
     echo "active: interactive session" > "$agent_dir/status"
@@ -241,8 +245,12 @@ cmd_send() {
         exit 1
     fi
 
-    # Send message as input
-    $TMUX_CMD send-keys -t "$session" "$message" Enter
+    # Send message as input via atomic paste (message may be multi-line).
+    # CRITICAL: Do NOT send multi-line content via send-keys directly — that
+    # turns each line into a separate user prompt to claude (line-shredding bug).
+    printf '%s' "$message" | $TMUX_CMD load-buffer -
+    $TMUX_CMD paste-buffer -t "$session"
+    $TMUX_CMD send-keys -t "$session" Enter
     echo -e "${GREEN}✓${NC} Sent to $agent"
 }
 
