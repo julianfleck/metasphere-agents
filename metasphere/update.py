@@ -1,0 +1,536 @@
+"""Configurable auto-updates for metasphere hosts.
+
+Hosts running metasphere (spot, bean, future) keep themselves current
+with main without manual intervention. This module owns:
+
+* parsing ``$METASPHERE_DIR/config/auto-update.env``
+* registering / unregistering the cron job in
+  ``$METASPHERE_DIR/schedule/jobs.json``
+* the actual update flow (delegated to ``scripts/metasphere update`` for
+  the bash-side git pull / daemon restart, then re-pip-install + tests +
+  telegram notify on top)
+* status / enable / disable wrappers driven by the CLI
+
+The bash branch in ``scripts/metasphere`` is intentionally kept as the
+authoritative implementation of the git/daemon dance — the python entry
+shells out to it. Edge cases stay in one place.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import datetime as _dt
+import json
+import logging
+import os
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Optional
+
+from . import schedule as _sched
+from .paths import Paths, resolve
+
+logger = logging.getLogger(__name__)
+
+
+# ---------- config ----------
+
+CONFIG_FILENAME = "auto-update.env"
+LOG_FILENAME = "auto-update.log"
+STATE_FILENAME = "auto-update.state.json"
+JOB_ID = "metasphere-auto-update"
+JOB_NAME = "metasphere:auto-update"
+
+INTERVAL_TO_CRON = {
+    "daily": "0 4 * * *",
+    "hourly": "0 * * * *",
+    "6h": "0 */6 * * *",
+}
+
+
+@dataclass
+class AutoUpdateConfig:
+    enabled: bool = False
+    interval: str = "daily"
+    branch: str = "main"
+    restart_daemons: bool = True
+    notify: bool = True
+
+    def cron_expr(self) -> str:
+        return interval_to_cron(self.interval)
+
+    def to_env_text(self) -> str:
+        return (
+            "# metasphere auto-update configuration\n"
+            "# Managed by `metasphere update --enable|--disable`.\n"
+            f"AUTO_UPDATE_ENABLED={'true' if self.enabled else 'false'}\n"
+            f"AUTO_UPDATE_INTERVAL={self.interval}\n"
+            f"AUTO_UPDATE_BRANCH={self.branch}\n"
+            f"AUTO_UPDATE_RESTART_DAEMONS={'true' if self.restart_daemons else 'false'}\n"
+            f"AUTO_UPDATE_NOTIFY={'true' if self.notify else 'false'}\n"
+        )
+
+
+def _truthy(v: str) -> bool:
+    return v.strip().lower() in ("1", "true", "yes", "on", "y")
+
+
+def parse_env_text(text: str) -> AutoUpdateConfig:
+    """Parse the simple ``KEY=VALUE`` format. Unknown keys ignored."""
+    cfg = AutoUpdateConfig()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip()
+        v = v.strip().strip('"').strip("'")
+        if k == "AUTO_UPDATE_ENABLED":
+            cfg.enabled = _truthy(v)
+        elif k == "AUTO_UPDATE_INTERVAL":
+            cfg.interval = v or "daily"
+        elif k == "AUTO_UPDATE_BRANCH":
+            cfg.branch = v or "main"
+        elif k == "AUTO_UPDATE_RESTART_DAEMONS":
+            cfg.restart_daemons = _truthy(v)
+        elif k == "AUTO_UPDATE_NOTIFY":
+            cfg.notify = _truthy(v)
+    return cfg
+
+
+def config_path(paths: Paths | None = None) -> Path:
+    paths = paths or resolve()
+    return paths.config / CONFIG_FILENAME
+
+
+def log_path(paths: Paths | None = None) -> Path:
+    paths = paths or resolve()
+    return paths.logs / LOG_FILENAME
+
+
+def state_path(paths: Paths | None = None) -> Path:
+    paths = paths or resolve()
+    return paths.state / STATE_FILENAME
+
+
+def load_config(paths: Paths | None = None) -> AutoUpdateConfig:
+    p = config_path(paths)
+    if not p.exists():
+        return AutoUpdateConfig()
+    return parse_env_text(p.read_text(encoding="utf-8"))
+
+
+def save_config(cfg: AutoUpdateConfig, paths: Paths | None = None) -> Path:
+    p = config_path(paths)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(cfg.to_env_text(), encoding="utf-8")
+    try:
+        os.chmod(p, 0o600)
+    except OSError:  # pragma: no cover - non-fatal on weird FS
+        pass
+    return p
+
+
+# ---------- cron expression ----------
+
+_CRON_FIELD_RE = ("*/", "-", ",", "*")
+
+
+def looks_like_cron(s: str) -> bool:
+    parts = s.strip().split()
+    if len(parts) != 5:
+        return False
+    return any(any(tok in p for tok in _CRON_FIELD_RE) or p.isdigit() for p in parts)
+
+
+def interval_to_cron(interval: str) -> str:
+    """Map an interval keyword to a cron expression.
+
+    If ``interval`` already looks like a 5-field cron expression, return
+    it verbatim (allows ``AUTO_UPDATE_INTERVAL='*/15 * * * *'`` for tests
+    and staging).
+    """
+    if interval in INTERVAL_TO_CRON:
+        return INTERVAL_TO_CRON[interval]
+    if looks_like_cron(interval):
+        return interval
+    return INTERVAL_TO_CRON["daily"]
+
+
+# ---------- schedule integration ----------
+
+def build_job(cfg: AutoUpdateConfig) -> _sched.Job:
+    """Construct the auto-update Job for jobs.json."""
+    return _sched.Job(
+        id=JOB_ID,
+        source="auto-update",
+        source_id=JOB_ID,
+        agent_id="auto-update",
+        name=JOB_NAME,
+        enabled=cfg.enabled,
+        kind="cron",
+        cron_expr=cfg.cron_expr(),
+        tz="UTC",
+        payload_kind="command",
+        payload_message="metasphere update --quiet",
+        imported_at=int(time.time()),
+        command="metasphere update --quiet",
+        full_command="metasphere update --quiet",
+    )
+
+
+def register_job(cfg: AutoUpdateConfig, paths: Paths | None = None) -> _sched.Job:
+    """Idempotently install/refresh the auto-update job from ``cfg``.
+
+    Adds the job if missing, updates ``cron_expr`` and ``enabled`` if
+    present. Returns the persisted Job.
+    """
+    paths = paths or resolve()
+    paths.schedule.mkdir(parents=True, exist_ok=True)
+    new_job = build_job(cfg)
+    with _sched.with_locked_jobs(paths) as jobs:
+        input_count = len(jobs)
+        replaced = False
+        for i, j in enumerate(jobs):
+            if j.id == JOB_ID:
+                # Preserve last_fired_at across re-registration so we
+                # don't double-fire after a reinstall.
+                new_job.last_fired_at = j.last_fired_at
+                jobs[i] = new_job
+                replaced = True
+                break
+        if not replaced:
+            jobs.append(new_job)
+        _sched.save_jobs(jobs, paths, _input_count=input_count)
+    return new_job
+
+
+def unregister_job(paths: Paths | None = None) -> bool:
+    paths = paths or resolve()
+    if not paths.schedule_jobs.exists():
+        return False
+    with _sched.with_locked_jobs(paths) as jobs:
+        input_count = len(jobs)
+        kept = [j for j in jobs if j.id != JOB_ID]
+        if len(kept) == input_count:
+            return False
+        # Shrink-detection: only refuses 0-out-of-N. We have N-1 here so
+        # save is allowed even when N==1 (kept=[] and input_count=1
+        # would trip the guard) — handle that case explicitly.
+        if not kept and input_count > 0:
+            # Write directly past the shrink guard (intentional removal).
+            paths.schedule_jobs.write_text("[]\n", encoding="utf-8")
+            return True
+        _sched.save_jobs(kept, paths, _input_count=input_count)
+    return True
+
+
+# ---------- state ----------
+
+def load_state(paths: Paths | None = None) -> dict:
+    p = state_path(paths)
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8") or "{}")
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_state(state: dict, paths: Paths | None = None) -> None:
+    p = state_path(paths)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+# ---------- update flow ----------
+
+@dataclass
+class UpdateResult:
+    ok: bool
+    old_hash: str = ""
+    new_hash: str = ""
+    commits: int = 0
+    subjects: list[str] = dataclasses.field(default_factory=list)
+    reason: str = ""
+    pip_reinstalled: bool = False
+    tests_passed: Optional[bool] = None
+    daemons_restarted: bool = False
+
+    def to_dict(self) -> dict:
+        d = dataclasses.asdict(self)
+        return d
+
+
+GitRunner = Callable[[list[str]], "subprocess.CompletedProcess[str]"]
+
+
+def _git(repo: Path) -> GitRunner:
+    def run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    return run
+
+
+def _head_hash(repo: Path, runner: GitRunner | None = None) -> str:
+    g = runner or _git(repo)
+    r = g(["rev-parse", "HEAD"])
+    return (r.stdout or "").strip()
+
+
+def _commit_subjects(repo: Path, old: str, new: str, runner: GitRunner | None = None) -> list[str]:
+    if not old or not new or old == new:
+        return []
+    g = runner or _git(repo)
+    r = g(["log", "--pretty=%s", f"{old}..{new}"])
+    return [line for line in (r.stdout or "").splitlines() if line]
+
+
+def _has_python_changes(repo: Path, old: str, new: str, runner: GitRunner | None = None) -> bool:
+    if not old or not new or old == new:
+        return False
+    g = runner or _git(repo)
+    r = g(["diff", "--name-only", f"{old}..{new}"])
+    for f in (r.stdout or "").splitlines():
+        if f == "pyproject.toml" or f.startswith("metasphere/"):
+            return True
+    return False
+
+
+def _venv_python() -> Path | None:
+    """Best-effort: find the venv that owns the running python."""
+    exe = Path(sys.executable)
+    return exe if exe.exists() else None
+
+
+def _logf(paths: Paths) -> Path:
+    p = log_path(paths)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _append_log(paths: Paths, line: str) -> None:
+    ts = _dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    with _logf(paths).open("a", encoding="utf-8") as fh:
+        fh.write(f"[{ts}] {line}\n")
+
+
+def notify(text: str, *, sender: Callable[[str], None] | None = None) -> None:
+    """Send a notification line. Default sender uses telegram.api if a
+    chat is configured; otherwise this is a no-op. Tests inject ``sender``.
+    """
+    if sender is not None:
+        try:
+            sender(text)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("notify sender failed: %s", e)
+        return
+    try:
+        from .telegram.groups import send_to_topic  # type: ignore
+        send_to_topic("orchestrator", text)
+    except Exception as e:
+        logger.info("auto-update notify suppressed: %s", e)
+
+
+def run_update(
+    *,
+    paths: Paths | None = None,
+    cfg: AutoUpdateConfig | None = None,
+    quiet: bool = False,
+    git_runner: GitRunner | None = None,
+    pip_runner: Callable[[list[str]], int] | None = None,
+    test_runner: Callable[[], bool] | None = None,
+    bash_update: Callable[[Path], int] | None = None,
+    notify_sender: Callable[[str], None] | None = None,
+) -> UpdateResult:
+    """Run a one-shot auto-update.
+
+    All side-effecting subprocesses are injectable so tests can monkeypatch
+    them. The default ``bash_update`` shells out to
+    ``scripts/metasphere update`` which owns the actual git pull and
+    daemon restart logic.
+    """
+    paths = paths or resolve()
+    cfg = cfg or load_config(paths)
+    repo = paths.repo
+    runner = git_runner or _git(repo)
+
+    def log(line: str) -> None:
+        if quiet:
+            _append_log(paths, line)
+        else:
+            print(line)
+            _append_log(paths, line)
+
+    log(f"auto-update: starting (branch={cfg.branch}, restart={cfg.restart_daemons})")
+
+    old = _head_hash(repo, runner)
+    log(f"auto-update: HEAD before: {old or '(unknown)'}")
+
+    # Hand off to the bash impl for the git pull + script reinstall +
+    # daemon restart. The bash branch already handles all the edge cases
+    # (ff vs reset fallback, install_source discovery, daemon detection).
+    if bash_update is None:
+        def _default_bash_update(_repo: Path) -> int:
+            script = _repo / "scripts" / "metasphere"
+            if not script.exists():
+                return 127
+            env = os.environ.copy()
+            if not cfg.restart_daemons:
+                env["METASPHERE_AUTO_UPDATE_NO_RESTART"] = "1"
+            with _logf(paths).open("a", encoding="utf-8") as fh:
+                proc = subprocess.run(
+                    ["bash", str(script), "update"],
+                    stdout=fh if quiet else None,
+                    stderr=fh if quiet else None,
+                    env=env,
+                )
+            return proc.returncode
+        bash_update = _default_bash_update
+
+    rc = bash_update(repo)
+    if rc != 0:
+        reason = f"bash update exited rc={rc}"
+        log(f"auto-update: FAILED — {reason}")
+        result = UpdateResult(ok=False, old_hash=old, reason=reason)
+        _record_result(paths, result, cfg, notify_sender)
+        return result
+
+    new = _head_hash(repo, runner)
+    log(f"auto-update: HEAD after: {new or '(unknown)'}")
+
+    subjects = _commit_subjects(repo, old, new, runner)
+    pip_reinstalled = False
+    if _has_python_changes(repo, old, new, runner):
+        log("auto-update: python changes detected, re-installing package")
+        rc = (pip_runner or _default_pip_runner)([
+            "-m", "pip", "install", "-e", str(repo), "--quiet",
+        ])
+        if rc != 0:
+            reason = f"pip install -e exited rc={rc}"
+            log(f"auto-update: FAILED — {reason}")
+            result = UpdateResult(
+                ok=False, old_hash=old, new_hash=new, commits=len(subjects),
+                subjects=subjects, reason=reason,
+            )
+            _record_result(paths, result, cfg, notify_sender)
+            return result
+        pip_reinstalled = True
+
+    tests_passed: Optional[bool] = None
+    if test_runner is not None:
+        log("auto-update: running test gate (pytest -m 'not live' -q)")
+        try:
+            tests_passed = bool(test_runner())
+        except Exception as e:
+            tests_passed = False
+            log(f"auto-update: test runner raised: {e}")
+        if not tests_passed:
+            reason = "test gate failed"
+            log(f"auto-update: FAILED — {reason}")
+            result = UpdateResult(
+                ok=False, old_hash=old, new_hash=new, commits=len(subjects),
+                subjects=subjects, reason=reason,
+                pip_reinstalled=pip_reinstalled, tests_passed=False,
+            )
+            _record_result(paths, result, cfg, notify_sender)
+            return result
+
+    result = UpdateResult(
+        ok=True,
+        old_hash=old,
+        new_hash=new,
+        commits=len(subjects),
+        subjects=subjects,
+        pip_reinstalled=pip_reinstalled,
+        tests_passed=tests_passed,
+        daemons_restarted=cfg.restart_daemons,
+    )
+    log(f"auto-update: ok ({len(subjects)} commits applied)")
+    _record_result(paths, result, cfg, notify_sender)
+    return result
+
+
+def _default_pip_runner(args: list[str]) -> int:
+    return subprocess.call([sys.executable, *args])
+
+
+def _record_result(
+    paths: Paths,
+    result: UpdateResult,
+    cfg: AutoUpdateConfig,
+    sender: Callable[[str], None] | None,
+) -> None:
+    state = load_state(paths)
+    state["last_run_at"] = int(time.time())
+    state["last_result"] = result.to_dict()
+    save_state(state, paths)
+
+    if not cfg.notify:
+        return
+    host = os.uname().nodename
+    if result.ok:
+        if result.commits == 0:
+            return  # nothing changed; don't ping
+        head = (result.subjects[:3] + ["…"]) if len(result.subjects) > 3 else result.subjects
+        msg = (
+            f"auto-update: {host} now at {result.new_hash[:10]}, "
+            f"was {result.old_hash[:10]}, {result.commits} commits applied: "
+            + "; ".join(head)
+        )
+    else:
+        msg = (
+            f"auto-update FAILED on {host}: {result.reason}, "
+            f"last good {result.old_hash[:10] or 'unknown'}, "
+            f"daemons NOT restarted"
+        )
+    notify(msg, sender=sender)
+
+
+# ---------- status ----------
+
+def status_text(paths: Paths | None = None) -> str:
+    paths = paths or resolve()
+    cfg = load_config(paths)
+    state = load_state(paths)
+    lines = [
+        "metasphere auto-update",
+        f"  enabled:         {cfg.enabled}",
+        f"  interval:        {cfg.interval}  ({cfg.cron_expr()})",
+        f"  branch:          {cfg.branch}",
+        f"  restart_daemons: {cfg.restart_daemons}",
+        f"  notify:          {cfg.notify}",
+        f"  config:          {config_path(paths)}",
+        f"  log:             {log_path(paths)}",
+    ]
+    last = state.get("last_run_at")
+    if last:
+        lines.append(
+            f"  last run:        {_dt.datetime.fromtimestamp(int(last)).strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+    last_result = state.get("last_result") or {}
+    if last_result:
+        lines.append(f"  last result:     ok={last_result.get('ok')} commits={last_result.get('commits', 0)}")
+        if last_result.get("reason"):
+            lines.append(f"  last reason:     {last_result['reason']}")
+    # job presence
+    try:
+        jobs = _sched.load_jobs(paths)
+        job = next((j for j in jobs if j.id == JOB_ID), None)
+        if job:
+            lines.append(f"  cron job:        {job.cron_expr} (enabled={job.enabled})")
+        else:
+            lines.append("  cron job:        (not registered)")
+    except Exception as e:  # pragma: no cover - defensive
+        lines.append(f"  cron job:        (error: {e})")
+    return "\n".join(lines) + "\n"
