@@ -189,6 +189,8 @@ Begin by acknowledging your task and getting started."
     # turns each line into a separate user prompt to claude (line-shredding bug).
     printf '%s' "$init_prompt" | $TMUX_CMD load-buffer -
     $TMUX_CMD paste-buffer -t "$session"
+    # Allow claude TUI to consume bracketed-paste end before submit.
+    sleep 0.5
     $TMUX_CMD send-keys -t "$session" Enter
 
     # Update agent status
@@ -250,6 +252,8 @@ cmd_send() {
     # turns each line into a separate user prompt to claude (line-shredding bug).
     printf '%s' "$message" | $TMUX_CMD load-buffer -
     $TMUX_CMD paste-buffer -t "$session"
+    # Allow claude TUI to consume bracketed-paste end before submit.
+    sleep 0.5
     $TMUX_CMD send-keys -t "$session" Enter
     echo -e "${GREEN}✓${NC} Sent to $agent"
 }

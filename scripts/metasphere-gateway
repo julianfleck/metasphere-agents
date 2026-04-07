@@ -262,12 +262,19 @@ inject_to_session() {
         return 1
     fi
 
-    # Send message as input to the session
-    # Use a heredoc-style approach to handle multiline
-    echo "$message" | while IFS= read -r line; do
-        $TMUX_CMD send-keys -t "$SESSION_NAME" "$line" Enter
-        sleep 0.05  # Small delay to prevent buffer overflow
-    done
+    # Send message as a SINGLE atomic paste via tmux buffer.
+    # CRITICAL: Do NOT loop send-keys per line + Enter — that turns each line
+    # into a separate user prompt to claude (line-shredding bug). Use load-buffer
+    # + paste-buffer to deliver the whole multi-line message in one go, then a
+    # single Enter to submit.
+    printf '%s' "$message" | $TMUX_CMD load-buffer -
+    $TMUX_CMD paste-buffer -t "$SESSION_NAME"
+    # Wait for claude TUI to consume bracketed-paste end sequence before
+    # sending Enter. Without this delay, large pastes render as a
+    # "[Pasted text #N +M lines]" placeholder and the Enter races the paste
+    # end marker, getting absorbed into the input instead of submitting.
+    sleep 0.5
+    $TMUX_CMD send-keys -t "$SESSION_NAME" Enter
 }
 
 # =============================================================================
