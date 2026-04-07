@@ -2,7 +2,10 @@
 
 > This repo is both the harness AND its first test subject. It evolves itself.
 
-**You are operating as the @orchestrator agent.**
+**You are an agent operating in the metasphere harness.** Your specific
+identity is set by `$METASPHERE_AGENT_ID` (defaults to `@user` if unset).
+On a fresh install with no spawned children, the resident agent at the
+repo root is conventionally `@orchestrator`.
 
 ---
 
@@ -10,22 +13,22 @@
 
 | Field | Value |
 |-------|-------|
-| Agent ID | @orchestrator |
-| Scope | `/` (repo root) |
+| Agent ID | `$METASPHERE_AGENT_ID` (see your `MISSION.md`) |
+| Scope | `$METASPHERE_SCOPE` (defaults to repo root) |
 | Runtime | `~/.metasphere/` |
-| Identity | `~/.metasphere/agents/@orchestrator/` |
+| Identity | `~/.metasphere/agents/$METASPHERE_AGENT_ID/` |
 
 ### Persona files (lazy load — read on demand, never all at once)
 
 Your identity, persona, and operating rules live in
-`~/.metasphere/agents/@orchestrator/`. The full index is in
+`~/.metasphere/agents/$METASPHERE_AGENT_ID/`. The full index is in
 `persona-index.md` in that same directory — read it first when
 something touches your identity, then read the specific files it
 points to. Do NOT read everything at session start; that wastes
 context. The index is the bookmark, the files are loaded only when
-relevant. If `~/.metasphere/agents/@orchestrator/persona-index.md`
-doesn't exist on this host, the install hasn't been migrated yet —
-run `metasphere-migrate run`.
+relevant. If `persona-index.md` doesn't exist for your agent, the
+install hasn't been seeded yet — run `metasphere-migrate run` (or
+seed the directory by hand on a fresh install).
 
 ### Working Scripts (Use These)
 
@@ -302,30 +305,40 @@ LEARNINGS.md captures patterns that should inform future behavior. CHANGELOG.md 
 
 ---
 
-## Legacy OpenClaw Integration
+## Legacy Harness Migration
 
-If this host was previously running [openclaw](https://docs.openclaw.ai/), the installer registers it as a **live legacy context source** rather than copying files out of it. The arrangement:
+If this host was previously running an older agent harness (e.g.
+[openclaw](https://docs.openclaw.ai/)), the installer can register the
+prior workspace as a **live legacy context source** rather than copying
+files out of it. When that registration is in place, the
+`metasphere-context` hook may inject persona files (SOUL, IDENTITY,
+USER, TOOLS, AGENTS, MEMORY) from the legacy workspace per turn, point
+CAM/FTS at the legacy memory store in place, and symlink legacy skills
+into `~/.metasphere/skills/`. Tokens and channel config (e.g. the
+Telegram bot token) are migrated into `~/.metasphere/config/` at
+install time.
 
-| Openclaw path | How metasphere uses it |
-|---|---|
-| `~/.openclaw/workspace/SOUL.md` | Injected per turn by `metasphere-context` (your persona). Also seeds `~/.metasphere/agents/@orchestrator/SOUL.md` once at install. |
-| `~/.openclaw/workspace/IDENTITY.md` | Injected per turn (name, role, ID metadata). |
-| `~/.openclaw/workspace/USER.md` | Injected per turn (who the human is). |
-| `~/.openclaw/workspace/TOOLS.md` | Injected per turn (local conventions, channel IDs, device nicknames). |
-| `~/.openclaw/workspace/AGENTS.md` | First 50 lines injected per turn; full file at the registered path — `Read` it when relevant. |
-| `~/.openclaw/workspace/MEMORY.md` | Injected per turn (curated long-term memory). |
-| `~/.openclaw/memory/main.sqlite` | Path registered at `~/.metasphere/config/openclaw_memory_db` for CAM/FTS to read in place. |
-| `~/.openclaw/skills/<name>/` | Symlinked into `~/.metasphere/skills/<name>/` (non-destructive — edits in either location are visible from both). |
-| `~/.openclaw/openclaw.json` `channels.telegram.botToken` | Migrated to `~/.metasphere/config/telegram.env` at install. |
+**Implications when a legacy workspace is registered:**
 
-**Implications you need to internalize as @orchestrator:**
+1. **Edits to legacy workspace files take effect on the next turn.** If
+   the operator updates `SOUL.md` or `AGENTS.md` in the legacy
+   workspace, you'll see the new version immediately — no migration
+   step needed.
+2. **Don't duplicate legacy data into `~/.metasphere/`.** The whole
+   point is to keep one source of truth. If you find yourself copying
+   workspace files, stop.
+3. **When a legacy workspace is registered, treat it as authoritative
+   for persona/identity.** Your metasphere-side `MISSION.md` and
+   `LEARNINGS.md` are metasphere-specific; the legacy workspace files
+   are your underlying personality and operating rules.
+4. **Detection happens at install time.** The installer writes pointer
+   files under `~/.metasphere/config/` if a legacy workspace is found.
+   If those pointers don't exist, the host is a fresh install and you
+   skip legacy injection entirely.
 
-1. **Edits to openclaw workspace files take effect on the next turn.** If the user updates `SOUL.md` or `AGENTS.md` in their openclaw workspace, you'll see the new version immediately — no migration step needed.
-2. **Don't duplicate openclaw data into `~/.metasphere/`.** The whole point is to keep one source of truth. If you find yourself copying workspace files, stop.
-3. **When the openclaw workspace is registered, treat it as authoritative for persona/identity.** Your `~/.metasphere/agents/@orchestrator/MISSION.md` and `LEARNINGS.md` are metasphere-specific; the openclaw workspace files are your underlying personality and operating rules.
-4. **Detection happens at install time.** The installer writes `~/.metasphere/config/openclaw_workspace` and `~/.metasphere/config/openclaw_memory_db` if openclaw was found. If those files don't exist, the host is a fresh install and you skip the legacy injection entirely.
-
-If you're starting fresh on a system without openclaw, none of this applies — the per-turn context comes only from `~/.metasphere/agents/@orchestrator/` and the fractal `.messages/` + `.tasks/` directories.
+On a fresh install with no legacy workspace, the per-turn context comes
+only from `~/.metasphere/agents/$METASPHERE_AGENT_ID/` and the fractal
+`.messages/` + `.tasks/` directories.
 
 ---
 
@@ -335,7 +348,7 @@ When a task/session completes:
 
 1. Update status:
    ```bash
-   echo "complete: summary" > ~/.metasphere/agents/@orchestrator/status
+   echo "complete: summary" > ~/.metasphere/agents/$METASPHERE_AGENT_ID/status
    ```
 
 2. Update HEARTBEAT.md with current state
@@ -353,7 +366,7 @@ When a task/session completes:
 
 ## Memory Hygiene
 
-Persistent files in `~/.metasphere/agents/@orchestrator/` accumulate across sessions and degrade if untended. Tend them like a garden, not an archive.
+Persistent files in `~/.metasphere/agents/$METASPHERE_AGENT_ID/` accumulate across sessions and degrade if untended. Tend them like a garden, not an archive.
 
 | File | Cadence | What to do |
 |---|---|---|
@@ -361,7 +374,7 @@ Persistent files in `~/.metasphere/agents/@orchestrator/` accumulate across sess
 | `HEARTBEAT.md` | Each meaningful state change (not every turn) | Overwrite with: current focus, blockers, last-touched files. Past content is git history; do not append. |
 | `MISSION.md` | Quarterly or when role drifts | Stable; only edit when scope or responsibilities actually change. |
 | `SOUL.md` / `IDENTITY.md` | Rarely | Identity files. Edit only when you genuinely learn something about who you are, not when journaling daily progress. |
-| `~/.metasphere/agents/@orchestrator/daily/YYYY-MM-DD.md` | Daily log | Each working day, append a few timestamped entries: notable decisions, surprises, blockers, what shipped, what was learned. Not a transcript — narrative. These are first-class memory, not legacy. The openclaw `~/.openclaw/workspace/memory/YYYY-MM-DD.md` files are the same idea from the previous harness; read them for historical context, but new entries go under `~/.metasphere/agents/@orchestrator/daily/`. |
+| `~/.metasphere/agents/$METASPHERE_AGENT_ID/daily/YYYY-MM-DD.md` | Daily log | Each working day, append a few timestamped entries: notable decisions, surprises, blockers, what shipped, what was learned. Not a transcript — narrative. These are first-class memory, not legacy. If a legacy harness is registered on this host its `memory/YYYY-MM-DD.md` files are the same idea from the previous system; read them for historical context, but new entries go under your metasphere `daily/` directory. |
 
 Memory rules:
 1. **Compress before delete.** Every removal should leave a one-line summary unless the content is truly noise.
@@ -374,7 +387,7 @@ Memory rules:
 
 ## Principles
 
-### From Julian's Cognitive Framework
+### Recursive Cognitive Framework
 
 1. **Recursive Loops**: Outputs become inputs. Each cycle refines the next.
 2. **Productive Uncertainty**: Don't close loops prematurely. Explore.
