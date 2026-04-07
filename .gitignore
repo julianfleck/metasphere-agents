@@ -5,3 +5,9 @@
 .messages/outbox/
 # Backup file from earlier in the session
 scripts/metasphere-gateway.bak
+
+# Python build/cache artifacts (metasphere/ Python port)
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
