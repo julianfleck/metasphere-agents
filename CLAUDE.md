@@ -38,6 +38,23 @@ metasphere-spawn @agent-name /scope/path/ "task" [@parent]
 
 ---
 
+## Task System Usage
+
+There are TWO task systems. Do not confuse them.
+
+| System | Storage | Lifetime | Use For |
+|--------|---------|----------|---------|
+| **metasphere tasks** (canonical) | `.tasks/active/` files, `scripts/tasks` CLI | Persistent across sessions, git-versioned | Features, bugs, work-in-progress, anything that should outlive this session |
+| **Claude Code TaskCreate** (scratch) | In-memory session state | Dies with the conversation | Breaking down a single turn's work into trackable steps; short-lived working memory |
+
+**Rules:**
+1. Anything cross-session MUST be a metasphere task (`tasks new "title" !priority`).
+2. TaskCreate is allowed only as scratch within a single conversation. Never use it as a queue or backlog.
+3. When in doubt, use metasphere tasks. They cost nothing and survive crashes.
+4. If you find yourself adding more than ~5 items to TaskCreate, stop and migrate them to `.tasks/active/`.
+
+---
+
 ## The Evolution Loop
 
 This repo improves itself through a continuous evolution cycle, inspired by Karpathy's AutoResearch pattern:
