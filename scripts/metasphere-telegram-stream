@@ -261,10 +261,17 @@ send_message() {
         return 1
     }
 
-    # Format with agent attribution (no @ to avoid clickable mention)
-    local formatted_text="*[${agent_display}]*
+    # Format with agent attribution. Orchestrator is the "voice" the user
+    # talks to directly — prefixing every message with [orchestrator] is
+    # noise. Sub-agents do get the prefix so the user can tell them apart.
+    local formatted_text
+    if [[ "$agent" == "@orchestrator" ]]; then
+        formatted_text="$text"
+    else
+        formatted_text="*[${agent_display}]*
 
 $text"
+    fi
 
     curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
         -d "chat_id=$chat_id" \
