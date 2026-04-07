@@ -268,6 +268,17 @@ def new_project(
                "managed_by_metasphere": True} if repo else None),
         members=[Member.from_dict(m) for m in (members or [])],
     )
+
+    # Optional telegram forum topic auto-creation. If no forum is
+    # configured, leave telegram_topic=None and carry on silently.
+    try:
+        from .telegram import groups as tg_groups
+        if tg_groups.get_forum_id(paths):
+            topic = tg_groups.create_topic(name, paths=paths)
+            proj.telegram_topic = {"id": topic.id, "name": topic.name}
+    except Exception:
+        pass
+
     save_project(proj)
     _register(paths, proj)
 
@@ -277,6 +288,36 @@ def new_project(
             _ensure_stub_mission(m.id, proj, paths=paths)
 
     return proj
+
+
+# ---------------------------------------------------------------------------
+# Message mirroring into project telegram topic
+# ---------------------------------------------------------------------------
+
+
+def mirror_message_to_project_topic(scope: Path, label: str, body: str,
+                                    from_agent: str, *,
+                                    paths: Optional[Paths] = None) -> Optional[int]:
+    """If ``scope`` is inside a project that has a telegram_topic set,
+    mirror the message to that topic. Returns the topic id on success,
+    None otherwise. Additive: the caller still writes to .messages/ as
+    normal; this just echoes to the group.
+    """
+    paths = paths or resolve()
+    proj = project_for_scope(Path(scope), paths=paths)
+    if proj is None or not proj.telegram_topic:
+        return None
+    try:
+        from .telegram import groups as tg_groups
+        tg_groups.send_to_topic(
+            int(proj.telegram_topic["id"]),
+            f"{label} {body}",
+            agent=from_agent,
+            paths=paths,
+        )
+        return int(proj.telegram_topic["id"])
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------

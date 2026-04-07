@@ -362,6 +362,16 @@ def send_message(
         except Exception:
             pass
 
+    # Mirror to project telegram topic (additive). Failures are silent —
+    # regular fractal scope routing above is the source of truth.
+    try:
+        from . import project as _project
+        _project.mirror_message_to_project_topic(
+            target_path, label, body, from_agent, paths=paths,
+        )
+    except Exception:
+        pass
+
     msg.path = inbox_file
     return msg
 
