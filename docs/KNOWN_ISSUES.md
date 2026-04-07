@@ -45,7 +45,8 @@ the line — history is signal). Newest at top of each section.
 
 - [ ] **Tasks not properly cleaned up** — completed/stale tasks linger in `.tasks/active/`.
       Where: `scripts/tasks` (move-on-done logic missing or broken?)
-      Repro: TBD — audit `.tasks/active/` for tasks already marked complete.
+      Repro: 1 found by @explorer 2026-04-07: `@ux-tester/ux-tester-lifecycle` was status:completed but lived in `.tasks/active/completed/ux-tester-lifecycle.md` (manually moved to `.tasks/completed/`). Suggests `tasks done` did move it but resolved the destination relative to `.tasks/active/` instead of `.tasks/`. Worth a one-line fix in scripts/tasks before the Python rewrite lands so live data stays clean.
+      Also found: 5 active tasks with `/` in their id (e.g. `installsh-detect-.../metasphere-files-...`) created nested subdirs in `.tasks/active/`. Same root cause as `fix-tasks-slug-sanitization-for-slash-chars-20260406`.
       Related task: `audit-agent-ephemerality--cleanup-20260406`
 
 ## Normal
