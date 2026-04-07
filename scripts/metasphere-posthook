@@ -1,14 +1,88 @@
 #!/bin/bash
-# metasphere-posthook - Post-turn hook for activity tracking
-# Called after each agent turn completes (via Stop hook)
+# metasphere-posthook - Post-turn hook (Stop event)
 #
-# Tracks:
-#   - Turn completion count
-#   - Updates agent status based on activity
+# Two responsibilities:
+#   1. ROUTE the assistant's final reply to Telegram for the orchestrator
+#      agent. Sub-agents do NOT post to Telegram — they communicate via
+#      the messages system. This is what makes "Respond to the user.
+#      Your response will be sent to Telegram." actually true.
+#   2. Track turn completion + heartbeat.
+#
+# Stop hook stdin payload (claude-code):
+#   { "session_id", "transcript_path", "hook_event_name", "stop_hook_active" }
+# transcript_path is a JSONL file; the last `type=assistant` line contains
+# the message we want to send.
 
 METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
 AGENT="${METASPHERE_AGENT_ID:-@orchestrator}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Slurp stdin (Stop hook payload). May be empty if invoked manually.
+STDIN_JSON=""
+if [[ ! -t 0 ]]; then
+    STDIN_JSON=$(cat 2>/dev/null || true)
+fi
+
+# Extract last assistant text from the transcript and route it to Telegram.
+# Only for the orchestrator agent — sub-agents use the messages system.
+route_to_telegram() {
+    [[ "$AGENT" != "@orchestrator" ]] && return 0
+    [[ -z "$STDIN_JSON" ]] && return 0
+    command -v jq >/dev/null 2>&1 || return 0
+
+    local transcript
+    transcript=$(echo "$STDIN_JSON" | jq -r '.transcript_path // empty' 2>/dev/null)
+    [[ -z "$transcript" || ! -f "$transcript" ]] && return 0
+
+    # Guard against re-entrancy: if the Stop hook fires recursively
+    # (claude-code passes stop_hook_active=true), bail.
+    local already_active
+    already_active=$(echo "$STDIN_JSON" | jq -r '.stop_hook_active // false' 2>/dev/null)
+    [[ "$already_active" == "true" ]] && return 0
+
+    # Pull the last assistant turn's text content (concatenate all text
+    # blocks in the message). Skip if the agent didn't actually emit text
+    # (e.g. turn ended on a tool call).
+    local last_text
+    last_text=$(tac "$transcript" 2>/dev/null | awk '
+        BEGIN { found=0 }
+        {
+            # Look for the most recent assistant message line
+            if (match($0, /"type":"assistant"/)) { print; exit }
+        }
+    ' | jq -r '
+        .message.content
+        | map(select(.type == "text") | .text)
+        | join("\n")
+        | select(length > 0)
+    ' 2>/dev/null)
+
+    [[ -z "$last_text" ]] && return 0
+
+    # De-dupe: don't re-send if we already sent this exact text. Stop hooks
+    # fire on every turn end, including after we've already routed the
+    # response — without de-dupe we'd telegram-spam on every tool call.
+    local last_sent_file="$METASPHERE_DIR/state/posthook_last_sent_$$"
+    local last_sent_persist="$METASPHERE_DIR/state/posthook_last_sent"
+    mkdir -p "$METASPHERE_DIR/state"
+    local last_hash
+    if command -v sha256sum >/dev/null 2>&1; then
+        last_hash=$(printf '%s' "$last_text" | sha256sum | awk '{print $1}')
+    else
+        last_hash=$(printf '%s' "$last_text" | shasum -a 256 | awk '{print $1}')
+    fi
+    if [[ -f "$last_sent_persist" ]] && [[ "$(cat "$last_sent_persist")" == "$last_hash" ]]; then
+        return 0
+    fi
+    echo "$last_hash" > "$last_sent_persist"
+
+    # Fire and forget. Failure to telegram should never break the hook.
+    if [[ -x "$SCRIPT_DIR/metasphere-telegram-stream" ]]; then
+        "$SCRIPT_DIR/metasphere-telegram-stream" send "$last_text" >/dev/null 2>&1 || true
+    fi
+}
+
+route_to_telegram
 
 # Track turn completion
 "$SCRIPT_DIR/metasphere-agent" activity --turn 2>/dev/null || true
