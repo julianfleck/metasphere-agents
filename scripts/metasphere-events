@@ -112,7 +112,9 @@ cmd_tail() {
         return
     fi
 
-    tail -n "$count" "$EVENTS_LOG" | jq -r '"\(.timestamp | split("T")[1] | split(".")[0]) [\(.type)] \(.agent): \(.message)"'
+    # Truncate each .message to 80 chars, strip newlines, so multiline bodies
+    # don't blow past N entries.
+    tail -n "$count" "$EVENTS_LOG" | jq -r '"\(.timestamp | split("T")[1] | split(".")[0]) [\(.type)] \(.agent): \((.message // "") | gsub("[\\n\\r]"; " ") | .[0:80])"' | head -n "$count"
 }
 
 # =============================================================================

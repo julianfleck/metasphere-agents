@@ -3,8 +3,8 @@
 # Called before each agent turn via Claude Code UserPromptSubmit hook
 #
 # Injection order (most actionable first):
-#   1. Telegram (last few messages for conversation continuity)
-#   2. Agent identity (MISSION, HEARTBEAT, LEARNINGS)
+#   1. Agent identity (MISSION, HEARTBEAT, LEARNINGS)
+#   2. Telegram (last few messages for conversation continuity, truncated)
 #   3. Child agent reports (completion messages bubble up)
 #   4. Agent messages (inter-agent communication)
 #   5. Tasks (what needs doing)
@@ -23,13 +23,9 @@ export METASPHERE_REPO_ROOT="$REPO_ROOT"
 export METASPHERE_SCOPE="$SCOPE"
 export METASPHERE_AGENT_ID="$AGENT"
 
-# =============================================================================
-# 0. Telegram - last few messages for conversation context
-# =============================================================================
-if [[ -x "$SCRIPT_DIR/metasphere-telegram-stream" ]]; then
-    "$SCRIPT_DIR/metasphere-telegram-stream" context --history 5 2>/dev/null
-    echo ""
-fi
+# Tiny header
+echo "# Metasphere Context ($AGENT)"
+echo ""
 
 # =============================================================================
 # 1. Agent Identity - who you are and what you're doing
@@ -39,10 +35,10 @@ if [[ -d "$AGENT_DIR" ]]; then
     echo ""
 
     # Current status and task
-    local_status=$(cat "$AGENT_DIR/status" 2>/dev/null || echo "unknown")
-    local_task=$(cat "$AGENT_DIR/task" 2>/dev/null || echo "")
-    echo "**Status:** $local_status"
-    [[ -n "$local_task" ]] && echo "**Task:** $local_task"
+    agent_status=$(cat "$AGENT_DIR/status" 2>/dev/null || echo "unknown")
+    agent_task=$(cat "$AGENT_DIR/task" 2>/dev/null || echo "")
+    echo "**Status:** $agent_status"
+    [[ -n "$agent_task" ]] && echo "**Task:** $agent_task"
     echo ""
 
     # Mission (if exists and short enough)
@@ -54,7 +50,7 @@ if [[ -d "$AGENT_DIR" ]]; then
 
     # Recent learnings (just section headers or last few entries)
     if [[ -f "$AGENT_DIR/LEARNINGS.md" ]]; then
-        local learnings_lines=$(wc -l < "$AGENT_DIR/LEARNINGS.md" | tr -d ' ')
+        learnings_lines=$(wc -l < "$AGENT_DIR/LEARNINGS.md" | tr -d ' ')
         if [[ $learnings_lines -gt 0 && $learnings_lines -le 50 ]]; then
             echo "### Recent Learnings"
             cat "$AGENT_DIR/LEARNINGS.md"
@@ -75,16 +71,34 @@ if [[ -d "$AGENT_DIR" ]]; then
 fi
 
 # =============================================================================
-# 2. Child Agent Reports (completion messages bubble up)
+# 2. Telegram - last few messages (truncated: max 3 msgs, ~1KB)
+# =============================================================================
+if [[ -x "$SCRIPT_DIR/metasphere-telegram-stream" ]]; then
+    tg_output=$("$SCRIPT_DIR/metasphere-telegram-stream" context --history 3 2>/dev/null || true)
+    if [[ -n "$tg_output" ]]; then
+        # Cap at ~1KB to prevent dominating context
+        echo "$tg_output" | head -c 1024
+        # If truncated, note it
+        tg_bytes=$(printf '%s' "$tg_output" | wc -c | tr -d ' ')
+        if [[ $tg_bytes -gt 1024 ]]; then
+            echo ""
+            echo "_(telegram context truncated: $tg_bytes bytes total)_"
+        fi
+        echo ""
+    fi
+fi
+
+# =============================================================================
+# 3. Child Agent Reports (completion messages bubble up)
 # =============================================================================
 if [[ -d "$AGENT_DIR/child_reports" ]]; then
-    local report_count=$(ls "$AGENT_DIR/child_reports"/*.md 2>/dev/null | wc -l | tr -d ' ')
+    report_count=$(ls "$AGENT_DIR/child_reports"/*.md 2>/dev/null | wc -l | tr -d ' ')
     if [[ $report_count -gt 0 ]]; then
         echo "## Child Agent Reports ($report_count pending)"
         echo ""
         # Show last 5 reports
         ls -t "$AGENT_DIR/child_reports"/*.md 2>/dev/null | head -5 | while read -r f; do
-            local child=$(basename "$f" | cut -d- -f1)
+            child=$(basename "$f" | cut -d- -f1)
             echo "### @$child"
             cat "$f"
             echo ""

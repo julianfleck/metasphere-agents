@@ -258,8 +258,8 @@ cmd_send() {
 
     # Log event and track activity
     local script_dir="$(cd "$(dirname "$0")" && pwd)"
-    "$script_dir/metasphere-events" log message.send "$AGENT → $target: $label" --agent "$AGENT" --meta msg_id="$msg_id" 2>/dev/null || true
-    "$script_dir/metasphere-agent" activity --sent 2>/dev/null || true
+    "$script_dir/metasphere-events" log message.send "$AGENT → $target: $label" --agent "$AGENT" --meta msg_id="$msg_id" >/dev/null 2>&1 || true
+    "$script_dir/metasphere-agent" activity --sent >/dev/null 2>&1 || true
 
     echo "Sent $msg_id to $target ($(rel_path "$target_path"))"
     echo "  Label: $label"
@@ -306,7 +306,7 @@ cmd_reply() {
 
     # Track activity
     local script_dir="$(cd "$(dirname "$0")" && pwd)"
-    "$script_dir/metasphere-agent" activity --sent 2>/dev/null || true
+    "$script_dir/metasphere-agent" activity --sent >/dev/null 2>&1 || true
 
     echo "Replied to $orig_id → $msg_id"
 }
@@ -346,7 +346,7 @@ cmd_done() {
 
         # Track activity
         local script_dir="$(cd "$(dirname "$0")" && pwd)"
-        "$script_dir/metasphere-agent" activity --sent 2>/dev/null || true
+        "$script_dir/metasphere-agent" activity --sent >/dev/null 2>&1 || true
 
         echo "Completed $orig_id, notified $from → $msg_id"
     else

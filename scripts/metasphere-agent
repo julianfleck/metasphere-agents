@@ -577,6 +577,10 @@ cmd_tree() {
     echo -e "${BOLD}Agent Hierarchy${NC}"
     echo
 
+    # Track printed agents so we can show any missed at the end
+    TREE_PRINTED_FILE=$(mktemp)
+    trap 'rm -f "$TREE_PRINTED_FILE"' EXIT
+
     print_agent() {
         local name="$1"
         local indent="$2"
@@ -620,6 +624,7 @@ cmd_tree() {
         [[ "$has_session" == "true" ]] && session=" ${GREEN}[tmux]${NC}"
 
         echo -e "${indent}$icon $name$session ${DIM}[$scope_display]${NC}"
+        echo "$name" >> "$TREE_PRINTED_FILE"
 
         # Print children
         if [[ -f "$agent_dir/children" ]]; then
@@ -663,6 +668,29 @@ cmd_tree() {
             print_agent "$agent" "  "
         done
     fi
+
+    # Show any agents that weren't reached by the walks above (e.g. registered
+    # with a parent but not listed in that parent's children file, or with a
+    # scope outside the repo).
+    local unlinked=""
+    for agent_dir in "$AGENTS_DIR"/@*/; do
+        [[ -d "$agent_dir" ]] || continue
+        local agent=$(basename "$agent_dir")
+        if ! grep -qxF "$agent" "$TREE_PRINTED_FILE" 2>/dev/null; then
+            unlinked="$unlinked $agent"
+        fi
+    done
+
+    if [[ -n "$unlinked" ]]; then
+        echo
+        echo -e "${YELLOW}Unlinked agents (not reachable via children registry):${NC}"
+        for agent in $unlinked; do
+            print_agent "$agent" "  "
+        done
+    fi
+
+    rm -f "$TREE_PRINTED_FILE"
+    trap - EXIT
 }
 
 # =============================================================================
