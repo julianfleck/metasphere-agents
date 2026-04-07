@@ -21,17 +21,27 @@ from typing import List, Optional
 from metasphere.io import atomic_write_text
 from metasphere.telegram import api, archiver, commands, inject, poller
 
+# Path order matters: rewrite-specific file first (parallel-track legacy),
+# then the canonical bash chat-id file. After cutover the python stack IS
+# canonical, so falling back to the canonical chat id keeps
+# `metasphere-telegram send "..."` working without --chat-id and without the
+# user having to /start the bot a second time.
 CHAT_ID_FILE = os.path.expanduser("~/.metasphere/config/telegram_chat_id_rewrite")
+CHAT_ID_FILE_CANONICAL = os.path.expanduser("~/.metasphere/config/telegram_chat_id")
 
 
 def _load_chat_id() -> Optional[int]:
-    if not os.path.exists(CHAT_ID_FILE):
-        return None
-    try:
-        with open(CHAT_ID_FILE) as f:
-            return int(f.read().strip())
-    except Exception:
-        return None
+    for path in (CHAT_ID_FILE, CHAT_ID_FILE_CANONICAL):
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path) as f:
+                value = f.read().strip()
+            if value:
+                return int(value)
+        except (OSError, ValueError):
+            continue
+    return None
 
 
 def _save_chat_id(chat_id: int) -> None:
