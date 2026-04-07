@@ -120,6 +120,9 @@ def wake_main(argv: list[str] | None = None) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in ("--help", "-h"):
+        print(__doc__ or "")
+        return 0
     if not argv or argv[0] in ("list", "--list"):
         return _list()
     if argv[0] in ("status", "--status"):

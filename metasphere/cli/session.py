@@ -14,6 +14,9 @@ from metasphere.session import attach_to, list_sessions, session_info
 
 def main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
+    if args and args[0] in ("--help", "-h"):
+        print(__doc__ or "")
+        return 0
     if not args:
         print(__doc__, file=sys.stderr)
         return 2

@@ -90,6 +90,9 @@ def _cmd_set_enabled(job_id: str, enabled: bool) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in ("--help", "-h"):
+        print(__doc__ or "")
+        return 0
     cmd = argv[0] if argv else "list"
     rest = argv[1:]
 

@@ -156,6 +156,9 @@ def _cmd_status(args: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in ("--help", "-h"):
+        print(__doc__ or "")
+        return 0
     if not argv:
         return _print_inbox(show_all=False)
     cmd, rest = argv[0], argv[1:]

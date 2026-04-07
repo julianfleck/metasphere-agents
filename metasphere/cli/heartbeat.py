@@ -23,6 +23,9 @@ from metasphere.paths import resolve
 
 def main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
+    if args and args[0] in ("--help", "-h"):
+        print(__doc__ or "")
+        return 0
 
     invoke_agent = os.environ.get("HEARTBEAT_INVOKE_AGENT", "").lower() == "true"
     if "--invoke-agent" in args:
