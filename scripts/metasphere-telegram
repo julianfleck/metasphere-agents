@@ -88,15 +88,38 @@ process_message() {
     # Helper to reply (respects thread_id for forum topics)
     reply() {
         local msg="$1"
+        # Truncate to ~3500 chars to stay under Telegram 4096 limit
+        if [[ ${#msg} -gt 3500 ]]; then
+            msg="${msg:0:3500}
+... (truncated)"
+        fi
         if [[ -n "$thread_id" ]]; then
             tg_api "sendMessage" \
                 -d "chat_id=$chat_id" \
                 -d "message_thread_id=$thread_id" \
-                -d "parse_mode=Markdown" \
                 --data-urlencode "text=$msg" > /dev/null
         else
-            send_message "$chat_id" "$msg"
+            tg_api "sendMessage" \
+                -d "chat_id=$chat_id" \
+                --data-urlencode "text=$msg" > /dev/null
         fi
+    }
+
+    # Reply with a code block (title + preformatted body)
+    reply_code() {
+        local title="$1"
+        local body="$2"
+        # Budget: 3500 minus title/fences
+        local max=3400
+        if [[ ${#body} -gt $max ]]; then
+            body="${body:0:$max}
+... (truncated)"
+        fi
+        reply "*$title*
+
+\`\`\`
+$body
+\`\`\`"
     }
 
     # Parse commands
@@ -244,21 +267,55 @@ Create: /groups create \"Name\""
             ;;
 
         /help*|/h)
-            reply "*Commands*
+            reply "Commands
 
-*Status:*
-/status, /s - System overview
-/tasks, /t - Active tasks
-/agents, /a - List agents
-/inbox [@agent] - Messages
+Status:
+/status /s - System overview
+/tasks /t - Active tasks
+/agents /a - List agents
+/messages /m - Unread messages
+/inbox [@agent] - Agent inbox
+/events - Recent events
+/tree - Agent tree
+/spot - Spot health
+/ping - pong
 
-*Actions:*
+Actions:
 /send @agent !label msg - Send message
 /cam query - Search memory
 /groups - Forum topics
-/link \"Name\" - Create workspace
+/link Name - Create workspace
 
-Or just chat to talk with @orchestrator"
+Or chat directly with @orchestrator"
+            ;;
+
+        /ping*)
+            reply "pong"
+            ;;
+
+        /events*)
+            local ev_output
+            ev_output=$("$SCRIPT_DIR/metasphere-events" tail 10 2>/dev/null || echo "No events")
+            reply_code "Events" "$ev_output"
+            ;;
+
+        /tree*)
+            local tree_output
+            tree_output=$("$SCRIPT_DIR/metasphere-agent" tree 2>/dev/null || echo "No tree")
+            reply_code "Agent Tree" "$tree_output"
+            ;;
+
+        /messages*|/m)
+            local msg_output
+            msg_output=$("$SCRIPT_DIR/messages" 2>/dev/null || echo "No messages")
+            reply_code "Messages" "$msg_output"
+            ;;
+
+        /spot*)
+            local spot_output
+            spot_output=$(ssh -o ConnectTimeout=5 -o BatchMode=yes data.basicbold.de \
+                "sudo machinectl status openclaw 2>/dev/null | head -20 || echo 'spot unreachable'" 2>&1 || echo "ssh failed: $?")
+            reply_code "Spot" "$spot_output"
             ;;
 
         /*)
@@ -349,6 +406,11 @@ cmd_info() {
 case "${1:-}" in
     poll)
         cmd_poll
+        ;;
+    process)
+        # Direct slash command dispatch from gateway: process <chat_id> <text>
+        shift
+        process_message "$1" "gateway" "$2" ""
         ;;
     send)
         shift
