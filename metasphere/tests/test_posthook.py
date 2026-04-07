@@ -262,3 +262,43 @@ def test_run_posthook_respects_stop_hook_active(tmp_paths: Paths, monkeypatch):
     with mock.patch("metasphere.telegram.api.send_message") as m:
         posthook.run_posthook(payload, tmp_paths)
     m.assert_not_called()
+
+
+# ---------- cli --dry-run / --help ----------
+
+def test_cli_posthook_help():
+    from metasphere.cli import posthook as cli_posthook
+    rc = cli_posthook.main(["--help"])
+    assert rc == 0
+
+
+def test_cli_posthook_dry_run_prints_json(tmp_paths: Paths, monkeypatch, capsys):
+    _write_chat_id(tmp_paths)
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    transcript = tmp_paths.root / "t.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "the reply body"}]},
+            }
+        ],
+    )
+    payload = json.dumps(
+        {"transcript_path": str(transcript), "stop_hook_active": False}
+    ).encode("utf-8")
+    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: False, "buffer": type("B", (), {"read": lambda self: payload})()})())
+    from metasphere.cli import posthook as cli_posthook
+    with mock.patch("metasphere.telegram.api.send_message") as m:
+        rc = cli_posthook.main(["--dry-run"])
+    assert rc == 0
+    m.assert_not_called()
+    out = capsys.readouterr().out.strip()
+    summary = json.loads(out)
+    assert summary["text_length"] == len("the reply body")
+    assert summary["chunk_count"] == 1
+    assert summary["chat_id"] == "12345"
+    assert summary["would_send"] is True
+    # Dry-run must not have written dedupe state.
+    assert not (tmp_paths.state / "posthook_last_sent").exists()
