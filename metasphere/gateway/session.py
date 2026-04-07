@@ -12,6 +12,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import time
+from pathlib import Path
 from typing import Tuple
 
 from ..agents import session_alive as _agents_session_alive
@@ -88,6 +89,20 @@ def start_session(paths: Paths | None = None) -> bool:
     try:
         scope_str = scope_file.read_text(encoding="utf-8").strip() or str(paths.repo)
     except (OSError, FileNotFoundError):
+        scope_str = str(paths.repo)
+    # L1 (wave-4 review): if the configured scope is gone, fall back to
+    # repo root with a log_event so the failure is debuggable instead of
+    # tmux failing silently with `-c <bad-path>`.
+    if not Path(scope_str).is_dir():
+        try:
+            log_event(
+                "agent.session",
+                f"configured scope missing, falling back to repo: {scope_str}",
+                agent="@orchestrator",
+                paths=paths,
+            )
+        except Exception:
+            pass
         scope_str = str(paths.repo)
 
     r = _tmux("new-session", "-d", "-s", SESSION_NAME, "-c", scope_str)

@@ -51,7 +51,7 @@ def install_hooks(repo_path: Path) -> list[str]:
     written: list[str] = []
     for hook in HOOKS:
         target = hooks_dir / hook
-        if target.exists() and _MARKER not in target.read_text(errors="replace"):
+        if target.exists() and _MARKER not in target.read_text(errors="replace").splitlines():
             target.replace(target.with_suffix(target.suffix + ".backup"))
         target.write_text(_shim(hook))
         target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -67,7 +67,7 @@ def uninstall_hooks(repo_path: Path) -> list[str]:
     removed: list[str] = []
     for hook in HOOKS:
         target = hooks_dir / hook
-        if target.exists() and _MARKER in target.read_text(errors="replace"):
+        if target.exists() and _MARKER in target.read_text(errors="replace").splitlines():
             target.unlink()
             removed.append(hook)
             backup = target.with_suffix(target.suffix + ".backup")
@@ -85,7 +85,7 @@ def hooks_status(repo_path: Path) -> dict[str, str]:
         target = hooks_dir / hook
         if not target.exists():
             out[hook] = "missing"
-        elif _MARKER in target.read_text(errors="replace"):
+        elif _MARKER in target.read_text(errors="replace").splitlines():
             out[hook] = "metasphere"
         else:
             out[hook] = "other"

@@ -86,7 +86,7 @@ def list_projects(*, paths: Optional[Paths] = None) -> list[Project]:
         out.append(Project(
             name=entry.get("name", ""),
             path=entry.get("path", ""),
-            status="active" if Path(entry.get("path", "")) .joinpath(".metasphere").is_dir() else "missing",
+            status="active" if Path(entry.get("path", "")).joinpath(".metasphere").is_dir() else "missing",
         ))
     return out
 

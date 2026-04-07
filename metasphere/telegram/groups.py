@@ -104,7 +104,10 @@ def send_to_topic(topic: str | int, text: str, *,
     topic_id = resolve_topic_id(topic, paths=paths)
     if topic_id is None:
         raise LookupError(f"topic not found: {topic}")
-    body = f"*[{agent}]*\n\n{text}"
+    # L5 (wave-4 review): escape underscores so agent names like
+    # @reviewer_quality don't get rendered italic by Markdown.
+    safe_agent = agent.replace("_", r"\_")
+    body = f"*[{safe_agent}]*\n\n{text}"
     resp = tg_api.call(
         "sendMessage",
         chat_id=forum_id,

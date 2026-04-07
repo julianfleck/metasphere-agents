@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 from ..events import log_event
 from ..paths import Paths, resolve
-from ..telegram import poller as _poller
+from ..telegram import poller
 from ..telegram.commands import Context as _CmdContext, dispatch as _dispatch_command
 from ..telegram.api import send_message as _tg_send
 from ..telegram.inject import submit_to_tmux
@@ -28,8 +28,8 @@ def _poll_once(timeout: int = 1) -> int:
     """Single getUpdates call. Inject inbound text into the orchestrator
     session and bump the offset. Returns number of updates processed.
     """
-    offset = _poller.load_offset()
-    updates = _poller.get_updates(offset=offset, timeout=timeout)
+    offset = poller.load_offset()
+    updates = poller.get_updates(offset=offset, timeout=timeout)
     for u in updates:
         if u.text and u.chat_id is not None:
             if u.text.startswith("/"):
@@ -50,7 +50,7 @@ def _poll_once(timeout: int = 1) -> int:
                     pass
             else:
                 submit_to_tmux(f"@{u.from_username or 'user'}", u.text)
-        _poller.save_offset(u.update_id + 1)
+        poller.save_offset(u.update_id + 1)
     return len(updates)
 
 
@@ -89,7 +89,11 @@ def run_daemon(
         except Exception:
             pass
 
-    last_watchdog = -float("inf")  # so the watchdog fires on the first iteration
+    # so the watchdog fires on the first iteration. L2 (wave-4 review):
+    # this is safe under the rewrite because the daemon no longer
+    # flap-restarts; the 10s rate-limit marker inside
+    # check_safety_hooks_confirmation is the defence-in-depth.
+    last_watchdog = -float("inf")
     while True:
         if stop is not None and stop():
             return

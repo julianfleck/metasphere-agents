@@ -27,10 +27,13 @@ from ..paths import Paths, resolve
 from .session import SESSION_NAME, session_alive
 
 _PASTE_RE = re.compile(r"\[Pasted text #\d+")
-_SAFETY_HOOKS_RE = re.compile(
-    r"(Do you want to proceed\?|\[plugin:safety-hooks\]|^\s*1\.\s+Yes\b)",
-    re.MULTILINE,
+# L3 (wave-4 review): require BOTH a confirm-class line AND a "1. Yes"
+# option line so prose listing alone (e.g. an enumeration the agent
+# typed into chat) doesn't trip the watchdog.
+_SAFETY_HOOKS_PROMPT_RE = re.compile(
+    r"(Do you want to proceed\?|\[plugin:safety-hooks\])",
 )
+_SAFETY_HOOKS_OPTION_RE = re.compile(r"^\s*1\.\s+Yes\b", re.MULTILINE)
 
 _STUCK_PASTE_THRESHOLD_S = 15
 _SAFETY_HOOKS_RATE_LIMIT_S = 10
@@ -139,7 +142,7 @@ def check_safety_hooks_confirmation(
     if not session_alive(session_name):
         return False
     pane = _capture_pane(session_name)
-    if not _SAFETY_HOOKS_RE.search(pane):
+    if not (_SAFETY_HOOKS_PROMPT_RE.search(pane) and _SAFETY_HOOKS_OPTION_RE.search(pane)):
         return False
     marker = paths.state / "last_safety_hook_intervention"
     now = now if now is not None else int(time.time())

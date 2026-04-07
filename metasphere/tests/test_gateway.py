@@ -99,8 +99,8 @@ def test_check_stuck_paste_clears_when_placeholder_gone(tmp_paths: Paths):
 
 @pytest.mark.parametrize("pane", [
     "Some prompt\nDo you want to proceed?\n  1. Yes\n  2. No",
-    "[plugin:safety-hooks] continue?",
-    "  1. Yes\n  2. No",
+    "[plugin:safety-hooks] continue?\n  1. Yes\n  2. No",
+    "Do you want to proceed?\nfoo\n  1. Yes\n",
 ])
 def test_check_safety_hooks_confirmation_detects(tmp_paths: Paths, pane):
     with patch.object(gw_watchdog, "session_alive", return_value=True), \
@@ -123,6 +123,18 @@ def test_check_safety_hooks_rate_limited(tmp_paths: Paths):
          patch.object(gw_watchdog, "_send_keys") as send:
         # 5s later — under the 10s rate limit
         result = gw_watchdog.check_safety_hooks_confirmation(paths=tmp_paths, now=2005)
+    assert result is False
+    assert send.call_count == 0
+
+
+def test_safety_hooks_ignores_prose_listing(tmp_paths: Paths):
+    """L3 (wave-4 review): a list-only pane without a confirm-class line
+    must not trigger the watchdog (the bash regex was equally loose)."""
+    pane = "Here are options for you:\n  1. Yes — go ahead\n  2. No — abort\n"
+    with patch.object(gw_watchdog, "session_alive", return_value=True), \
+         patch.object(gw_watchdog, "_capture_pane", return_value=pane), \
+         patch.object(gw_watchdog, "_send_keys") as send:
+        result = gw_watchdog.check_safety_hooks_confirmation(paths=tmp_paths, now=2000)
     assert result is False
     assert send.call_count == 0
 
