@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "metasphere"
+version = "0.1.0"
+description = "Metasphere agent system (Python rewrite)"
+requires-python = ">=3.11"
+
+[project.scripts]
+messages                  = "metasphere.cli.messages:main"
+tasks                     = "metasphere.cli.tasks:main"
+metasphere-context        = "metasphere.cli.context:main"
+metasphere-posthook       = "metasphere.cli.posthook:main"
+metasphere-heartbeat      = "metasphere.cli.heartbeat:main"
+metasphere-schedule       = "metasphere.cli.schedule:main"
+metasphere-telegram       = "metasphere.cli.telegram:main"
+metasphere-trace          = "metasphere.cli.trace:main"
+metasphere-session        = "metasphere.cli.session:main"
+metasphere-project        = "metasphere.cli.project:main"
+metasphere-telegram-groups = "metasphere.cli.telegram_groups:main"
+metasphere-git-hooks      = "metasphere.cli.git_hooks:main"
+metasphere-gateway        = "metasphere.cli.gateway:main"
+metasphere-fts            = "metasphere.cli.memory:main"
+metasphere-agent          = "metasphere.cli.agents:main"
+metasphere-spawn          = "metasphere.cli.agents:spawn_main"
+metasphere-wake           = "metasphere.cli.agents:wake_main"
+
+[tool.setuptools]
+packages = [
+  "metasphere",
+  "metasphere.cli",
+  "metasphere.telegram",
+  "metasphere.memory",
+  "metasphere.gateway",
+]

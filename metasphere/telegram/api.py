@@ -40,35 +40,57 @@ class _Config:
     api_base: str
 
 
+def _read_env_file(path: str, key: str) -> Optional[str]:
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if k.strip() == key:
+                return v.strip().strip('"').strip("'")
+    return None
+
+
 def _load_token() -> str:
-    """Load the REWRITE bot token.
+    """Load the bot token.
 
-    Order:
-    1. ``TELEGRAM_BOT_TOKEN_REWRITE`` env var
-    2. ``~/.metasphere/config/telegram-rewrite.env`` (KEY=VALUE lines)
+    Resolution order (post-cutover canonical-first with rewrite back-compat):
 
-    The rewrite intentionally does NOT fall back to the canonical bot
-    token — running both bots against the same chat would double-deliver
-    every message during parallel testing.
+    1. ``TELEGRAM_BOT_TOKEN_REWRITE`` env var (kept for tests that explicitly
+       opt into the rewrite bot during parallel testing).
+    2. ``TELEGRAM_BOT_TOKEN`` env var (canonical @spotspotbotbot — what the
+       live orchestrator and human channel use).
+    3. ``~/.metasphere/config/telegram.env`` ``TELEGRAM_BOT_TOKEN``.
+    4. ``~/.metasphere/config/telegram-rewrite.env`` ``TELEGRAM_BOT_TOKEN_REWRITE``.
+
+    After the cutover the python stack must reach the canonical bot by
+    default so the orchestrator does not lose its telegram channel.
     """
     tok = os.environ.get("TELEGRAM_BOT_TOKEN_REWRITE")
     if tok:
         return tok
-    cfg = os.path.expanduser("~/.metasphere/config/telegram-rewrite.env")
-    if os.path.exists(cfg):
-        with open(cfg) as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                if k.strip() == "TELEGRAM_BOT_TOKEN_REWRITE":
-                    return v.strip().strip('"').strip("'")
+    tok = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if tok:
+        return tok
+    tok = _read_env_file(
+        os.path.expanduser("~/.metasphere/config/telegram.env"),
+        "TELEGRAM_BOT_TOKEN",
+    )
+    if tok:
+        return tok
+    tok = _read_env_file(
+        os.path.expanduser("~/.metasphere/config/telegram-rewrite.env"),
+        "TELEGRAM_BOT_TOKEN_REWRITE",
+    )
+    if tok:
+        return tok
     raise RuntimeError(
-        "TELEGRAM_BOT_TOKEN_REWRITE not set and "
-        "~/.metasphere/config/telegram-rewrite.env missing or empty"
+        "No telegram bot token found: tried TELEGRAM_BOT_TOKEN_REWRITE, "
+        "TELEGRAM_BOT_TOKEN, ~/.metasphere/config/telegram.env, and "
+        "~/.metasphere/config/telegram-rewrite.env"
     )
 
 
