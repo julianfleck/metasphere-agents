@@ -136,3 +136,39 @@ def test_log_status_to_disk_writes_marker(tmp_paths: Paths):
     p = tmp_paths.state / "heartbeat_last_run"
     assert p.is_file()
     assert "alive at" in p.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# scope normalization in daemon path
+# ---------------------------------------------------------------------------
+
+
+def test_heartbeat_daemon_normalizes_scope_to_repo(tmp_paths: Paths, monkeypatch):
+    """Daemon must use paths.repo (env-resolved) not the cwd subdir.
+
+    Simulates running the daemon from a deeply nested ``a/b/c`` subdir
+    of the repo and asserts the per-tick :class:`Paths` carries the
+    repo root, not the cwd.
+    """
+    nested = tmp_paths.repo / "a" / "b" / "c"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+
+    captured: list[Paths] = []
+
+    def fake_once(paths, invoke_agent=False):
+        captured.append(paths)
+
+    def fake_sleep(_seconds):
+        raise StopIteration  # break out after one tick
+
+    monkeypatch.setattr(hb, "heartbeat_once", fake_once)
+    monkeypatch.setattr(hb.time, "sleep", fake_sleep)
+
+    with pytest.raises(StopIteration):
+        hb.heartbeat_daemon(interval_seconds=0)
+
+    assert len(captured) == 1
+    p = captured[0]
+    assert p.repo == tmp_paths.repo
+    assert p.repo != nested
