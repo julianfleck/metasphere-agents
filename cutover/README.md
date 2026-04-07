@@ -5,8 +5,11 @@ Flips the existing bash @orchestrator session onto the new
 
 ## Apply
 
+Run from inside a clone of this repo (the script auto-detects its own
+location, so the working directory does not matter):
+
 ```
-bash /home/openclaw/Code/metasphere-agents/cutover/apply.sh
+./cutover/apply.sh
 ```
 
 What it touches:
@@ -22,7 +25,7 @@ What it touches:
 - `~/.config/systemd/user/metasphere-schedule.service` ExecStart →
   `python -m metasphere.cli.schedule daemon`
 - `systemctl --user daemon-reload` + restart of those three units.
-- `/home/openclaw/Code/metasphere-agents/.claude/settings.local.json`
+- `<repo-root>/.claude/settings.local.json`
   Stop hook → `python -m metasphere.cli.posthook`,
   UserPromptSubmit hook → `python -m metasphere.cli.context`.
 
@@ -32,7 +35,7 @@ the same backup directory so `rollback.sh` is a single command.
 ## Rollback
 
 ```
-bash /home/openclaw/Code/metasphere-agents/cutover/rollback.sh
+./cutover/rollback.sh
 ```
 
 By default it uses the most recent `~/.metasphere/bin.backup-cutover-*`

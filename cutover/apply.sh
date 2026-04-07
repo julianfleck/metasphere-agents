@@ -13,7 +13,8 @@ DATE="$(date +%Y%m%d-%H%M%S)"
 BIN_DIR="$HOME/.metasphere/bin"
 BACKUP_DIR="$HOME/.metasphere/bin.backup-cutover-$DATE"
 SYSTEMD_DIR="$HOME/.config/systemd/user"
-REPO_SETTINGS="/home/openclaw/Code/metasphere-agents/.claude/settings.local.json"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_SETTINGS="$REPO_ROOT/.claude/settings.local.json"
 
 SCRIPTS_DIR="$(python -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
 if [ -z "$SCRIPTS_DIR" ] || [ ! -d "$SCRIPTS_DIR" ]; then
@@ -47,7 +48,7 @@ BINARIES=(
 for name in "${BINARIES[@]}"; do
   if [ ! -x "$SCRIPTS_DIR/$name" ]; then
     echo "[apply] FATAL: missing console script $SCRIPTS_DIR/$name" >&2
-    echo "[apply] run: pip install -e /home/openclaw/Code/metasphere-agents" >&2
+    echo "[apply] run: pip install -e $REPO_ROOT" >&2
     exit 1
   fi
 done

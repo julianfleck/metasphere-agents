@@ -5,7 +5,8 @@ set -euo pipefail
 
 BIN_DIR="$HOME/.metasphere/bin"
 SYSTEMD_DIR="$HOME/.config/systemd/user"
-REPO_SETTINGS="/home/openclaw/Code/metasphere-agents/.claude/settings.local.json"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_SETTINGS="$REPO_ROOT/.claude/settings.local.json"
 
 if [ $# -ge 1 ]; then
   BACKUP_DIR="$1"
