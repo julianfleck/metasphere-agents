@@ -116,7 +116,10 @@ class Message:
             replied_at=s("replied_at"),
             completed_at=s("completed_at"),
             reply_to=s("reply_to"),
-            body=fm.body.lstrip("\n").rstrip() + "\n" if fm.body else "",
+            # Preserve trailing whitespace/blank lines a sender deliberately
+            # included; only normalise the leading newline that
+            # ``serialize_frontmatter`` adds.
+            body=fm.body.lstrip("\n") if fm.body else "",
             path=path,
         )
 

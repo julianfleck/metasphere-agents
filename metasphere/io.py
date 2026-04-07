@@ -188,9 +188,14 @@ def serialize_frontmatter(fm: Frontmatter) -> str:
     for k, v in fm.meta.items():
         lines.append(f"{k}: {_format_scalar(v)}")
     lines.append("---")
-    if fm.body and not fm.body.startswith("\n"):
-        lines.append("")
-    return "\n".join(lines) + (fm.body if fm.body.startswith("\n") else "\n" + fm.body)
+    head = "\n".join(lines)
+    if not fm.body:
+        return head + "\n"
+    # Ensure exactly one newline separates the closing fence from body so
+    # repeated round-trips don't accumulate blank lines (the parser drops
+    # the fence-terminating newline but keeps everything after).
+    body = fm.body if fm.body.startswith("\n") else "\n" + fm.body
+    return head + body
 
 
 def read_frontmatter_file(path: Path) -> Frontmatter:

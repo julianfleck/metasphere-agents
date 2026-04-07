@@ -14,11 +14,12 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import tempfile
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterable, Iterator, List, Optional
 
+from ..io import atomic_write_text, file_lock
 from . import api
 
 DEFAULT_OFFSET_PATH = os.path.expanduser("~/.metasphere/telegram/offset")
@@ -71,30 +72,14 @@ def load_offset(path: str = DEFAULT_OFFSET_PATH) -> int:
 
 
 def save_offset(offset: int, path: str = DEFAULT_OFFSET_PATH) -> None:
-    """Atomically persist ``offset`` to ``path`` under an exclusive lock.
+    """Atomically persist ``offset`` under a sidecar flock.
 
-    The bash version did ``echo "$x" > offset``, which truncates first
-    and then writes. A concurrent reader (or a crash mid-write) could see
-    an empty file and reset to offset 0, replaying the entire backlog.
-    Tmp+rename avoids that, and the lock prevents two writers from
-    interleaving.
+    Routes through ``io.file_lock`` (which never truncates the lock fd
+    and never unlinks it) + ``atomic_write_text`` (tmp+rename with fsync).
     """
     _ensure_parent(path)
-    lock_path = path + ".lock"
-    with open(lock_path, "w") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            fd, tmp = tempfile.mkstemp(prefix=".offset.", dir=os.path.dirname(path))
-            try:
-                with os.fdopen(fd, "w") as f:
-                    f.write(str(offset))
-                os.replace(tmp, path)
-            except Exception:
-                if os.path.exists(tmp):
-                    os.unlink(tmp)
-                raise
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    with file_lock(Path(path + ".lock")):
+        atomic_write_text(Path(path), str(offset))
 
 
 def get_updates(offset: int = 0, timeout: int = 30) -> List[Update]:

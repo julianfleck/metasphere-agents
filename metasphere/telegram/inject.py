@@ -12,8 +12,11 @@ the exact same submission contract as the bash version.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
+
+_USERNAME_RE = re.compile(r"[^\w]+")
 
 DEFAULT_SESSION = "metasphere-orchestrator"
 SUBMIT_SCRIPT = os.path.join(
@@ -43,7 +46,11 @@ def submit_to_tmux(
         return False
     if not os.path.exists(SUBMIT_SCRIPT):
         return False
-    payload = f"[telegram from {from_user}] {text}"
+    # Telegram usernames are attacker-controlled — sanitise to [\w]+ so
+    # they can't smuggle slash-command-like prefixes into the orchestrator
+    # REPL when the payload is rendered.
+    safe_user = _USERNAME_RE.sub("", from_user) or "unknown"
+    payload = f"[telegram from {safe_user}] {text}"
     # The bash script is sourced for its submit_to_tmux function. Easiest
     # cross-language path is to invoke a small bash one-liner that sources
     # it and calls the function.

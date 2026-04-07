@@ -147,6 +147,10 @@ def cmd_send(args: str, ctx: Context) -> str:
     if len(parts) < 3:
         return "Usage: /send @target !label message"
     target, label, message = parts
+    if not _AGENT_RE.match(target):
+        return "Invalid target (expected @name)"
+    if not _LABEL_RE.match(label):
+        return "Invalid label (expected !name)"
     return _run(
         [os.path.join(SCRIPTS_DIR, "messages"), "send", target, label, message],
         env={"METASPHERE_AGENT_ID": "@user"},

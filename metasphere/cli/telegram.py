@@ -18,6 +18,7 @@ import os
 import sys
 from typing import List, Optional
 
+from metasphere.io import atomic_write_text
 from metasphere.telegram import api, archiver, commands, inject, poller
 
 CHAT_ID_FILE = os.path.expanduser("~/.metasphere/config/telegram_chat_id_rewrite")
@@ -34,9 +35,7 @@ def _load_chat_id() -> Optional[int]:
 
 
 def _save_chat_id(chat_id: int) -> None:
-    os.makedirs(os.path.dirname(CHAT_ID_FILE), exist_ok=True)
-    with open(CHAT_ID_FILE, "w") as f:
-        f.write(str(chat_id))
+    atomic_write_text(CHAT_ID_FILE, str(chat_id))
 
 
 def _handle_update(u: poller.Update) -> None:

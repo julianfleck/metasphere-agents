@@ -18,6 +18,7 @@ from pathlib import Path
 
 from metasphere import paths as _paths
 from metasphere import tasks as _tasks
+from metasphere.identity import resolve_agent_id
 
 
 def _ctx() -> tuple[Path, Path]:
@@ -26,7 +27,7 @@ def _ctx() -> tuple[Path, Path]:
 
 
 def _agent() -> str:
-    return os.environ.get("METASPHERE_AGENT_ID", "@user")
+    return resolve_agent_id(_paths.resolve())
 
 
 def _cmd_list(args: list[str]) -> int:
