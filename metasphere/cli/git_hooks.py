@@ -28,6 +28,9 @@ from metasphere.paths import resolve
 
 def main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
+    if args and args[0] in ("--help", "-h"):
+        print(__doc__ or "")
+        return 0
     if not args:
         print(__doc__, file=sys.stderr)
         return 2
@@ -35,13 +38,16 @@ def main(argv: list[str] | None = None) -> int:
     paths = resolve()
 
     if cmd == "install":
+        dry_run = "--dry-run" in rest
+        rest = [a for a in rest if a != "--dry-run"]
         target = Path(rest[0]) if rest else Path.cwd()
         try:
-            written = install_hooks(target)
+            written = install_hooks(target, dry_run=dry_run)
         except FileNotFoundError as e:
             print(str(e), file=sys.stderr)
             return 1
-        print(f"installed: {', '.join(written)}")
+        verb = "would install" if dry_run else "installed"
+        print(f"{verb}: {', '.join(written)}")
         return 0
 
     if cmd == "uninstall":

@@ -37,6 +37,17 @@ def test_install_creates_executable_shims(tmp_path):
         assert "python3" in body
 
 
+def test_install_dry_run_touches_nothing(tmp_path, capsys):
+    repo = _init_repo(tmp_path)
+    planned = install_hooks(repo, dry_run=True)
+    assert sorted(planned) == sorted(HOOKS)
+    # No hook files should have been written.
+    for hook in HOOKS:
+        assert not (repo / ".git" / "hooks" / hook).exists()
+    out = capsys.readouterr().out
+    assert "would write" in out
+
+
 def test_install_backs_up_existing(tmp_path):
     repo = _init_repo(tmp_path)
     pre = repo / ".git" / "hooks" / "pre-commit"

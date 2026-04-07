@@ -37,25 +37,37 @@ def _hooks_dir(repo_path: Path) -> Path:
     return repo_path / ".git" / "hooks"
 
 
-def install_hooks(repo_path: Path) -> list[str]:
+def install_hooks(repo_path: Path, *, dry_run: bool = False) -> list[str]:
     """Install metasphere shims into ``.git/hooks``.
 
     Existing non-metasphere hooks are backed up to ``<hook>.backup``.
-    Returns the list of hooks written.
+    Returns the list of hooks written (or, in ``dry_run`` mode, the list
+    of hooks that *would* be written without touching the filesystem).
+    In dry-run mode a human-readable plan is printed to stdout.
     """
     repo_path = Path(repo_path)
     if not (repo_path / ".git").is_dir():
         raise FileNotFoundError(f"not a git repository: {repo_path}")
     hooks_dir = _hooks_dir(repo_path)
-    hooks_dir.mkdir(parents=True, exist_ok=True)
+    if not dry_run:
+        hooks_dir.mkdir(parents=True, exist_ok=True)
 
     written: list[str] = []
     for hook in HOOKS:
         target = hooks_dir / hook
-        if target.exists() and _MARKER not in target.read_text(errors="replace").splitlines():
-            target.replace(target.with_suffix(target.suffix + ".backup"))
-        target.write_text(_shim(hook))
-        target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        would_backup = (
+            target.exists()
+            and _MARKER not in target.read_text(errors="replace").splitlines()
+        )
+        if dry_run:
+            if would_backup:
+                print(f"would backup: {target} -> {target}.backup")
+            print(f"would write:  {target}")
+        else:
+            if would_backup:
+                target.replace(target.with_suffix(target.suffix + ".backup"))
+            target.write_text(_shim(hook))
+            target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         written.append(hook)
     return written
 
