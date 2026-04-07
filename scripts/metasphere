@@ -691,7 +691,20 @@ case "${1:-}" in
         ;;
     update|upgrade)
         shift
+        # If a python flag is present, route to the python entry which
+        # owns config (auto-update.env), --enable/--disable/--status,
+        # --register-job, --quiet logging, and post-update pip + tests +
+        # telegram notify. The bash branch below is the legacy one-shot.
+        for arg in "$@"; do
+            case "$arg" in
+                --enable|--disable|--status|--register-job|--quiet)
+                    exec python3 -m metasphere.cli.update "$@"
+                    ;;
+            esac
+        done
         info "Updating Metasphere..."
+        # Capture HEAD before so we can re-pip-install if python files changed.
+        _pre_update_hash=""
 
         # Find the installation source. Order:
         # 1. METASPHERE_REPO_ROOT env var (explicit)
@@ -734,6 +747,7 @@ case "${1:-}" in
 
         # Pull latest
         cd "$install_source"
+        _pre_update_hash=$(git rev-parse HEAD 2>/dev/null || echo "")
         if git pull --ff-only; then
             ok "Git pull successful"
         else
@@ -749,6 +763,34 @@ case "${1:-}" in
             cp "$install_source/scripts"/* "$METASPHERE_DIR/bin/" 2>/dev/null || true
             chmod +x "$METASPHERE_DIR/bin"/* 2>/dev/null || true
             ok "Scripts updated"
+        fi
+
+        # Re-pip-install the python package if pyproject.toml or any
+        # metasphere/*.py file changed since the previous HEAD. Without
+        # this, console scripts go stale and the cli dispatcher doesn't
+        # see new subcommands.
+        if [[ -n "$_pre_update_hash" ]]; then
+            _post_update_hash=$(git rev-parse HEAD 2>/dev/null || echo "")
+            if [[ -n "$_post_update_hash" && "$_pre_update_hash" != "$_post_update_hash" ]]; then
+                if git diff --name-only "$_pre_update_hash..$_post_update_hash" 2>/dev/null \
+                    | grep -qE '^(pyproject\.toml|metasphere/)'; then
+                    info "Python package changed, re-installing..."
+                    if command -v python3 &>/dev/null; then
+                        (cd "$install_source" && python3 -m pip install -e . --quiet 2>/dev/null) \
+                            && ok "Python package reinstalled" \
+                            || warn "pip install -e . failed (run manually if needed)"
+                    fi
+                fi
+            fi
+        fi
+
+        # Honor METASPHERE_AUTO_UPDATE_NO_RESTART set by the python
+        # auto-update wrapper when the user opts out of daemon restart.
+        if [[ "$METASPHERE_AUTO_UPDATE_NO_RESTART" == "1" ]]; then
+            echo "  (skipping daemon restart per AUTO_UPDATE_RESTART_DAEMONS=false)"
+            echo
+            echo "Update complete. Version: $VERSION"
+            exit 0
         fi
 
         # Restart gateway daemon if running. The actual unit on Linux is
