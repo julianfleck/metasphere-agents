@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # cutover/apply.sh — flip ~/.metasphere/bin shims and systemd units to the
-# python entry points in metasphere.cli.*. Reversible via cutover/rollback.sh.
+# python console-script entry points installed by `pip install -e .` in this
+# repo. Reversible via cutover/rollback.sh.
+#
+# The shim files in $HOME/.metasphere/bin point at the absolute path of the
+# console-script binary in the active Python environment. We resolve that
+# path once via sysconfig so the shims do not infinite-loop through PATH
+# (which has $HOME/.metasphere/bin first).
 set -euo pipefail
 
 DATE="$(date +%Y%m%d-%H%M%S)"
@@ -9,34 +15,47 @@ BACKUP_DIR="$HOME/.metasphere/bin.backup-cutover-$DATE"
 SYSTEMD_DIR="$HOME/.config/systemd/user"
 REPO_SETTINGS="/home/openclaw/Code/metasphere-agents/.claude/settings.local.json"
 
-# name → python module under metasphere.cli
-declare -A MAP=(
-  [messages]=messages
-  [tasks]=tasks
-  [metasphere]=metasphere
-  [metasphere-schedule]=schedule
-  [metasphere-context]=context
-  [metasphere-events]=events
-  [metasphere-telegram]=telegram
-  [metasphere-telegram-stream]=telegram_stream
-  [metasphere-heartbeat]=heartbeat
-  [metasphere-posthook]=posthook
-  [metasphere-trace]=trace
-  [metasphere-session]=session
-  [metasphere-project]=project
-  [metasphere-spawn]=spawn
-  [metasphere-wake]=wake
-  [metasphere-fts]=fts
-  [metasphere-telegram-groups]=telegram_groups
-  [metasphere-git-hooks]=git_hooks
-  [metasphere-agent]=agent
+SCRIPTS_DIR="$(python -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
+if [ -z "$SCRIPTS_DIR" ] || [ ! -d "$SCRIPTS_DIR" ]; then
+  echo "[apply] cannot resolve python scripts dir ($SCRIPTS_DIR)" >&2
+  exit 1
+fi
+echo "[apply] python scripts dir: $SCRIPTS_DIR"
+
+# Console-script binary names installed by pyproject.toml [project.scripts].
+BINARIES=(
+  messages
+  tasks
+  metasphere-context
+  metasphere-posthook
+  metasphere-heartbeat
+  metasphere-schedule
+  metasphere-telegram
+  metasphere-trace
+  metasphere-session
+  metasphere-project
+  metasphere-telegram-groups
+  metasphere-git-hooks
+  metasphere-gateway
+  metasphere-fts
+  metasphere-agent
+  metasphere-spawn
+  metasphere-wake
 )
 
-mkdir -p "$BACKUP_DIR"
+# Verify every binary exists before touching anything.
+for name in "${BINARIES[@]}"; do
+  if [ ! -x "$SCRIPTS_DIR/$name" ]; then
+    echo "[apply] FATAL: missing console script $SCRIPTS_DIR/$name" >&2
+    echo "[apply] run: pip install -e /home/openclaw/Code/metasphere-agents" >&2
+    exit 1
+  fi
+done
+
+mkdir -p "$BACKUP_DIR" "$BIN_DIR"
 echo "[apply] backup dir: $BACKUP_DIR"
 
-for name in "${!MAP[@]}"; do
-  module="${MAP[$name]}"
+for name in "${BINARIES[@]}"; do
   target="$BIN_DIR/$name"
   if [ -e "$target" ]; then
     cp -a "$target" "$BACKUP_DIR/$name"
@@ -44,32 +63,35 @@ for name in "${!MAP[@]}"; do
   cat > "$target" <<EOF
 #!/usr/bin/env bash
 # python-harness shim — installed by cutover/apply.sh on $DATE
-exec python -m metasphere.cli.$module "\$@"
+exec "$SCRIPTS_DIR/$name" "\$@"
 EOF
   chmod +x "$target"
-  echo "[apply] shim: $name → metasphere.cli.$module"
+  echo "[apply] shim: $name → $SCRIPTS_DIR/$name"
 done
 
-# Record which units we touched + their original ExecStart for rollback.
+# Rewrite systemd unit ExecStart lines to the absolute binary paths.
 mkdir -p "$BACKUP_DIR/systemd"
-for unit in metasphere-heartbeat metasphere-telegram metasphere-schedule; do
-  if [ -f "$SYSTEMD_DIR/$unit.service" ]; then
-    cp -a "$SYSTEMD_DIR/$unit.service" "$BACKUP_DIR/systemd/$unit.service"
+declare -A UNIT_CMD=(
+  [metasphere-heartbeat]="$SCRIPTS_DIR/metasphere-heartbeat daemon 300"
+  [metasphere-telegram]="$SCRIPTS_DIR/metasphere-telegram poll"
+  [metasphere-schedule]="$SCRIPTS_DIR/metasphere-schedule daemon"
+)
+
+for unit in "${!UNIT_CMD[@]}"; do
+  unit_file="$SYSTEMD_DIR/$unit.service"
+  if [ -f "$unit_file" ]; then
+    cp -a "$unit_file" "$BACKUP_DIR/systemd/$unit.service"
+    sed -i -E "s|^ExecStart=.*|ExecStart=${UNIT_CMD[$unit]}|" "$unit_file"
+    echo "[apply] systemd: $unit → ${UNIT_CMD[$unit]}"
+  else
+    echo "[apply] note: $unit_file not present, skipping" >&2
   fi
 done
-
-python_bin="$(command -v python)"
-sed -i -E "s|^ExecStart=.*|ExecStart=$python_bin -m metasphere.cli.heartbeat daemon 300|" \
-  "$SYSTEMD_DIR/metasphere-heartbeat.service"
-sed -i -E "s|^ExecStart=.*|ExecStart=$python_bin -m metasphere.cli.telegram poll|" \
-  "$SYSTEMD_DIR/metasphere-telegram.service"
-sed -i -E "s|^ExecStart=.*|ExecStart=$python_bin -m metasphere.cli.schedule daemon|" \
-  "$SYSTEMD_DIR/metasphere-schedule.service"
 
 systemctl --user daemon-reload
 systemctl --user restart metasphere-heartbeat.service metasphere-telegram.service metasphere-schedule.service
 
-# Repo .claude/settings.local.json hook flip.
+# Repo .claude/settings.local.json hook flip — point at console-script names.
 if [ -f "$REPO_SETTINGS" ]; then
   cp -a "$REPO_SETTINGS" "$BACKUP_DIR/settings.local.json"
   python - <<PY
@@ -79,8 +101,8 @@ data = json.loads(p.read_text())
 hooks = data.setdefault("hooks", {})
 def set_hook(event, cmd):
     hooks[event] = [{"hooks": [{"type": "command", "command": cmd}]}]
-set_hook("Stop", "python -m metasphere.cli.posthook")
-set_hook("UserPromptSubmit", "python -m metasphere.cli.context")
+set_hook("Stop", "metasphere-posthook")
+set_hook("UserPromptSubmit", "metasphere-context")
 p.write_text(json.dumps(data, indent=2) + "\n")
 PY
 fi
