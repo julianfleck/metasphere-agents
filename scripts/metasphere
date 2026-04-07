@@ -54,6 +54,7 @@ fi
 ok() { echo -e "  ${GREEN}✓${NC} $*"; }
 warn() { echo -e "  ${YELLOW}!${NC} $*"; }
 err() { echo -e "  ${RED}✗${NC} $*"; }
+info() { echo -e "${BOLD}$*${NC}"; }
 dim() { echo -e "  ${DIM}$*${NC}"; }
 
 # =============================================================================
@@ -665,17 +666,30 @@ case "${1:-}" in
         shift
         info "Updating Metasphere..."
 
-        # Find the installation source
+        # Find the installation source. Order:
+        # 1. METASPHERE_REPO_ROOT env var (explicit)
+        # 2. PWD if it looks like the repo
+        # 3. Common install locations under $HOME
+        # 4. Walk up from the script's resolved path (handles symlinks
+        #    pointing into a checkout)
         local install_source=""
-        if [[ -d "$METASPHERE_DIR/.git" ]]; then
-            install_source="$METASPHERE_DIR"
-        elif [[ -n "$METASPHERE_REPO_ROOT" && -d "$METASPHERE_REPO_ROOT/.git" ]]; then
+        if [[ -n "$METASPHERE_REPO_ROOT" && -d "$METASPHERE_REPO_ROOT/.git" ]]; then
             install_source="$METASPHERE_REPO_ROOT"
+        elif [[ -d "$PWD/.git" && -d "$PWD/scripts" && -f "$PWD/scripts/metasphere" ]]; then
+            install_source="$PWD"
         else
-            # Try to find from script location
+            for candidate in "$HOME/Code/metasphere-agents" "$HOME/code/metasphere-agents" "$HOME/src/metasphere-agents"; do
+                if [[ -d "$candidate/.git" && -f "$candidate/scripts/metasphere" ]]; then
+                    install_source="$candidate"
+                    break
+                fi
+            done
+        fi
+        if [[ -z "$install_source" ]]; then
+            # Last resort: walk up from the script's resolved path
             local script_path=$(readlink -f "$0" 2>/dev/null || echo "$0")
             local script_dir=$(dirname "$script_path")
-            if [[ -d "$script_dir/../.git" ]]; then
+            if [[ -d "$script_dir/../.git" && -f "$script_dir/../scripts/metasphere" ]]; then
                 install_source=$(cd "$script_dir/.." && pwd)
             fi
         fi
@@ -707,7 +721,12 @@ case "${1:-}" in
             ok "Scripts updated"
         fi
 
-        # Restart daemon if running
+        # Restart gateway daemon if running. The actual unit on Linux is
+        # `metasphere-gateway`, not `metasphere`. On macOS the launchd
+        # label is `com.metasphere`. The agent's REPL inside the tmux
+        # pane is NOT killed by the gateway restart — the respawn loop
+        # in start_session means the agent only reloads when IT decides
+        # (via the harness drift hint surfaced by metasphere-context).
         if [[ "$(uname)" == "Darwin" ]]; then
             if launchctl list 2>/dev/null | grep -q "com.metasphere"; then
                 launchctl unload ~/Library/LaunchAgents/com.metasphere.plist 2>/dev/null || true
@@ -715,9 +734,12 @@ case "${1:-}" in
                 ok "Daemon restarted"
             fi
         else
-            if systemctl --user is-active metasphere &>/dev/null; then
+            if systemctl --user is-active metasphere-gateway &>/dev/null; then
+                systemctl --user restart metasphere-gateway
+                ok "Gateway restarted (metasphere-gateway.service)"
+            elif systemctl --user is-active metasphere &>/dev/null; then
                 systemctl --user restart metasphere
-                ok "Daemon restarted"
+                ok "Daemon restarted (metasphere.service)"
             fi
         fi
 
