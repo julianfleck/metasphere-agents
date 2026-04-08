@@ -18,7 +18,7 @@ from ..events import log_event
 from ..paths import Paths, resolve
 from ..telegram import poller
 from ..telegram.commands import Context as _CmdContext, dispatch as _dispatch_command
-from ..telegram.api import send_message as _tg_send
+from ..telegram.api import send_message as _tg_send, set_message_reaction as _tg_react
 from ..telegram.inject import submit_to_tmux
 from .session import ensure_session
 from .watchdog import run_watchdog
@@ -32,6 +32,16 @@ def _poll_once(timeout: int = 1) -> int:
     updates = poller.get_updates(offset=offset, timeout=timeout)
     for u in updates:
         if u.text and u.chat_id is not None:
+            # Acknowledge receipt with an eye reaction so the user sees
+            # the message has been picked up before the agent's response
+            # arrives. Regression-fix: the legacy bash poller did this
+            # and it got dropped in the python cutover. Best-effort: we
+            # never let a reaction failure block injection.
+            if u.message_id is not None:
+                try:
+                    _tg_react(u.chat_id, u.message_id, "👀")
+                except Exception:
+                    pass
             if u.text.startswith("/"):
                 # Route slash commands through the command dispatcher (M5,
                 # wave-4 review). Previously these were silently dropped.

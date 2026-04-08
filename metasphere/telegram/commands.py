@@ -212,6 +212,25 @@ def cmd_spot(args: str, ctx: Context) -> str:
     )
 
 
+def cmd_session(args: str, ctx: Context) -> str:
+    """Restart the orchestrator REPL so it picks up new CLAUDE.md / hooks.
+
+    Default action is ``restart``. The respawn loop in metasphere-gateway
+    revives Claude automatically after /exit, so this is fire-and-forget.
+
+    Subcommands:
+      restart  -> metasphere-gateway restart-orchestrator (default)
+      status   -> systemctl --user status metasphere-gateway
+    """
+    sub = (args or "restart").strip().split(None, 1)[0] or "restart"
+    if sub == "status":
+        return _run(["systemctl", "--user", "status", "metasphere-gateway", "--no-pager"], timeout=5)
+    if sub == "restart":
+        out = _run([os.path.join(SCRIPTS_DIR, "metasphere-gateway"), "restart-orchestrator"], timeout=10)
+        return f"♻️  Restarting orchestrator REPL (respawn loop will revive it).\n\n{out}".strip()
+    return f"Unknown /session subcommand: {sub}\nUsage: /session [restart|status]"
+
+
 COMMANDS: Dict[str, Callable[[str, Context], str]] = {
     "start": cmd_start,
     "help": cmd_help,
@@ -235,6 +254,7 @@ COMMANDS: Dict[str, Callable[[str, Context], str]] = {
     "spot": cmd_spot,
     "project": cmd_project,
     "p": cmd_project,
+    "session": cmd_session,
 }
 
 
