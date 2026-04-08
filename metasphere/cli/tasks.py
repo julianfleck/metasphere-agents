@@ -214,6 +214,18 @@ def _cmd_done(args: list[str]) -> int:
     return 0
 
 
+def _cmd_describe(args: list[str]) -> int:
+    if len(args) < 2:
+        print('Usage: tasks describe <task-id> "description text"', file=sys.stderr)
+        return 1
+    task_id, *rest = args
+    text = " ".join(rest)
+    _, repo = _ctx()
+    t = _tasks.set_description(task_id, text, repo)
+    print(f"Described: {t.id}")
+    return 0
+
+
 def _cmd_show(args: list[str]) -> int:
     if not args:
         print("Usage: tasks show <task-id>", file=sys.stderr)
@@ -241,6 +253,8 @@ def main(argv: list[str] | None = None) -> int:
         "move": _cmd_move,
         "start": _cmd_start,
         "update": _cmd_update,
+        "describe": _cmd_describe,
+        "description": _cmd_describe,
         "done": _cmd_done,
         "archive": _cmd_done,
         "show": _cmd_show,

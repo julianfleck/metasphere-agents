@@ -346,6 +346,46 @@ def add_update(task_id: str, note: str, repo_root: Path) -> Task:
         return task
 
 
+def _replace_description(body: str, text: str) -> str:
+    """Replace the body of the ``## Description`` section with ``text``.
+
+    Matches the section that starts at ``## Description`` and ends at the
+    next ``## `` heading (or end-of-file). Stub placeholder is overwritten.
+    If no Description section exists, inserts one near the top.
+    """
+    if "## Description" in body:
+        return re.sub(
+            r"(## Description\n)(?:.*?)(?=\n## |\Z)",
+            lambda m: m.group(1) + "\n" + text.strip() + "\n",
+            body,
+            count=1,
+            flags=re.DOTALL,
+        )
+    # No Description section: insert after the first H1 (the title) or at top.
+    if body.lstrip().startswith("# "):
+        first_break = body.find("\n", body.find("# "))
+        if first_break != -1:
+            return (
+                body[: first_break + 1]
+                + f"\n## Description\n\n{text.strip()}\n"
+                + body[first_break + 1 :]
+            )
+    return f"## Description\n\n{text.strip()}\n\n" + body
+
+
+def set_description(task_id: str, text: str, repo_root: Path) -> Task:
+    """Replace the ``## Description`` section of a task with ``text``."""
+    path = _find_task_file(task_id, repo_root)
+    if path is None:
+        raise FileNotFoundError(f"task {task_id} not found")
+    with file_lock(_lock_path(path)):
+        task = _load(path)
+        task.body = _replace_description(task.body, text)
+        task.updated = _utcnow()
+        atomic_write_text(path, task.to_text())
+        return task
+
+
 def start_task(task_id: str, agent: str, repo_root: Path) -> Task:
     path = _find_task_file(task_id, repo_root)
     if path is None:

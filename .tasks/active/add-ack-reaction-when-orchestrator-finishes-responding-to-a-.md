@@ -9,12 +9,16 @@ created: 2026-04-08T07:41:19Z
 created_by: @orchestrator
 assigned_to: 
 started_at: 
-updated_at: 2026-04-08T12:02:15Z
+updated_at: 2026-04-08T13:44:10Z
 completed_at: 
 last_pinged_at: 2026-04-08T12:02:15Z
 ping_count: 2
 ---
 # Add 👍 ack reaction when @orchestrator finishes responding to a user message
+
+## Description
+
+Currently the bot sets a 👀 reaction on incoming user messages (read receipt) but does NOT signal when the orchestrator has finished responding. Add a 👍 reaction on the user's original message after the orchestrator's reply has been delivered, so the user knows their request was acted on (not just received). Implementation: in metasphere/gateway/daemon.py _poll_once, after dispatching a non-slash message to the orchestrator and the posthook has forwarded a reply, call set_message_reaction with 👍 on the original message_id. Edge case: orchestrator may produce multiple responses across heartbeat ticks; only react after the FIRST substantive response, not on every silent tick.
 
 ## Updates
 
