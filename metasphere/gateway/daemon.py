@@ -102,6 +102,26 @@ def run_daemon(
         except Exception:
             pass
 
+    # Republish slash command manifest to BotFather via setMyCommands.
+    # This makes registration automatic on every daemon restart, so any
+    # change to BOT_COMMANDS_MANIFEST takes effect by simply restarting
+    # the gateway (which already happens after every code deploy).
+    # Best-effort: a network blip must NOT block the daemon from booting.
+    try:
+        from ..telegram.commands import register_bot_commands
+
+        register_bot_commands()
+    except Exception as e:
+        try:
+            log_event(
+                "supervisor.daemon_error",
+                f"register_bot_commands failed at boot: {e}",
+                agent="@daemon-supervisor",
+                paths=paths,
+            )
+        except Exception:
+            pass
+
     # so the watchdog fires on the first iteration. L2 (wave-4 review):
     # this is safe under the rewrite because the daemon no longer
     # flap-restarts; the 10s rate-limit marker inside
