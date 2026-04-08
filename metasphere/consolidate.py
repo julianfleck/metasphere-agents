@@ -90,9 +90,9 @@ def build_job() -> _sched.Job:
         cron_expr=JOB_CRON,
         tz="UTC",
         payload_kind="command",
-        payload_message="metasphere consolidate run",
-        command="metasphere consolidate run",
-        full_command="metasphere consolidate run",
+        payload_message="python3 -m metasphere.cli.main consolidate run",
+        command="python3 -m metasphere.cli.main consolidate run",
+        full_command="python3 -m metasphere.cli.main consolidate run",
     )
 
 
