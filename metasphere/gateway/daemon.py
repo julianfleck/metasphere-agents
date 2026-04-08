@@ -44,8 +44,15 @@ def _poll_once(timeout: int = 1) -> int:
                     )
                     reply = _dispatch_command(u.text, ctx)
                     if reply:
+                        # Commands may return either a bare str or a
+                        # ``Reply`` carrying parse_mode (the format module
+                        # emits HTML for bold-rich card output). Unwrap
+                        # so the rich variant doesn't get stringified
+                        # back to legacy plain-text by send_message.
                         try:
-                            _tg_send(u.chat_id, reply)
+                            text = getattr(reply, "text", reply)
+                            parse_mode = getattr(reply, "parse_mode", None)
+                            _tg_send(u.chat_id, text, parse_mode=parse_mode)
                         except Exception:
                             pass
                 except Exception:
