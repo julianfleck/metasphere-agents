@@ -1,0 +1,18 @@
+{
+  "schema": 2,
+  "name": "recurse",
+  "path": "/home/openclaw/Code/metasphere-agents/recurse",
+  "created": "2026-04-08T00:26:33Z",
+  "status": "active",
+  "goal": "recurse.cc \u2014 sense-making substrate built on RAGE; Julian's main project",
+  "repo": null,
+  "members": [
+    {
+      "id": "@julian",
+      "role": "owner",
+      "persistent": true
+    }
+  ],
+  "links": {},
+  "telegram_topic": null
+}
