@@ -37,7 +37,7 @@ def _ctx():
 
 def _print_inbox(show_all: bool) -> int:
     p, _agent = _ctx()
-    msgs = _msgs.collect_inbox(p.scope, p.repo)
+    msgs = _msgs.collect_inbox(p.scope, p.repo, view=True)
     unread = sum(1 for m in msgs if m.status == _msgs.STATUS_UNREAD)
     total = len(msgs)
     if total == 0:

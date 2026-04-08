@@ -255,7 +255,7 @@ def _parse_jsonl_loose(lines: Iterable[str]) -> list[dict]:
 
 
 def _render_messages(paths: Paths) -> str:
-    msgs = _msgs.collect_inbox(paths.scope, paths.repo)
+    msgs = _msgs.collect_inbox(paths.scope, paths.repo, view=True)
     unread = sum(1 for m in msgs if m.status == _msgs.STATUS_UNREAD)
     total = len(msgs)
     if total == 0:

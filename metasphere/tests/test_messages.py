@@ -229,6 +229,57 @@ def test_extract_mentions_unknown(tmp_paths):
     assert ms[0].name == "nobody"
 
 
+def test_view_marks_info_read_and_stamps_read_at(tmp_paths):
+    msg = m.send_message(
+        "@..", "!info", "fyi", "@child", paths=tmp_paths, wake=False
+    )
+    assert msg.status == m.STATUS_UNREAD
+    loaded = m.read_message(msg.path, view=True)
+    assert loaded.status == m.STATUS_READ
+    assert loaded.read_at != ""
+    # Persisted
+    reloaded = m.read_message(msg.path)
+    assert reloaded.status == m.STATUS_READ
+    assert reloaded.read_at == loaded.read_at
+
+
+def test_view_does_not_mark_task_messages_read(tmp_paths):
+    msg = m.send_message(
+        "@..", "!task", "do the thing", "@child", paths=tmp_paths, wake=False
+    )
+    loaded = m.read_message(msg.path, view=True)
+    assert loaded.status == m.STATUS_UNREAD
+    assert loaded.read_at == ""
+
+
+def test_view_does_not_mark_query_messages_read(tmp_paths):
+    msg = m.send_message(
+        "@..", "!query", "ping?", "@child", paths=tmp_paths, wake=False
+    )
+    loaded = m.read_message(msg.path, view=True)
+    assert loaded.status == m.STATUS_UNREAD
+
+
+def test_view_no_op_without_flag(tmp_paths):
+    msg = m.send_message(
+        "@..", "!info", "fyi", "@child", paths=tmp_paths, wake=False
+    )
+    loaded = m.read_message(msg.path)
+    assert loaded.status == m.STATUS_UNREAD
+    assert loaded.read_at == ""
+
+
+def test_collect_inbox_view_marks_nonsacred_read(tmp_paths):
+    m.send_message("@.", "!info", "a", "@c", paths=tmp_paths, wake=False)
+    m.send_message("@.", "!task", "b", "@c", paths=tmp_paths, wake=False)
+    m.send_message("@.", "!done", "c", "@c", paths=tmp_paths, wake=False)
+    msgs = m.collect_inbox(tmp_paths.scope, tmp_paths.repo, view=True)
+    by_label = {mm.label: mm for mm in msgs}
+    assert by_label["!info"].status == m.STATUS_READ
+    assert by_label["!done"].status == m.STATUS_READ
+    assert by_label["!task"].status == m.STATUS_UNREAD
+
+
 def test_reply_marks_original_and_sets_reply_to(tmp_paths):
     # Original message lands in the scope inbox, as if a peer sent it.
     orig = m.send_message(

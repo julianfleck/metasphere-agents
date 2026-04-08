@@ -57,7 +57,14 @@ _FIELD_ORDER = (
     "replied_at",
     "completed_at",
     "reply_to",
+    "last_pinged_at",
+    "ping_count",
 )
+
+# Labels whose messages must NEVER be auto-mark-read on view, and must
+# never be auto-archived. These represent work-to-do that requires an
+# explicit human/agent action.
+SACRED_LABELS = frozenset({"!task", "!query"})
 
 
 def _utcnow() -> str:
@@ -77,6 +84,8 @@ class Message:
     replied_at: str = ""
     completed_at: str = ""
     reply_to: str = ""
+    last_pinged_at: str = ""
+    ping_count: int = 0
     body: str = ""
     path: Path | None = None  # runtime only
 
@@ -95,6 +104,8 @@ class Message:
             "replied_at": self.replied_at,
             "completed_at": self.completed_at,
             "reply_to": self.reply_to,
+            "last_pinged_at": self.last_pinged_at,
+            "ping_count": self.ping_count,
         }
         body = self.body if self.body.startswith("\n") else "\n" + self.body
         return Frontmatter(meta=meta, body=body)
@@ -117,6 +128,8 @@ class Message:
             replied_at=s("replied_at"),
             completed_at=s("completed_at"),
             reply_to=s("reply_to"),
+            last_pinged_at=s("last_pinged_at"),
+            ping_count=int(m.get("ping_count") or 0),
             # Preserve trailing whitespace/blank lines a sender deliberately
             # included; only normalise the leading newline that
             # ``serialize_frontmatter`` adds.
@@ -130,9 +143,36 @@ class Message:
 # ---------------------------------------------------------------------------
 
 
-def read_message(path: Path) -> Message:
+def read_message(path: Path, *, view: bool = False) -> Message:
+    """Load a message from disk.
+
+    When ``view=True``, this is a *view context* (e.g. inbox listing,
+    per-turn context injection). Unread messages that are not labelled
+    with a sacred label (``!task``/``!query``) get promoted to
+    ``read`` and stamped with ``read_at`` in-place. This closes the
+    "messages pile up forever as unread" feedback loop — every time
+    the inbox is rendered, non-action messages get marked read, so
+    the next tick doesn't re-show them.
+
+    Sacred labels are preserved as unread because someone still needs
+    to act on them; auto-marking them read would lose the signal.
+    """
     path = Path(path)
-    return Message.from_frontmatter(read_frontmatter_file(path), path=path)
+    msg = Message.from_frontmatter(read_frontmatter_file(path), path=path)
+    if view and msg.status == STATUS_UNREAD and msg.label not in SACRED_LABELS:
+        try:
+            with file_lock(_lock_path(path)):
+                # Re-read inside the lock to avoid racing with another writer.
+                fresh = Message.from_frontmatter(read_frontmatter_file(path), path=path)
+                if fresh.status == STATUS_UNREAD and fresh.label not in SACRED_LABELS:
+                    fresh.status = STATUS_READ
+                    fresh.read_at = _utcnow()
+                    write_frontmatter_file(path, fresh.to_frontmatter())
+                    msg = fresh
+        except Exception:
+            # View-side mark-read is best-effort; never fail a read.
+            pass
+    return msg
 
 
 def _lock_path(path: Path) -> Path:
@@ -171,7 +211,7 @@ def update_status(msg_path: Path, field: str, value: str) -> Message:
 # ---------------------------------------------------------------------------
 
 
-def collect_inbox(scope: Path, repo_root: Path) -> list[Message]:
+def collect_inbox(scope: Path, repo_root: Path, *, view: bool = False) -> list[Message]:
     """Walk ``scope`` and every parent up to ``repo_root``, returning all
     messages found in their ``.messages/inbox`` directories. Newest first
     (sorted by filename descending, matching the bash version)."""
@@ -190,7 +230,7 @@ def collect_inbox(scope: Path, repo_root: Path) -> list[Message]:
     out: list[Message] = []
     for p in paths:
         try:
-            out.append(read_message(p))
+            out.append(read_message(p, view=view))
         except Exception:
             continue
     return out
