@@ -108,6 +108,7 @@ created: $timestamp
 created_by: $AGENT
 assigned_to:
 started_at:
+updated_at: $timestamp
 completed_at:
 ---
 
@@ -148,10 +149,29 @@ update_task_field() {
     local field="$2"
     local value="$3"
 
-    if [[ "$(uname)" == "Darwin" ]]; then
-        sed -i '' "s/^${field}:.*/${field}: ${value}/" "$file"
+    # Replace existing field if present, otherwise insert into the
+    # frontmatter before the closing `---`. The original implementation
+    # silently no-op'd when the field was missing (e.g. updated_at on
+    # tasks created before that field existed), which made every
+    # bump-updated_at call invisible.
+    if grep -q "^${field}:" "$file" 2>/dev/null; then
+        if [[ "$(uname)" == "Darwin" ]]; then
+            sed -i '' "s/^${field}:.*/${field}: ${value}/" "$file"
+        else
+            sed -i "s/^${field}:.*/${field}: ${value}/" "$file"
+        fi
     else
-        sed -i "s/^${field}:.*/${field}: ${value}/" "$file"
+        # Insert before the SECOND `---` (closing frontmatter delimiter).
+        # awk handles this cleanly across BSD/GNU.
+        local tmp; tmp=$(mktemp)
+        awk -v field="$field" -v value="$value" '
+            BEGIN { fm=0; inserted=0 }
+            /^---$/ {
+                fm++
+                if (fm == 2 && !inserted) { print field ": " value; inserted=1 }
+            }
+            { print }
+        ' "$file" > "$tmp" && mv "$tmp" "$file"
     fi
 }
 
@@ -186,10 +206,19 @@ collect_tasks() {
             done
         fi
 
-        if [[ "$filter" != "active" && -d "$tasks_dir/completed" ]]; then
-            shopt -s nullglob; for task in "$tasks_dir/completed"/*.md; do
-                [[ -f "$task" ]] && tasks+=("$task")
-            done
+        if [[ "$filter" != "active" ]]; then
+            # Legacy completed/ for tasks closed before the daily-archive
+            # change. New completions land in archive/YYYY-MM-DD/.
+            if [[ -d "$tasks_dir/completed" ]]; then
+                shopt -s nullglob; for task in "$tasks_dir/completed"/*.md; do
+                    [[ -f "$task" ]] && tasks+=("$task")
+                done
+            fi
+            if [[ -d "$tasks_dir/archive" ]]; then
+                shopt -s nullglob; for task in "$tasks_dir/archive"/*/*.md; do
+                    [[ -f "$task" ]] && tasks+=("$task")
+                done
+            fi
         fi
 
         [[ "$current" == "$REPO_ROOT" ]] && break
@@ -205,12 +234,17 @@ find_task() {
 
     # First try exact path match for hierarchical IDs
     if [[ "$task_id" == */* ]]; then
-        # Try finding as a direct path under .tasks/active or .tasks/completed
-        local found=$(find "$REPO_ROOT" -path "*/.tasks/active/${task_id}.md" -o -path "*/.tasks/completed/${task_id}.md" 2>/dev/null | head -1)
+        # Try finding as a direct path under active/, completed/, or archive/YYYY-MM-DD/
+        local found=$(find "$REPO_ROOT" \
+            \( -path "*/.tasks/active/${task_id}.md" \
+            -o -path "*/.tasks/completed/${task_id}.md" \
+            -o -path "*/.tasks/archive/*/${task_id}.md" \) 2>/dev/null | head -1)
         [[ -n "$found" ]] && echo "$found" && return
     fi
 
-    # Fall back to searching anywhere in .tasks directories
+    # Fall back to searching anywhere in .tasks directories. The `*`
+    # wildcard spans path separators in find -path, so this covers
+    # active/, completed/, AND archive/YYYY-MM-DD/.
     find "$REPO_ROOT" -path "*/.tasks/*/${task_id}.md" 2>/dev/null | head -1
 }
 
@@ -235,6 +269,8 @@ cmd_list() {
         local status=$(task_field "$task" status)
         local assigned=$(task_field "$task" assigned_to)
         local task_scope=$(task_field "$task" scope)
+        local created=$(task_field "$task" created)
+        local updated=$(task_field "$task" updated_at)
 
         # Priority coloring
         local priority_display="$priority"
@@ -256,8 +292,23 @@ cmd_list() {
         local assigned_display=""
         [[ -n "$assigned" ]] && assigned_display=" → $assigned"
 
+        # Lifecycle line: created date + last updated (if different).
+        # Trimmed to YYYY-MM-DD for compactness; user can `tasks show <id>`
+        # for the full ISO timestamps.
+        local lifecycle=""
+        if [[ -n "$created" ]]; then
+            lifecycle="created ${created:0:10}"
+            if [[ -n "$updated" && "${updated:0:10}" != "${created:0:10}" ]]; then
+                lifecycle="$lifecycle, updated ${updated:0:10}"
+            fi
+        fi
+
         echo -e "$status_icon $priority_display $title ${DIM}[$id]${NC}$assigned_display"
-        echo -e "  ${DIM}$task_scope | $status${NC}"
+        if [[ -n "$lifecycle" ]]; then
+            echo -e "  ${DIM}$task_scope | $status | $lifecycle${NC}"
+        else
+            echo -e "  ${DIM}$task_scope | $status${NC}"
+        fi
     done
 }
 
@@ -350,9 +401,11 @@ cmd_start() {
         exit 1
     fi
 
+    local now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     update_task_field "$task_file" "status" "in-progress"
     update_task_field "$task_file" "assigned_to" "$AGENT"
-    update_task_field "$task_file" "started_at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    update_task_field "$task_file" "started_at" "$now"
+    update_task_field "$task_file" "updated_at" "$now"
     append_update "$task_file" "Started task"
 
     # Log event
@@ -380,6 +433,7 @@ cmd_update() {
         exit 1
     fi
 
+    update_task_field "$task_file" "updated_at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     append_update "$task_file" "$note"
 
     echo "Updated: $task_id"
@@ -393,6 +447,7 @@ cmd_done() {
 
     if [[ -z "$task_id" ]]; then
         echo "Usage: tasks done <task-id> [\"completion summary\"]"
+        echo "       tasks archive <task-id> [\"completion summary\"]   (alias)"
         exit 1
     fi
 
@@ -403,22 +458,29 @@ cmd_done() {
         exit 1
     fi
 
+    # Archive into .tasks/archive/YYYY-MM-DD/ so the trail is preserved
+    # but stale tasks don't pollute `tasks list`. The legacy completed/
+    # directory is left alone (older completions live there from before
+    # this change); collect_tasks already includes both for `list completed`.
     local tasks_dir=$(dirname "$(dirname "$task_file")")
-    local completed_dir="$tasks_dir/completed"
-    mkdir -p "$completed_dir"
+    local today=$(date -u +%Y-%m-%d)
+    local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local archive_dir="$tasks_dir/archive/$today"
+    mkdir -p "$archive_dir"
 
     update_task_field "$task_file" "status" "completed"
-    update_task_field "$task_file" "completed_at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    update_task_field "$task_file" "completed_at" "$timestamp"
+    update_task_field "$task_file" "updated_at" "$timestamp"
 
     [[ -n "$summary" ]] && append_update "$task_file" "Completed: $summary"
 
-    mv "$task_file" "$completed_dir/"
+    mv "$task_file" "$archive_dir/"
 
     # Log event
     local script_dir="$(cd "$(dirname "$0")" && pwd)"
     "$script_dir/metasphere-events" log task.complete "Completed $task_id" --agent "$AGENT" --meta task_id="$task_id" 2>/dev/null || true
 
-    echo "Completed: $task_id"
+    echo "Archived: $task_id → $(rel_path "$archive_dir/$(basename "$task_file")")"
     [[ -n "$summary" ]] && echo "Summary: $summary"
 }
 
@@ -480,7 +542,7 @@ case "${1:-}" in
         shift
         cmd_update "$@"
         ;;
-    done)
+    done|archive)
         shift
         cmd_done "$@"
         ;;
@@ -501,7 +563,8 @@ Usage:
   tasks new "title" [!priority] [--name] Create new task
   tasks start <task-id>                  Start working on task
   tasks update <task-id> "note"          Add update to task
-  tasks done <task-id> "summary"         Complete task
+  tasks done <task-id> "summary"         Complete task → archive/YYYY-MM-DD/
+  tasks archive <task-id> "summary"      Alias for `done` (preferred)
   tasks show <task-id>                   Show full task details
   tasks tree                             Show task tree across scopes
 
