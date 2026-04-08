@@ -165,28 +165,32 @@ poll_once() {
             # Index to CAM
             index_to_cam "$message"
 
-            # Process commands (delegate to telegram script)
-            if [[ "$text" == /* ]]; then
-                "$SCRIPT_DIR/metasphere-telegram" process "$chat_id" "$text" 2>/dev/null &
-            else
-                # Non-command text → forward to orchestrator session via tmux.
-                # The gateway used to do this, but the gateway service is
-                # disabled (crashes on startup). Without this injection,
-                # incoming user messages would only surface on the next
-                # heartbeat tick (up to 5 min latency). Inject directly.
-                inject_to_orchestrator "@$from" "$text"
+            # Process commands (delegate to telegram script).
+            #
+            # When METASPHERE_GATEWAY_INVOKED is set, the calling gateway
+            # daemon is already going to dispatch + inject + react for
+            # this same update — we must NOT do it a second time, or every
+            # slash command produces two replies and every text message
+            # gets two 👀 reactions. The gateway daemon shares our offset
+            # file and re-fetches the same update because we're called
+            # BEFORE it bumps the offset; the env flag is the cleanest
+            # guard without restructuring the offset bookkeeping.
+            if [[ -z "$METASPHERE_GATEWAY_INVOKED" ]]; then
+                if [[ "$text" == /* ]]; then
+                    "$SCRIPT_DIR/metasphere-telegram" process "$chat_id" "$text" 2>/dev/null &
+                else
+                    # Non-command text → forward to orchestrator session via tmux.
+                    inject_to_orchestrator "@$from" "$text"
 
-                # Acknowledge receipt with an emoji reaction on the user's
-                # message. Replaces the noisy "Routed to @orchestrator"
-                # text reply the bot used to send. The actual reply will
-                # come when the orchestrator finishes its turn.
-                local msg_id_for_react
-                msg_id_for_react=$(echo "$message" | jq -r '.message_id // empty')
-                if [[ -n "$msg_id_for_react" ]]; then
-                    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setMessageReaction" \
-                        -d "chat_id=$chat_id" \
-                        -d "message_id=$msg_id_for_react" \
-                        --data-urlencode 'reaction=[{"type":"emoji","emoji":"👀"}]' > /dev/null 2>&1 || true
+                    # Acknowledge receipt with an emoji reaction.
+                    local msg_id_for_react
+                    msg_id_for_react=$(echo "$message" | jq -r '.message_id // empty')
+                    if [[ -n "$msg_id_for_react" ]]; then
+                        curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setMessageReaction" \
+                            -d "chat_id=$chat_id" \
+                            -d "message_id=$msg_id_for_react" \
+                            --data-urlencode 'reaction=[{"type":"emoji","emoji":"👀"}]' > /dev/null 2>&1 || true
+                    fi
                 fi
             fi
         fi

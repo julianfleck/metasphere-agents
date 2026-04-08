@@ -520,8 +520,12 @@ poll_telegram() {
             echo "$chat_id" > "$METASPHERE_DIR/config/telegram_chat_id"
             TELEGRAM_CHAT_ID="$chat_id"
 
-            # Archive message
-            "$SCRIPT_DIR/metasphere-telegram-stream" once 2>/dev/null || true
+            # Archive message. Set METASPHERE_GATEWAY_INVOKED so the
+            # stream poller does archiving only — without it, stream
+            # would re-fetch the same update (we share the offset file)
+            # and dispatch the slash command a second time, producing
+            # duplicate replies for every /command.
+            METASPHERE_GATEWAY_INVOKED=1 "$SCRIPT_DIR/metasphere-telegram-stream" once 2>/dev/null || true
 
             # Process text messages
             if [[ -n "$text" && "$text" != "null" ]]; then
