@@ -2,15 +2,15 @@
 id: metasphere-chat-attach-tmux-to-orchestrator-session-20260406
 title: "metasphere chat: attach tmux to orchestrator session"
 priority: !normal
-status: pending
+status: completed
 scope: /
 project: default
 created: 2026-04-07T03:51:00Z
 created_by: @orchestrator
 assigned_to: 
 started_at: 
-updated_at: 2026-04-08T13:44:11Z
-completed_at: 
+updated_at: 2026-04-08T14:45:25Z
+completed_at: 2026-04-08T14:45:25Z
 last_pinged_at: 2026-04-08T12:02:21Z
 ping_count: 2
 ---
@@ -26,6 +26,7 @@ ping_count: 2
 - [ ] Criteria 2
 
 ## Updates
+- 2026-04-08T14:45:25Z Completed: metasphere chat now attaches to the metasphere-orchestrator tmux session; 'metasphere chat ro' attaches read-only; missing-session falls back to ensure_session
 
 - 2026-04-07T03:51:00Z [@orchestrator] Created task
 

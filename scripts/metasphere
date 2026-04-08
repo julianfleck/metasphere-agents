@@ -636,6 +636,24 @@ case "${1:-}" in
         # gateway-style respawn loop. The agent must have MISSION.md.
         exec "$SCRIPT_DIR/metasphere-wake" "$@"
         ;;
+    chat)
+        # Attach the operator's terminal to the live orchestrator REPL
+        # tmux session. Detach with the standard tmux prefix-d (Ctrl-b d).
+        # If the session does not exist, fall back to ensure_session via
+        # the daemon entry point so the user is never left staring at an
+        # error. Read-only attach is `metasphere chat ro`.
+        shift
+        session="metasphere-orchestrator"
+        if ! tmux has-session -t "$session" 2>/dev/null; then
+            warn "No live $session session — starting one via the gateway."
+            python3 -c "from metasphere.gateway.session import ensure_session; from metasphere.paths import resolve; ensure_session(resolve())" 2>/dev/null || \
+                warn "ensure_session failed; check 'metasphere status'"
+        fi
+        if [[ "${1:-}" == "ro" || "${1:-}" == "--read-only" ]]; then
+            exec tmux attach -r -t "$session"
+        fi
+        exec tmux attach -t "$session"
+        ;;
     agent|ag)
         shift
         # `metasphere agent wake @x` and `metasphere agent spawn ...`
