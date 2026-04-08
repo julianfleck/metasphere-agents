@@ -227,39 +227,6 @@ def cmd_project(args: str, ctx: Context) -> str:
     return _run_project_cli(sub_argv)
 
 
-def cmd_project_list(args: str, ctx: Context) -> str:
-    return _run_project_cli(["list"])
-
-
-def cmd_project_show(args: str, ctx: Context) -> str:
-    import shlex
-    extra = shlex.split(args) if args.strip() else []
-    return _run_project_cli(["show", *extra])
-
-
-def cmd_project_new(args: str, ctx: Context) -> str:
-    import shlex
-    extra = shlex.split(args) if args.strip() else []
-    if not extra:
-        return "Usage: /project_new <name> [--goal \"...\"] [--member @x:role]"
-    return _run_project_cli(["new", *extra])
-
-
-def cmd_project_wake(args: str, ctx: Context) -> str:
-    import shlex
-    extra = shlex.split(args) if args.strip() else []
-    return _run_project_cli(["wake", *extra])
-
-
-def cmd_project_chat(args: str, ctx: Context) -> str:
-    """`/project_chat <name> message...` — name is first token, rest is message."""
-    parts = args.strip().split(None, 1)
-    if len(parts) < 2:
-        return "Usage: /project_chat <name> <message>"
-    name, message = parts
-    return _run_project_cli(["chat", name, message])
-
-
 def cmd_spot(args: str, ctx: Context) -> str:
     return _run(
         [
@@ -313,11 +280,6 @@ COMMANDS: Dict[str, Callable[[str, Context], str]] = {
     "spot": cmd_spot,
     "project": cmd_project,
     "p": cmd_project,
-    "project_list": cmd_project_list,
-    "project_show": cmd_project_show,
-    "project_new": cmd_project_new,
-    "project_wake": cmd_project_wake,
-    "project_chat": cmd_project_chat,
     "session": cmd_session,
 }
 
@@ -331,12 +293,7 @@ BOT_COMMANDS_MANIFEST: list[tuple[str, str]] = [
     ("messages", "Show inbox messages"),
     ("agents", "List registered agents"),
     ("send", "Send: /send @agent !label message"),
-    ("project", "Project commands: /project [sub args]"),
-    ("project_list", "List all projects"),
-    ("project_show", "Show project details: /project_show [name]"),
-    ("project_new", "Create a project: /project_new <name> [opts]"),
-    ("project_wake", "Wake persistent project members"),
-    ("project_chat", "Post to project topic: /project_chat <name> msg"),
+    ("project", "Projects: /project [list|show|new|wake|chat ...]"),
     ("cam", "Search CAM memory: /cam <query>"),
     ("groups", "Telegram groups admin"),
     ("link", "Copy current topic link"),
