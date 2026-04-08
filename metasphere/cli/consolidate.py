@@ -29,6 +29,7 @@ def _cmd_run(argv: list[str]) -> int:
     dry_run = False
     since = _con.DEFAULT_SINCE
     stale_window = _con.STALE_WINDOW_MINUTES_DEFAULT
+    info_archive_after: int | None = None
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -44,19 +45,33 @@ def _cmd_run(argv: list[str]) -> int:
             stale_window = int(argv[i])
         elif a.startswith("--stale-window="):
             stale_window = int(a.split("=", 1)[1])
+        elif a == "--info-archive-after":
+            i += 1
+            info_archive_after = int(argv[i])
+        elif a.startswith("--info-archive-after="):
+            info_archive_after = int(a.split("=", 1)[1])
         else:
             print(f"unknown arg: {a}", file=sys.stderr)
             return 2
         i += 1
 
     paths = _paths.resolve()
-    report = _con.run_pass(
-        repo_root=paths.repo,
-        since=since,
-        stale_window_minutes=stale_window,
-        dry_run=dry_run,
-        paths=paths,
-    )
+    # The info_archive_after override is threaded through a module-level
+    # default so the classifier can pick it up without changing the
+    # run_pass signature. It's reset after the call for test isolation.
+    prev_info = _con.INFO_AUTO_ARCHIVE_AFTER_MINUTES
+    if info_archive_after is not None:
+        _con.INFO_AUTO_ARCHIVE_AFTER_MINUTES = info_archive_after
+    try:
+        report = _con.run_pass(
+            repo_root=paths.repo,
+            since=since,
+            stale_window_minutes=stale_window,
+            dry_run=dry_run,
+            paths=paths,
+        )
+    finally:
+        _con.INFO_AUTO_ARCHIVE_AFTER_MINUTES = prev_info
 
     mode = "dry-run" if dry_run else "live"
     print(

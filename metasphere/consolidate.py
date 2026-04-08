@@ -545,11 +545,13 @@ def classify_message(
     *,
     now: _dt.datetime | None = None,
     stale_window_minutes: int = STALE_WINDOW_MINUTES_DEFAULT,
-    info_archive_after_minutes: int = INFO_AUTO_ARCHIVE_AFTER_MINUTES,
+    info_archive_after_minutes: int | None = None,
 ) -> str:
     """Return one of the MSG_VERDICT_* constants for ``msg``."""
     now = now or _utcnow()
     window = _dt.timedelta(minutes=stale_window_minutes)
+    if info_archive_after_minutes is None:
+        info_archive_after_minutes = INFO_AUTO_ARCHIVE_AFTER_MINUTES
 
     # Sacred labels: never touched by the consolidator beyond reporting.
     if msg.label in _messages.SACRED_LABELS:
