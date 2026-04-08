@@ -39,6 +39,21 @@ class Context:
     thread_id: Optional[int] = None
 
 
+@dataclass
+class Reply:
+    """Rich command reply.
+
+    A command may return either a bare ``str`` (sent as plain text) or a
+    ``Reply`` carrying an explicit ``parse_mode``. The dispatcher in
+    ``cli/telegram.py`` knows how to unwrap both shapes. ``parse_mode='HTML'``
+    is the only mode the format module currently emits — content is
+    pre-escaped via ``metasphere.format.escape_html``.
+    """
+
+    text: str
+    parse_mode: Optional[str] = None
+
+
 def _run(cmd: list[str], env: Optional[dict] = None, timeout: int = 15) -> str:
     """Run a subprocess and return combined output, truncated."""
     try:
@@ -90,11 +105,14 @@ def cmd_status(args: str, ctx: Context) -> str:
     return _run([os.path.join(SCRIPTS_DIR, "metasphere"), "status"])
 
 
-def cmd_tasks(args: str, ctx: Context) -> str:
-    """Dispatch to ``metasphere.cli.tasks`` with plain-mode output.
+def cmd_tasks(args: str, ctx: Context) -> "Reply | str":
+    """Dispatch to ``metasphere.cli.tasks`` and render with HTML cards.
 
-    Telegram renders plain ASCII cleanly but hates ANSI escapes and
-    unicode box drawing, so we force METASPHERE_PLAIN=1 around the call.
+    Sets ``METASPHERE_HTML=1`` so the format module wraps titles/owners
+    in ``<b>`` tags, and returns a :class:`Reply` carrying
+    ``parse_mode='HTML'`` so the dispatcher sends with the right mode.
+    Telegram cards on a phone need bold for skimming; HTML is the only
+    parse_mode where escaping is sane (3 chars, not 15).
     """
     import shlex
     import contextlib
@@ -103,7 +121,9 @@ def cmd_tasks(args: str, ctx: Context) -> str:
     try:
         from metasphere.cli import tasks as cli_tasks  # type: ignore
         prev_plain = os.environ.get("METASPHERE_PLAIN")
+        prev_html = os.environ.get("METASPHERE_HTML")
         os.environ["METASPHERE_PLAIN"] = "1"
+        os.environ["METASPHERE_HTML"] = "1"
         try:
             buf = _io.StringIO()
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
@@ -114,12 +134,16 @@ def cmd_tasks(args: str, ctx: Context) -> str:
             out = buf.getvalue().strip()
             if rc != 0 and not out:
                 out = f"(exit {rc})"
-            return out or "(no output)"
+            return Reply(out or "(no output)", parse_mode="HTML")
         finally:
             if prev_plain is None:
                 os.environ.pop("METASPHERE_PLAIN", None)
             else:
                 os.environ["METASPHERE_PLAIN"] = prev_plain
+            if prev_html is None:
+                os.environ.pop("METASPHERE_HTML", None)
+            else:
+                os.environ["METASPHERE_HTML"] = prev_html
     except Exception:
         return _run([os.path.join(SCRIPTS_DIR, "tasks")])
 
@@ -275,7 +299,9 @@ def cmd_schedule(args: str, ctx: Context) -> str:
         import io as _io
 
         prev_plain = os.environ.get("METASPHERE_PLAIN")
+        prev_html = os.environ.get("METASPHERE_HTML")
         os.environ["METASPHERE_PLAIN"] = "1"
+        os.environ["METASPHERE_HTML"] = "1"
         try:
             buf = _io.StringIO()
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
@@ -288,10 +314,14 @@ def cmd_schedule(args: str, ctx: Context) -> str:
                 os.environ.pop("METASPHERE_PLAIN", None)
             else:
                 os.environ["METASPHERE_PLAIN"] = prev_plain
+            if prev_html is None:
+                os.environ.pop("METASPHERE_HTML", None)
+            else:
+                os.environ["METASPHERE_HTML"] = prev_html
         out = buf.getvalue().strip()
         if rc != 0 and not out:
             out = f"(exit {rc})"
-        return out or "(no output)"
+        return Reply(out or "(no output)", parse_mode="HTML")
     except Exception:
         # Fallback to the entry-point binary
         return _run(
@@ -399,8 +429,14 @@ def register_bot_commands() -> dict:
     return _api.call("setMyCommands", commands=_json.dumps(payload))
 
 
-def dispatch(text: str, ctx: Context) -> Optional[str]:
-    """Dispatch a slash command. Returns reply text, or None if not a command."""
+def dispatch(text: str, ctx: Context) -> "Reply | str | None":
+    """Dispatch a slash command.
+
+    Returns one of:
+      * ``None`` — not a slash command
+      * ``str`` — plain-text reply
+      * :class:`Reply` — text + parse_mode (e.g. ``'HTML'`` for /tasks)
+    """
     if not text.startswith("/"):
         return None
     body = text[1:]

@@ -119,6 +119,20 @@ def _http_post(url: str, data: dict, timeout: float = DEFAULT_TIMEOUT) -> dict:
         raise TelegramAPIError("http", f"non-JSON response: {payload[:200]}", {}) from e
 
 
+def escape_html(s: str) -> str:
+    """Escape ``& < >`` for ``parse_mode='HTML'`` sendMessage calls.
+
+    Telegram's HTML parser only requires escaping these three characters in
+    text content (and inside <b>/<i>/<a>). Quotes are left alone so they
+    read naturally. Mirrors :func:`metasphere.format.escape_html`; the helper
+    is duplicated here so callers that don't care about the format module
+    don't have to import it.
+    """
+    if not s:
+        return ""
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def call(method: str, **params: Any) -> dict:
     """Low-level call to a Telegram bot method. Raises on ok: false."""
     cfg = _config()

@@ -65,7 +65,15 @@ def _handle_update(u: poller.Update) -> None:
     if u.text.startswith("/"):
         reply = commands.dispatch(u.text, ctx)
         if reply:
-            api.send_message(u.chat_id, reply, message_thread_id=u.thread_id)
+            if isinstance(reply, commands.Reply):
+                api.send_message(
+                    u.chat_id,
+                    reply.text,
+                    parse_mode=reply.parse_mode,
+                    message_thread_id=u.thread_id,
+                )
+            else:
+                api.send_message(u.chat_id, reply, message_thread_id=u.thread_id)
     else:
         # Inject into orchestrator tmux + acknowledge with reaction
         inject.submit_to_tmux(f"@{u.from_username}", u.text)

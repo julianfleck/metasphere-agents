@@ -201,12 +201,23 @@ def _task_card(task, *, html: bool) -> str:
     return "\n".join(lines)
 
 
-def format_task_table(tasks: Sequence, *, html: bool = False) -> str:
+def _resolve_html(html):
+    if html is None:
+        return bool(os.environ.get("METASPHERE_HTML"))
+    return bool(html)
+
+
+def format_task_table(tasks: Sequence, *, html: bool | None = None) -> str:
     """Render a list of tasks as mobile-first cards.
 
     Name kept (not ``format_task_cards``) so existing call sites don't churn.
     The shape it returns is a card stack, not a table.
+
+    ``html``: if ``None`` (default), inferred from ``METASPHERE_HTML`` env
+    var; the telegram dispatch path sets that so the captured stdout of the
+    CLI carries HTML markup. CLI users get plain text.
     """
+    html = _resolve_html(html)
     header = _b("Tasks", html)
     if not tasks:
         return f"{header}\n{RULE}\n(no tasks)"
@@ -237,8 +248,9 @@ def _job_card(job, *, html: bool) -> str:
     return "\n".join(lines)
 
 
-def format_schedule_table(jobs: Sequence, *, html: bool = False) -> str:
+def format_schedule_table(jobs: Sequence, *, html: bool | None = None) -> str:
     """Render a list of cron jobs as mobile-first cards."""
+    html = _resolve_html(html)
     header = _b("Schedule", html)
     if not jobs:
         return f"{header}\n{RULE}\n(no jobs)"

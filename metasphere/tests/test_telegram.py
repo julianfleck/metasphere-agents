@@ -92,6 +92,19 @@ def test_send_message_empty_text_rejected(fake_post):
         api.send_message(1, "")
 
 
+def test_send_message_html_parse_mode(fake_post):
+    api.send_message(123, "<b>hi</b>", parse_mode="HTML")
+    assert fake_post.calls[0]["data"]["parse_mode"] == "HTML"
+    assert fake_post.calls[0]["data"]["text"] == "<b>hi</b>"
+
+
+def test_escape_html_round_trip():
+    assert api.escape_html("a < b > c & d") == "a &lt; b &gt; c &amp; d"
+    assert api.escape_html("") == ""
+    # Ampersand first to avoid double escape
+    assert api.escape_html("&lt;") == "&amp;lt;"
+
+
 # --- Offset persistence --------------------------------------------------
 
 def test_offset_round_trip(tmp_path):
