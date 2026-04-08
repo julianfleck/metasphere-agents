@@ -32,19 +32,11 @@ def _poll_once(timeout: int = 1) -> int:
     updates = poller.get_updates(offset=offset, timeout=timeout)
     for u in updates:
         if u.text and u.chat_id is not None:
-            # Acknowledge receipt with an eye reaction so the user sees
-            # the message has been picked up before the agent's response
-            # arrives. Regression-fix: the legacy bash poller did this
-            # and it got dropped in the python cutover. Best-effort: we
-            # never let a reaction failure block injection.
-            if u.message_id is not None:
-                try:
-                    _tg_react(u.chat_id, u.message_id, "👀")
-                except Exception:
-                    pass
             if u.text.startswith("/"):
                 # Route slash commands through the command dispatcher (M5,
                 # wave-4 review). Previously these were silently dropped.
+                # No 👀 reaction here: slash commands bypass the orchestrator
+                # loop, replies are immediate, and the reaction is just noise.
                 try:
                     ctx = _CmdContext(
                         chat_id=u.chat_id,
@@ -59,6 +51,17 @@ def _poll_once(timeout: int = 1) -> int:
                 except Exception:
                     pass
             else:
+                # Orchestrator-routed message: acknowledge receipt with an
+                # eye reaction so the user sees the message has been picked
+                # up before the agent's response arrives. Regression-fix:
+                # the legacy bash poller did this and it got dropped in the
+                # python cutover. Best-effort: never let a reaction failure
+                # block injection.
+                if u.message_id is not None:
+                    try:
+                        _tg_react(u.chat_id, u.message_id, "👀")
+                    except Exception:
+                        pass
                 submit_to_tmux(f"@{u.from_username or 'user'}", u.text)
         poller.save_offset(u.update_id + 1)
     return len(updates)
