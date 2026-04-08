@@ -42,23 +42,52 @@ def test_sched_status_emoji():
     assert fmt.sched_status_emoji(False) == "🔴"
 
 
-def test_format_task_table_contains_headers_and_rows(tmp_paths, monkeypatch):
+def test_format_task_cards_contains_fields(tmp_paths, monkeypatch):
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@alice")
     a = _tasks.create_task("alpha", "!high", tmp_paths.scope, tmp_paths.repo,
                            project="recurse", assigned_to="@alice")
     b = _tasks.create_task("beta", "!normal", tmp_paths.scope, tmp_paths.repo,
                            project="default", assigned_to="@bob")
-    table = fmt.format_task_table([a, b])
-    assert "TITLE" in table and "OWNER" in table and "PROJECT" in table
-    assert "alpha" in table and "beta" in table
-    assert "@alice" in table and "@bob" in table
-    assert "recurse" in table
-    assert "🔵" in table  # both pending
-    # header rule present
-    assert "-+-" in table
+    out = fmt.format_task_table([a, b])
+    # Header
+    assert out.splitlines()[0] == "Tasks"
+    # Em-dash rule, not pipe-table
+    assert "—" in out
+    assert "|" not in out
+    assert "alpha" in out and "beta" in out
+    assert "@alice" in out and "@bob" in out
+    assert "recurse" in out
+    assert "🔵" in out  # both pending
+    # Card metadata labels
+    assert "Created:" in out and "Owner:" in out and "Project:" in out
+    assert "Priority:" in out and "Status:" in out
+    # No bold tags in plain mode
+    assert "<b>" not in out
 
 
-def test_format_schedule_table():
+def test_format_task_cards_html_mode(tmp_paths, monkeypatch):
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@alice")
+    a = _tasks.create_task("alpha & beta", "!high", tmp_paths.scope, tmp_paths.repo,
+                           project="recurse", assigned_to="@alice")
+    out = fmt.format_task_table([a], html=True)
+    assert "<b>Tasks</b>" in out
+    assert "<b>alpha &amp; beta</b>" in out
+    assert "<b>@alice</b>" in out
+    assert "<b>recurse</b>" in out
+
+
+def test_format_task_cards_title_truncation(tmp_paths, monkeypatch):
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@a")
+    long_title = "x" * 80
+    t = _tasks.create_task(long_title, "!normal", tmp_paths.scope, tmp_paths.repo,
+                           project="p", assigned_to="@a")
+    out = fmt.format_task_table([t])
+    assert "…" in out
+    # truncated to TITLE_MAX, with ellipsis
+    assert ("x" * 39 + "…") in out
+
+
+def test_format_schedule_cards():
     j1 = SimpleNamespace(
         id="job-1", name="daily digest", agent_id="orchestrator",
         enabled=True, kind="cron", cron_expr="0 8 * * *", tz="UTC",
@@ -69,11 +98,21 @@ def test_format_schedule_table():
         enabled=False, kind="cron", cron_expr="*/5 * * * *", tz="UTC",
         last_fired_at=0,
     )
-    table = fmt.format_schedule_table([j1, j2])
-    assert "NAME" in table and "EXPR" in table and "LAST FIRED" in table
-    assert "daily digest" in table
-    assert "🟢" in table and "🔴" in table
-    assert "2021-01-01 00:00" in table
+    out = fmt.format_schedule_table([j1, j2])
+    assert out.splitlines()[0] == "Schedule"
+    assert "—" in out
+    assert "|" not in out
+    assert "daily digest" in out
+    assert "🟢" in out and "🔴" in out
+    assert "2021-01-01 00:00" in out
+    assert "Expression:" in out and "Last fired:" in out and "Next fire:" in out
+
+
+def test_escape_html_basic():
+    assert fmt.escape_html("a < b & c > d") == "a &lt; b &amp; c &gt; d"
+    assert fmt.escape_html("") == ""
+    # Ampersand must be escaped first to avoid double-escaping
+    assert fmt.escape_html("&lt;") == "&amp;lt;"
 
 
 def test_plain_mode_respects_env(monkeypatch):
