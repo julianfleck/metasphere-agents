@@ -179,6 +179,56 @@ def test_file_lock_prevents_interleaved_writes(tmp_paths):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# @-mention parsing
+# ---------------------------------------------------------------------------
+
+
+def _seed_project(tmp_paths, name: str) -> None:
+    from metasphere.io import write_json
+    pf = tmp_paths.root / "projects.json"
+    data = []
+    if pf.exists():
+        import json
+        data = json.loads(pf.read_text())
+    data.append({"name": name, "path": "/tmp/" + name, "registered": "2026-04-08T00:00:00Z"})
+    write_json(pf, data)
+
+
+def _seed_agent(tmp_paths, name: str) -> None:
+    (tmp_paths.root / "agents" / f"@{name}").mkdir(parents=True, exist_ok=True)
+
+
+def test_extract_mentions_project_only(tmp_paths):
+    _seed_project(tmp_paths, "recurse")
+    ms = m.extract_mentions("hey @recurse take a look", paths=tmp_paths)
+    assert len(ms) == 1
+    assert ms[0].name == "recurse"
+    assert ms[0].type == "project"
+    assert ms[0].raw == "@recurse"
+
+
+def test_extract_mentions_agent_only(tmp_paths):
+    _seed_agent(tmp_paths, "julian")
+    ms = m.extract_mentions("ping @julian please", paths=tmp_paths)
+    assert [(x.name, x.type) for x in ms] == [("julian", "agent")]
+
+
+def test_extract_mentions_collision_project_wins(tmp_paths):
+    _seed_project(tmp_paths, "recurse")
+    _seed_agent(tmp_paths, "recurse")
+    ms = m.extract_mentions("@recurse hi", paths=tmp_paths)
+    assert len(ms) == 1
+    assert ms[0].type == "project"
+
+
+def test_extract_mentions_unknown(tmp_paths):
+    ms = m.extract_mentions("@nobody around?", paths=tmp_paths)
+    assert len(ms) == 1
+    assert ms[0].type == "unknown"
+    assert ms[0].name == "nobody"
+
+
 def test_reply_marks_original_and_sets_reply_to(tmp_paths):
     # Original message lands in the scope inbox, as if a peer sent it.
     orig = m.send_message(

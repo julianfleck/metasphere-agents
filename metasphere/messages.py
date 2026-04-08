@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import re
 import subprocess
 import threading
 import time
@@ -192,6 +193,65 @@ def collect_inbox(scope: Path, repo_root: Path) -> list[Message]:
             out.append(read_message(p))
         except Exception:
             continue
+    return out
+
+
+# ---------------------------------------------------------------------------
+# @-mention parsing
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Mention:
+    name: str               # bare name without leading @
+    type: str               # 'project' | 'agent' | 'unknown'
+    raw: str                # original token, e.g. '@recurse'
+
+
+# Match @name where name starts with a letter/digit/underscore and may
+# contain letters, digits, ``_`` or ``-``. Must be at start-of-string or
+# preceded by whitespace/punctuation so we don't grab emails.
+_MENTION_RE = re.compile(r"(?:(?<=^)|(?<=[\s,;:!?()\[\]{}]))@([A-Za-z0-9_][A-Za-z0-9_\-]*)")
+
+
+def _project_names(paths: Paths | None) -> set[str]:
+    paths = paths or resolve()
+    try:
+        data = read_json(paths.root / "projects.json", default=[]) or []
+    except Exception:
+        return set()
+    return {str(e.get("name")) for e in data if e.get("name")}
+
+
+def _agent_exists(name: str, paths: Paths | None) -> bool:
+    paths = paths or resolve()
+    return (paths.agents / f"@{name}").is_dir()
+
+
+def extract_mentions(text: str, *, paths: Paths | None = None) -> list[Mention]:
+    """Extract ``@<name>`` mentions from ``text``.
+
+    Resolution order (per project-mentions feedback memory): the project
+    registry at ``~/.metasphere/projects.json`` wins; otherwise check
+    the agents directory; otherwise mark ``unknown``.
+    """
+    if not text:
+        return []
+    projects = _project_names(paths)
+    out: list[Mention] = []
+    seen: set[str] = set()
+    for m in _MENTION_RE.finditer(text):
+        name = m.group(1)
+        if name in seen:
+            continue
+        seen.add(name)
+        if name in projects:
+            kind = "project"
+        elif _agent_exists(name, paths):
+            kind = "agent"
+        else:
+            kind = "unknown"
+        out.append(Mention(name=name, type=kind, raw=f"@{name}"))
     return out
 
 
