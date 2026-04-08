@@ -60,3 +60,119 @@ def test_send_unknown_topic(tmp_paths):
     _setup_forum(tmp_paths)
     with pytest.raises(LookupError):
         g.send_to_topic("nope", "x", paths=tmp_paths)
+
+
+# ---------------------------------------------------------------------------
+# Non-interactive setup / verify
+# ---------------------------------------------------------------------------
+
+
+def _fake_call_factory(by_method):
+    def _call(method, **kwargs):
+        return by_method[method]
+    return _call
+
+
+def test_verify_forum_ok(tmp_paths):
+    by_method = {
+        "getChat": {"ok": True, "result": {
+            "id": -100123, "type": "supergroup", "title": "Recurse",
+            "is_forum": True,
+        }},
+        "getMe": {"ok": True, "result": {"id": 999, "username": "bot"}},
+        "getChatMember": {"ok": True, "result": {
+            "status": "administrator", "can_manage_topics": True,
+        }},
+    }
+    with patch("metasphere.telegram.groups.tg_api.call",
+               side_effect=_fake_call_factory(by_method)):
+        st = g.verify_forum("-100123", paths=tmp_paths)
+    assert st.ok
+    assert st.title == "Recurse"
+    assert st.bot_is_admin and st.can_manage_topics
+
+
+def test_verify_forum_topics_disabled(tmp_paths):
+    by_method = {
+        "getChat": {"ok": True, "result": {
+            "id": -100123, "type": "supergroup", "title": "Plain",
+            "is_forum": False,
+        }},
+        "getMe": {"ok": True, "result": {"id": 999}},
+        "getChatMember": {"ok": True, "result": {
+            "status": "administrator", "can_manage_topics": True,
+        }},
+    }
+    with patch("metasphere.telegram.groups.tg_api.call",
+               side_effect=_fake_call_factory(by_method)):
+        st = g.verify_forum("-100123", paths=tmp_paths)
+    assert not st.ok
+    assert "topics are not enabled" in st.describe_problem()
+
+
+def test_verify_forum_bot_not_admin(tmp_paths):
+    by_method = {
+        "getChat": {"ok": True, "result": {
+            "type": "supergroup", "title": "X", "is_forum": True,
+        }},
+        "getMe": {"ok": True, "result": {"id": 1}},
+        "getChatMember": {"ok": True, "result": {"status": "member"}},
+    }
+    with patch("metasphere.telegram.groups.tg_api.call",
+               side_effect=_fake_call_factory(by_method)):
+        st = g.verify_forum("-100123", paths=tmp_paths)
+    assert not st.ok
+    assert "not an admin" in st.describe_problem()
+
+
+def test_setup_forum_persists_when_valid(tmp_paths):
+    by_method = {
+        "getChat": {"ok": True, "result": {
+            "type": "supergroup", "title": "Recurse", "is_forum": True,
+        }},
+        "getMe": {"ok": True, "result": {"id": 1}},
+        "getChatMember": {"ok": True, "result": {
+            "status": "creator",
+        }},
+    }
+    with patch("metasphere.telegram.groups.tg_api.call",
+               side_effect=_fake_call_factory(by_method)):
+        st = g.setup_forum("-100777", paths=tmp_paths)
+    assert st.ok
+    assert g.get_forum_id(tmp_paths) == "-100777"
+
+
+def test_setup_forum_refuses_invalid_without_force(tmp_paths):
+    by_method = {
+        "getChat": {"ok": True, "result": {
+            "type": "supergroup", "title": "X", "is_forum": False,
+        }},
+        "getMe": {"ok": True, "result": {"id": 1}},
+        "getChatMember": {"ok": True, "result": {"status": "member"}},
+    }
+    with patch("metasphere.telegram.groups.tg_api.call",
+               side_effect=_fake_call_factory(by_method)):
+        with pytest.raises(RuntimeError):
+            g.setup_forum("-100123", paths=tmp_paths)
+    # nothing persisted
+    assert g.get_forum_id(tmp_paths) is None
+
+
+def test_cli_setup_non_interactive(tmp_paths, monkeypatch):
+    from metasphere.cli import telegram_groups as cli
+    monkeypatch.setattr("metasphere.cli.telegram_groups.resolve",
+                        lambda: tmp_paths)
+    by_method = {
+        "getChat": {"ok": True, "result": {
+            "type": "supergroup", "title": "T", "is_forum": True,
+        }},
+        "getMe": {"ok": True, "result": {"id": 1}},
+        "getChatMember": {"ok": True, "result": {
+            "status": "administrator", "can_manage_topics": True,
+        }},
+    }
+    with patch("metasphere.telegram.groups.tg_api.call",
+               side_effect=_fake_call_factory(by_method)):
+        rc = cli.main(["setup", "--forum-id", "-100222"])
+    assert rc == 0
+    assert g.get_forum_id(tmp_paths) == "-100222"

@@ -921,14 +921,47 @@ Telegram Forum (supergroup with topics) management.
 ### Subcommands
 
 ```
-metasphere-telegram-groups setup
-metasphere-telegram-groups create|new "Name" [emoji]
-metasphere-telegram-groups list|ls
-metasphere-telegram-groups send|msg TOPIC "message"
-metasphere-telegram-groups link|url TOPIC
-metasphere-telegram-groups workspace TYPE NAME [ID]   # type: project|task|agent
-metasphere-telegram-groups process-cmd TOPIC_ID CMD ARGS
+metasphere telegram groups setup [--forum-id <id>] [--token <tok>] [--force]
+metasphere telegram groups verify [--forum-id <id>]
+metasphere telegram groups create|new "Name" [emoji]
+metasphere telegram groups list|ls
+metasphere telegram groups send|msg TOPIC "message"
+metasphere telegram groups link|url TOPIC
 ```
+
+### ⚠ Telegram bot limitation (read this first)
+
+Telegram bots **cannot** create supergroups or enable Topics — those are
+human-only operations. A bot can only create individual *topics* inside
+an already-existing forum supergroup (via `createForumTopic`).
+
+The one-time human bootstrap is therefore mandatory:
+
+1. Create a Telegram group (in the Telegram client)
+2. Group Settings → Topics → **Enable**
+3. Add your bot as an admin with the **Manage Topics** permission
+4. Get the group id (e.g. forward a message to `@userinfobot`; it
+   starts with `-100…`)
+
+After that, everything is fully automatable. The orchestrator
+registers the id non-interactively via:
+
+```
+metasphere telegram groups setup --forum-id -1001234567890
+# or via env:
+METASPHERE_FORUM_ID=-1001234567890 metasphere telegram groups setup
+```
+
+`setup` validates the id by calling `getChat` + `getChatMember`. It
+fails loudly if topics are disabled, the bot is not an admin, or the
+'Manage Topics' permission is missing — pass `--force` to save anyway.
+`verify` is a read-only health-check of the currently registered (or
+provided) forum id.
+
+Once registered, `metasphere project topic create <name>` is
+idempotent: if the project already has a topic attached, it's a no-op;
+otherwise it creates one via `createForumTopic` and writes the result
+to the project's `project.json`.
 
 ### Files read/written
 

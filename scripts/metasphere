@@ -658,7 +658,7 @@ case "${1:-}" in
         shift
         case "${1:-}" in
             setup) cmd_telegram_setup ;;
-            groups|g) shift; exec "$SCRIPT_DIR/metasphere-telegram-groups" "$@" ;;
+            groups|g) shift; exec python3 -m metasphere.cli.telegram_groups "$@" ;;
             *) exec "$SCRIPT_DIR/metasphere-telegram-stream" "$@" ;;
         esac
         ;;

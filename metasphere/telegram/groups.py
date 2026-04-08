@@ -49,6 +49,128 @@ def get_forum_id(paths: Optional[Paths] = None) -> Optional[str]:
     return f.read_text(encoding="utf-8").strip() or None
 
 
+@dataclass
+class ForumStatus:
+    """Result of inspecting a candidate forum group."""
+
+    forum_id: str
+    title: str
+    chat_type: str
+    is_forum: bool
+    bot_is_admin: bool
+    can_manage_topics: bool
+    error: Optional[str] = None
+
+    @property
+    def ok(self) -> bool:
+        return (
+            self.error is None
+            and self.is_forum
+            and self.bot_is_admin
+            and self.can_manage_topics
+        )
+
+    def describe_problem(self) -> Optional[str]:
+        if self.error:
+            return self.error
+        if self.chat_type not in ("supergroup", "group"):
+            return f"chat type is {self.chat_type!r}, expected supergroup"
+        if not self.is_forum:
+            return (
+                "topics are not enabled on this group "
+                "(Group Settings → Topics → Enable)"
+            )
+        if not self.bot_is_admin:
+            return "bot is not an admin in this group"
+        if not self.can_manage_topics:
+            return "bot is admin but lacks the 'Manage Topics' permission"
+        return None
+
+
+def verify_forum(forum_id: str, *, paths: Optional[Paths] = None) -> ForumStatus:
+    """Inspect a candidate forum group via getChat + getChatMember.
+
+    This is a read-only probe; it never writes config. Use ``setup_forum``
+    to persist a verified id.
+    """
+    paths = paths or resolve()
+    try:
+        chat_resp = tg_api.call("getChat", chat_id=forum_id)
+    except Exception as e:  # noqa: BLE001 — network/api/etc
+        return ForumStatus(
+            forum_id=str(forum_id),
+            title="",
+            chat_type="",
+            is_forum=False,
+            bot_is_admin=False,
+            can_manage_topics=False,
+            error=f"getChat failed: {e}",
+        )
+    chat = chat_resp.get("result", {})
+    chat_type = chat.get("type", "")
+    title = chat.get("title", "")
+    is_forum = bool(chat.get("is_forum"))
+
+    bot_is_admin = False
+    can_manage_topics = False
+    err: Optional[str] = None
+    try:
+        me = tg_api.call("getMe").get("result", {})
+        bot_id = me.get("id")
+        if bot_id is not None:
+            mem = tg_api.call(
+                "getChatMember", chat_id=forum_id, user_id=bot_id
+            ).get("result", {})
+            status = mem.get("status")
+            bot_is_admin = status in ("administrator", "creator")
+            # creators implicitly have all permissions; admins must have the flag.
+            can_manage_topics = (
+                status == "creator"
+                or bool(mem.get("can_manage_topics"))
+            )
+    except Exception as e:  # noqa: BLE001
+        err = f"getChatMember failed: {e}"
+
+    return ForumStatus(
+        forum_id=str(forum_id),
+        title=title,
+        chat_type=chat_type,
+        is_forum=is_forum,
+        bot_is_admin=bot_is_admin,
+        can_manage_topics=can_manage_topics,
+        error=err,
+    )
+
+
+def setup_forum(forum_id: str, *, force: bool = False,
+                paths: Optional[Paths] = None) -> ForumStatus:
+    """Validate ``forum_id`` and, if it passes, persist it to the config file.
+
+    Args:
+        forum_id: Telegram supergroup id (typically starts with ``-100``).
+        force: Save the id even if validation reports problems. Useful when
+            the operator knows topics will be enabled imminently.
+        paths: paths override (tests).
+
+    Raises:
+        RuntimeError: if validation fails and ``force`` is False. The
+            message includes the specific problem detected.
+    """
+    paths = paths or resolve()
+    status = verify_forum(forum_id, paths=paths)
+    if not status.ok and not force:
+        problem = status.describe_problem() or "unknown validation failure"
+        raise RuntimeError(
+            f"forum {forum_id!r} is not usable: {problem}. "
+            f"Telegram bots cannot create supergroups or enable topics — "
+            f"a human must create the group, enable Topics, and add the bot "
+            f"as an admin with 'Manage Topics' permission."
+        )
+    paths.config.mkdir(parents=True, exist_ok=True)
+    _forum_id_file(paths).write_text(str(forum_id) + "\n", encoding="utf-8")
+    return status
+
+
 def _load_topics(paths: Paths) -> dict:
     return read_json(_topics_file(paths), default={}) or {}
 
