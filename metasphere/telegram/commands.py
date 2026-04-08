@@ -280,6 +280,16 @@ COMMANDS: Dict[str, Callable[[str, Context], str]] = {
     "spot": cmd_spot,
     "project": cmd_project,
     "p": cmd_project,
+    # Hidden aliases — not in BOT_COMMANDS_MANIFEST. These exist so cached
+    # autocomplete in users' Telegram clients (from when project_list/etc.
+    # were published commands) still routes correctly instead of returning
+    # "Unknown command". They forward to cmd_project with the subcommand
+    # injected as the first arg.
+    "project_list": lambda args, ctx: cmd_project(("list " + args).strip(), ctx),
+    "project_show": lambda args, ctx: cmd_project(("show " + args).strip(), ctx),
+    "project_new": lambda args, ctx: cmd_project(("new " + args).strip(), ctx),
+    "project_wake": lambda args, ctx: cmd_project(("wake " + args).strip(), ctx),
+    "project_chat": lambda args, ctx: cmd_project(("chat " + args).strip(), ctx),
     "session": cmd_session,
 }
 
