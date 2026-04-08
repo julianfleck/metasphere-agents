@@ -287,7 +287,8 @@ def complete_task(task_id: str, summary: str, repo_root: Path) -> Task:
     if path is None:
         raise FileNotFoundError(f"task {task_id} not found")
 
-    with file_lock(_lock_path(path)):
+    lock_src = _lock_path(path)
+    with file_lock(lock_src):
         task = _load(path)
         task.status = STATUS_COMPLETED
         task.completed = _utcnow()
@@ -301,7 +302,16 @@ def complete_task(task_id: str, summary: str, repo_root: Path) -> Task:
         dest = completed_dir / path.name
         shutil.move(str(path), str(dest))
         task.path = dest
-        return task
+
+    # Sidecar lock follows the task file so active/ doesn't accumulate orphans.
+    # Done after the `with` block so the flock is released first.
+    lock_dest = _lock_path(dest)
+    if lock_src.exists() and not lock_dest.exists():
+        try:
+            shutil.move(str(lock_src), str(lock_dest))
+        except OSError:
+            pass
+    return task
 
 
 def list_tasks(
