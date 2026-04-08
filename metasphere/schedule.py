@@ -235,6 +235,43 @@ def _wake_script(paths: Paths) -> Path:
     return paths.repo / "scripts" / "metasphere-wake"
 
 
+def dispatch_command(payload: str, *, timeout: int = 600) -> bool:
+    """Execute a ``payload_kind=="command"`` job.
+
+    Splits ``payload`` with :func:`shlex.split` (no shell, no eval) and
+    runs the resulting argv via :func:`subprocess.run`. Returns True on
+    exit-code 0.
+    """
+    import shlex
+
+    if not payload:
+        return False
+    try:
+        argv = shlex.split(payload)
+    except ValueError as e:
+        logger.warning("dispatch_command: bad payload %r: %s", payload, e)
+        return False
+    if not argv:
+        return False
+    try:
+        proc = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if proc.returncode != 0:
+            logger.warning(
+                "dispatch_command: %s exited %d: %s",
+                argv[0], proc.returncode, (proc.stderr or "").strip()[:200],
+            )
+        return proc.returncode == 0
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("dispatch_command failed for %r: %s", argv, e)
+        return False
+
+
 def dispatch_to_agent(
     target_agent: str,
     payload: str,
@@ -318,12 +355,15 @@ def run_due_jobs(paths: Paths | None = None, *, now: int | None = None) -> list[
             except Exception as e:  # pragma: no cover - defensive
                 logger.warning("log_event failed: %s", e)
 
-            ok = dispatch_to_agent(
-                target,
-                job.payload_message,
-                paths=paths,
-                job_name=job.name,
-            )
+            if job.payload_kind == "command":
+                ok = dispatch_command(job.payload_message)
+            else:
+                ok = dispatch_to_agent(
+                    target,
+                    job.payload_message,
+                    paths=paths,
+                    job_name=job.name,
+                )
             results.append(
                 FireResult(
                     job_id=job.id,

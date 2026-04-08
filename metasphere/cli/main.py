@@ -52,6 +52,7 @@ REGISTRY: dict[str, str] = {
     "project":   "metasphere.cli.project:main",
     "gateway":   "metasphere.cli.gateway:main",
     "update":    "metasphere.cli.update:main",
+    "consolidate": "metasphere.cli.consolidate:main",
     "status":    "metasphere.cli.main:_legacy_bash",
     "ls":        "metasphere.cli.main:_legacy_bash",
 }
@@ -71,6 +72,7 @@ Subcommands:
   telegram groups ...
   hooks posthook|context|git ...
   schedule list|run|daemon
+  consolidate run [--dry-run] [--since 7d] [--threshold high|medium|low]
   heartbeat tick|daemon
   memory search|index
   trace capture|list|search|prune
