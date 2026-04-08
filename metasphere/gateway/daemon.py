@@ -69,6 +69,18 @@ def _poll_once(timeout: int = 1) -> int:
                         _tg_react(u.chat_id, u.message_id, "👀")
                     except Exception:
                         pass
+                    # Stash (chat_id, message_id) so the posthook can replace
+                    # 👀 → 👍 once @orchestrator's reply lands. Best-effort.
+                    try:
+                        from ..paths import resolve as _resolve_paths
+                        import json as _json
+                        _p = _resolve_paths()
+                        _p.state.mkdir(parents=True, exist_ok=True)
+                        (_p.state / "telegram_pending_ack.json").write_text(
+                            _json.dumps({"chat_id": u.chat_id, "message_id": u.message_id})
+                        )
+                    except Exception:
+                        pass
                 submit_to_tmux(f"@{u.from_username or 'user'}", u.text)
         poller.save_offset(u.update_id + 1)
     return len(updates)

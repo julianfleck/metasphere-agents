@@ -188,6 +188,31 @@ def route_to_telegram(text: str, paths: Paths) -> None:
     except OSError:
         pass
 
+    # Replace the gateway's 👀 read-receipt with 👍 on the user message that
+    # triggered this turn, so the user sees their message has been
+    # acted-on, not just received. Best-effort: a missing pending-ack file
+    # (heartbeat ticks, scheduled jobs, child wakes) means there is no
+    # user-side message to react to — skip silently. Always consume the
+    # marker so a stale entry can't ack the next unrelated reply.
+    pending = paths.state / "telegram_pending_ack.json"
+    try:
+        if pending.exists():
+            data = json.loads(pending.read_text(encoding="utf-8"))
+            try:
+                pending.unlink()
+            except OSError:
+                pass
+            cid = data.get("chat_id")
+            mid = data.get("message_id")
+            if cid is not None and mid is not None:
+                try:
+                    from .telegram import api as telegram_api
+                    telegram_api.set_message_reaction(cid, int(mid), "👍")
+                except Exception as exc:  # noqa: BLE001
+                    _log_telegram_error(paths, f"ack reaction failed: {exc}")
+    except Exception as exc:  # noqa: BLE001
+        _log_telegram_error(paths, f"ack pending read failed: {exc}")
+
 
 def _resolve_chat_id(paths: Paths) -> str | None:
     """Read the Telegram chat id from the standard config locations.
