@@ -130,6 +130,16 @@ def cmd_getme(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_register_commands(args: argparse.Namespace) -> int:
+    """Publish the bot's slash-command manifest via setMyCommands."""
+    resp = commands.register_bot_commands()
+    published = [c for c, _ in commands.BOT_COMMANDS_MANIFEST]
+    print(f"Registered {len(published)} commands: {', '.join('/' + c for c in published)}")
+    if args.verbose:
+        print(json.dumps(resp, indent=2))
+    return 0
+
+
 def cmd_send_document(args: argparse.Namespace) -> int:
     chat_id = args.chat_id or _load_chat_id()
     if chat_id is None:
@@ -175,6 +185,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_me = sub.add_parser("getme", help="print bot info")
     p_me.set_defaults(func=cmd_getme)
+
+    p_reg = sub.add_parser("register-commands",
+                           help="publish slash-command manifest via setMyCommands")
+    p_reg.add_argument("-v", "--verbose", action="store_true")
+    p_reg.set_defaults(func=cmd_register_commands)
 
     p_doc = sub.add_parser("send-document", help="upload a file to the chat via sendDocument")
     p_doc.add_argument("path", help="local path to the file")

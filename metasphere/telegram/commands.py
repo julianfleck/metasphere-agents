@@ -190,15 +190,74 @@ def cmd_tree(args: str, ctx: Context) -> str:
     return _run([os.path.join(SCRIPTS_DIR, "metasphere-agent"), "tree"])
 
 
-def cmd_project(args: str, ctx: Context) -> str:
-    """Dispatch to ``metasphere project`` subcommands.
+def _run_project_cli(sub_argv: list[str]) -> str:
+    """Dispatch to ``metasphere.cli.project.main`` in-process.
 
-    Bare ``/project`` -> list. ``/project <sub> [args...]`` -> shells out.
+    Captures stdout + stderr and returns combined output. This avoids
+    shelling out to the ``metasphere`` console script, so the bot stays
+    inside one Python process and benefits from normal tracebacks.
+    """
+    import contextlib
+    import io as _io
+
+    from metasphere.cli import project as cli_project
+
+    buf_out, buf_err = _io.StringIO(), _io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+            rc = cli_project.main(sub_argv)
+    except SystemExit as e:  # argparse error paths
+        rc = int(e.code) if isinstance(e.code, int) else 2
+    except Exception as e:  # pragma: no cover - defensive
+        return f"project {' '.join(sub_argv)} failed: {e}"
+    out = (buf_out.getvalue() + buf_err.getvalue()).strip()
+    if rc != 0 and not out:
+        out = f"(exit {rc})"
+    return out or "(no output)"
+
+
+def cmd_project(args: str, ctx: Context) -> str:
+    """Dispatch to ``metasphere project`` subcommands in-process.
+
+    Bare ``/project`` -> list. ``/project <sub> [args...]`` -> in-process call.
     Quoted args are honored via shlex so users can pass messages.
     """
     import shlex
     sub_argv = shlex.split(args) if args.strip() else ["list"]
-    return _run(["metasphere", "project", *sub_argv])
+    return _run_project_cli(sub_argv)
+
+
+def cmd_project_list(args: str, ctx: Context) -> str:
+    return _run_project_cli(["list"])
+
+
+def cmd_project_show(args: str, ctx: Context) -> str:
+    import shlex
+    extra = shlex.split(args) if args.strip() else []
+    return _run_project_cli(["show", *extra])
+
+
+def cmd_project_new(args: str, ctx: Context) -> str:
+    import shlex
+    extra = shlex.split(args) if args.strip() else []
+    if not extra:
+        return "Usage: /project_new <name> [--goal \"...\"] [--member @x:role]"
+    return _run_project_cli(["new", *extra])
+
+
+def cmd_project_wake(args: str, ctx: Context) -> str:
+    import shlex
+    extra = shlex.split(args) if args.strip() else []
+    return _run_project_cli(["wake", *extra])
+
+
+def cmd_project_chat(args: str, ctx: Context) -> str:
+    """`/project_chat <name> message...` — name is first token, rest is message."""
+    parts = args.strip().split(None, 1)
+    if len(parts) < 2:
+        return "Usage: /project_chat <name> <message>"
+    name, message = parts
+    return _run_project_cli(["chat", name, message])
 
 
 def cmd_spot(args: str, ctx: Context) -> str:
@@ -254,8 +313,53 @@ COMMANDS: Dict[str, Callable[[str, Context], str]] = {
     "spot": cmd_spot,
     "project": cmd_project,
     "p": cmd_project,
+    "project_list": cmd_project_list,
+    "project_show": cmd_project_show,
+    "project_new": cmd_project_new,
+    "project_wake": cmd_project_wake,
+    "project_chat": cmd_project_chat,
     "session": cmd_session,
 }
+
+
+# Manifest published to BotFather via setMyCommands. Short descriptions
+# only — Telegram caps descriptions at 256 chars and the autocomplete UI
+# truncates aggressively. Keep one-line, imperative.
+BOT_COMMANDS_MANIFEST: list[tuple[str, str]] = [
+    ("status", "Show orchestrator status"),
+    ("tasks", "List active tasks"),
+    ("messages", "Show inbox messages"),
+    ("agents", "List registered agents"),
+    ("send", "Send: /send @agent !label message"),
+    ("project", "Project commands: /project [sub args]"),
+    ("project_list", "List all projects"),
+    ("project_show", "Show project details: /project_show [name]"),
+    ("project_new", "Create a project: /project_new <name> [opts]"),
+    ("project_wake", "Wake persistent project members"),
+    ("project_chat", "Post to project topic: /project_chat <name> msg"),
+    ("cam", "Search CAM memory: /cam <query>"),
+    ("groups", "Telegram groups admin"),
+    ("link", "Copy current topic link"),
+    ("events", "Tail recent events"),
+    ("tree", "Show agent tree"),
+    ("spot", "Show spot container status"),
+    ("session", "Restart orchestrator REPL"),
+    ("help", "Show help"),
+    ("ping", "Ping the bot"),
+]
+
+
+def register_bot_commands() -> dict:
+    """Publish BOT_COMMANDS_MANIFEST to Telegram via setMyCommands.
+
+    Returns the API response. Raises ``TelegramAPIError`` on failure.
+    """
+    import json as _json
+
+    from metasphere.telegram import api as _api
+
+    payload = [{"command": c, "description": d} for c, d in BOT_COMMANDS_MANIFEST]
+    return _api.call("setMyCommands", commands=_json.dumps(payload))
 
 
 def dispatch(text: str, ctx: Context) -> Optional[str]:
