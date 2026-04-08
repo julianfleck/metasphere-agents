@@ -264,6 +264,97 @@ def test_run_posthook_respects_stop_hook_active(tmp_paths: Paths, monkeypatch):
     m.assert_not_called()
 
 
+# ---------- auto_close_finished_task ----------
+
+def _make_task(repo: Path, slug_title: str) -> str:
+    from metasphere import tasks as _tasks
+    t = _tasks.create_task(slug_title, "!normal", repo, repo, created_by="@parent")
+    return t.id
+
+
+def test_auto_close_finished_task_archives_on_complete_status(tmp_paths: Paths):
+    task_id = _make_task(tmp_paths.repo, "child trivial task")
+    agent_dir = tmp_paths.agent_dir("@child")
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "task_id").write_text(task_id + "\n")
+    (agent_dir / "status").write_text("complete: did the thing\n")
+
+    closed = posthook.auto_close_finished_task("@child", tmp_paths)
+    assert closed == task_id
+
+    from metasphere import tasks as _tasks
+    p = _tasks._find_task_file(task_id, tmp_paths.repo, include_completed=False)
+    assert p is None  # not in active anymore
+    p2 = _tasks._find_task_file(task_id, tmp_paths.repo, include_completed=True)
+    assert p2 is not None and "archive" in str(p2)
+
+
+def test_auto_close_skips_when_status_not_complete(tmp_paths: Paths):
+    task_id = _make_task(tmp_paths.repo, "still working")
+    agent_dir = tmp_paths.agent_dir("@child")
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "task_id").write_text(task_id + "\n")
+    (agent_dir / "status").write_text("working: halfway there\n")
+
+    assert posthook.auto_close_finished_task("@child", tmp_paths) is None
+
+    from metasphere import tasks as _tasks
+    p = _tasks._find_task_file(task_id, tmp_paths.repo, include_completed=False)
+    assert p is not None  # still active
+
+
+def test_auto_close_no_task_id_is_noop(tmp_paths: Paths):
+    agent_dir = tmp_paths.agent_dir("@legacy")
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "status").write_text("complete: done\n")
+    assert posthook.auto_close_finished_task("@legacy", tmp_paths) is None
+
+
+def test_auto_close_already_archived_is_noop(tmp_paths: Paths):
+    task_id = _make_task(tmp_paths.repo, "double close")
+    agent_dir = tmp_paths.agent_dir("@child")
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "task_id").write_text(task_id + "\n")
+    (agent_dir / "status").write_text("complete: done\n")
+    # First call closes it
+    assert posthook.auto_close_finished_task("@child", tmp_paths) == task_id
+    # Second call is a no-op (no active file)
+    assert posthook.auto_close_finished_task("@child", tmp_paths) is None
+
+
+def test_run_posthook_auto_closes_for_subagent(tmp_paths: Paths, monkeypatch):
+    task_id = _make_task(tmp_paths.repo, "subagent end-to-end")
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@worker")
+    agent_dir = tmp_paths.agent_dir("@worker")
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "task_id").write_text(task_id + "\n")
+    (agent_dir / "status").write_text("complete: shipped\n")
+
+    payload = json.dumps({"stop_hook_active": False}).encode("utf-8")
+    rc = posthook.run_posthook(payload, tmp_paths)
+    assert rc == 0
+
+    from metasphere import tasks as _tasks
+    assert _tasks._find_task_file(task_id, tmp_paths.repo, include_completed=False) is None
+
+
+def test_run_posthook_does_not_auto_close_orchestrator(tmp_paths: Paths, monkeypatch):
+    _write_chat_id(tmp_paths)
+    task_id = _make_task(tmp_paths.repo, "orchestrator task")
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    agent_dir = tmp_paths.agent_dir("@orchestrator")
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "task_id").write_text(task_id + "\n")
+    (agent_dir / "status").write_text("complete: done\n")
+
+    payload = json.dumps({"stop_hook_active": False}).encode("utf-8")
+    posthook.run_posthook(payload, tmp_paths)
+
+    from metasphere import tasks as _tasks
+    # Orchestrator never auto-closes — it's persistent, not ephemeral.
+    assert _tasks._find_task_file(task_id, tmp_paths.repo, include_completed=False) is not None
+
+
 # ---------- cli --dry-run / --help ----------
 
 def test_cli_posthook_help():

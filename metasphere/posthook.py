@@ -306,6 +306,58 @@ def track_turn_completion(agent: str, paths: Paths) -> None:
             pass
 
 
+# ---------- ephemeral-agent task auto-close ----------
+
+def auto_close_finished_task(agent: str, paths: Paths) -> str | None:
+    """If ``agent`` has a linked task and its status indicates a clean
+    completion, archive the task. Returns the closed task slug, or None.
+
+    Conditions for auto-close (all must hold):
+      - ``agent_dir/task_id`` exists and names an active task
+      - ``agent_dir/status`` exists and starts with ``complete``
+        (the harness completion protocol writes ``complete: <summary>``)
+      - the task is not already archived
+
+    Edge cases:
+      - panic / error exit → status will not start with ``complete``,
+        so we leave the task pending for human triage
+      - multiple agents share a task → last writer wins, harmless
+      - task already archived → ``_find_task_file`` returns None, no-op
+      - missing ``task_id`` (legacy spawns from before this fix) → no-op
+    """
+    agent_dir = paths.agent_dir(agent)
+    task_id_file = agent_dir / "task_id"
+    status_file = agent_dir / "status"
+    if not task_id_file.exists() or not status_file.exists():
+        return None
+    try:
+        task_id = task_id_file.read_text(encoding="utf-8").strip()
+        status = status_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not task_id or not status.lower().startswith("complete"):
+        return None
+
+    # Local imports avoid pulling tasks → io chain into every Stop tick
+    # and dodge any potential cycle through the cli shims.
+    from . import tasks as _tasks
+
+    active_path = _tasks._find_task_file(task_id, paths.repo, include_completed=False)
+    if active_path is None:
+        return None
+    if active_path.parent.name != "active":
+        # Already archived (somehow). No-op, but clear the linkage so
+        # we don't keep retrying every turn.
+        return None
+
+    summary = status.split(":", 1)[1].strip() if ":" in status else status
+    try:
+        _tasks.complete_task(task_id, f"auto-closed by posthook: {summary}", paths.repo)
+    except Exception:  # noqa: BLE001
+        return None
+    return task_id
+
+
 # ---------- top-level entry ----------
 
 def run_posthook(stdin_bytes: bytes, paths: Paths | None = None) -> int:
@@ -333,6 +385,18 @@ def run_posthook(stdin_bytes: bytes, paths: Paths | None = None) -> int:
                         route_to_telegram(text or "", paths)
 
         track_turn_completion(agent, paths)
+
+        # Auto-close the agent's backing task when an ephemeral agent
+        # has finished cleanly. This is the fix for the 2026-04-08
+        # backlog drift: previously, ephemeral agents had no
+        # task↔agent linkage, so finished work piled up as
+        # stale-pending tasks. spawn_ephemeral now writes task_id;
+        # this hook closes it on clean exit.
+        if agent != "@orchestrator":
+            try:
+                auto_close_finished_task(agent, paths)
+            except Exception:  # noqa: BLE001
+                pass
     except Exception:  # noqa: BLE001 — Stop hook must never break the host
         try:
             paths = paths or resolve()

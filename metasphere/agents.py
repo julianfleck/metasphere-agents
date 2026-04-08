@@ -230,6 +230,27 @@ def spawn_ephemeral(
     _atomic_meta_write(agent_dir, "parent", parent)
     _atomic_meta_write(agent_dir, "spawned_at", timestamp)
 
+    # Create a backing .tasks/active/<slug>.md and link it to the agent
+    # via agent_dir/task_id. This is what lets posthook auto-archive the
+    # task on clean exit (see metasphere.posthook.auto_close_finished_task).
+    # Without this linkage, every ephemeral agent leaks a stale "pending"
+    # task on the backlog — which is exactly the systemic gap that the
+    # 2026-04-08 backlog audit found (10/23 active tasks were already
+    # done but never closed).
+    try:
+        from .tasks import create_task
+
+        backing = create_task(
+            title=task,
+            priority="!normal",
+            scope=scope_abs,
+            repo_root=paths.repo,
+            created_by=parent,
+        )
+        _atomic_meta_write(agent_dir, "task_id", backing.id)
+    except Exception:  # noqa: BLE001 — task linkage is best-effort
+        pass
+
     # Named-agent inbox (for direct addressing).
     (paths.root / "messages" / agent_id / "inbox").mkdir(parents=True, exist_ok=True)
 
