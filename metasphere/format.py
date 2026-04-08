@@ -158,7 +158,7 @@ def _esc(text: str, html: bool) -> str:
 
 #: Em-dash rule between cards. Matches the user's mockup (~25 dashes wide).
 RULE = "—" * 25
-INDENT = "      "  # 6 spaces; metadata visually offset under the title
+INDENT = "       "  # 7 spaces; metadata visually offset under the title
 TITLE_MAX = 40
 
 
