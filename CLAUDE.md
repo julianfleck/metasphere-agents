@@ -120,8 +120,10 @@ Every turn-end emits an assistant message that the Stop hook routes to Telegram.
    - A bug or anomaly was discovered
    - You took an action that the user should know about
    - You hit a fork that requires user input
+   - **A spawned process / child agent is still running and the user might be wondering what's happening.** See rule 6 below — silence is fine when nothing is in flight, but silence while a child is working looks like you've forgotten about it.
 4. **The cost of a noisy heartbeat is real.** Every "Quiet." pings the user's phone. Treat heartbeat replies like commit messages: if you have nothing to say, say nothing — but don't fake it with a placeholder.
 5. **If you must produce some text to satisfy the harness, make it a tool call only.** No prose. No markdown. Nothing the posthook would forward.
+6. **Running-process updates.** When you have a long-running spawned child, scheduled job, or background task that the user is waiting on, emit a brief progress line on heartbeat ticks — even if there's nothing new to report. Format: one line, agent/job name + elapsed + last-known status. Example: `@project-impl-2 still running (6m elapsed, no !done yet)`. The point is to confirm the work is still in flight and you haven't lost track. If the child completes between ticks, the *next* tick should bubble up the result with full context (not a one-liner). If nothing is in flight, normal silence rules apply — don't invent processes to report on.
 
 ---
 
