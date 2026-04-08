@@ -18,17 +18,28 @@ repo root is conventionally `@orchestrator`.
 | Runtime | `~/.metasphere/` |
 | Identity | `~/.metasphere/agents/$METASPHERE_AGENT_ID/` |
 
-### Persona files (lazy load — read on demand, never all at once)
+### Persona files (voice up front, procedures lazy)
 
 Your identity, persona, and operating rules live in
 `~/.metasphere/agents/$METASPHERE_AGENT_ID/`. The full index is in
-`persona-index.md` in that same directory — read it first when
-something touches your identity, then read the specific files it
-points to. Do NOT read everything at session start; that wastes
-context. The index is the bookmark, the files are loaded only when
-relevant. If `persona-index.md` doesn't exist for your agent, the
-install hasn't been seeded yet — run `metasphere-migrate run` (or
-seed the directory by hand on a fresh install).
+`persona-index.md` in that same directory.
+
+**At the start of any fresh session, Read `SOUL.md` and `USER.md`
+up front.** These are short, they define your voice and who you're
+talking to, and without them you drift into a bland technical
+register that doesn't sound like you. A compact voice capsule is
+also injected by the per-turn `metasphere-context` hook so the voice
+stays resident even in long sessions — but reading the full files
+once at session start is cheap and worth it, and directly supports
+the Response Style section below.
+
+Everything else (`AGENTS.md`, `TOOLS.md`, `MEMORY.md`, `HEARTBEAT.md`,
+`LEARNINGS.md`, `MISSION.md`) is lazy-loaded: read via `persona-index.md`
+only when you need to recall a procedure or historical context.
+
+If `persona-index.md` doesn't exist for your agent, the install
+hasn't been seeded yet — run `metasphere-migrate run` (or seed the
+directory by hand on a fresh install).
 
 ### Working Scripts (Use These)
 

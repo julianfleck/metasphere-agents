@@ -23,11 +23,13 @@ export METASPHERE_REPO_ROOT="$REPO_ROOT"
 export METASPHERE_SCOPE="$SCOPE"
 export METASPHERE_AGENT_ID="$AGENT"
 
-# Lightweight per-turn header. The heavy persona/identity context (SOUL,
-# IDENTITY, USER, TOOLS, AGENTS, MEMORY, MISSION, LEARNINGS) is injected
-# ONCE at session start by metasphere-gateway's build_initial_context.
-# This hook only carries deltas: new messages, new tasks, recent events.
-# Restart the gateway service to refresh the heavy context.
+# Per-turn header. We inject a compact "voice capsule" every turn so the
+# agent's persona (SOUL.md) stays resident in context — without this, the
+# agent runs on CLAUDE.md's terseness defaults and drifts into flat,
+# technical replies between turns. The rest of the persona stack (IDENTITY,
+# USER, TOOLS, AGENTS, MEMORY, LEARNINGS) remains lazy-loaded via
+# persona-index.md; SOUL.md and USER.md should also be Read once at fresh
+# session start per the guidance in CLAUDE.md.
 echo "# Metasphere Delta ($AGENT)"
 echo ""
 
@@ -35,6 +37,30 @@ echo ""
 if [[ -d "$AGENT_DIR" ]]; then
     agent_status=$(cat "$AGENT_DIR/status" 2>/dev/null || echo "unknown")
     echo "_Status: $agent_status_"
+    echo ""
+fi
+
+# =============================================================================
+# 1. Voice capsule — keep SOUL resident so the agent doesn't drift to bland.
+# =============================================================================
+# Prefers an explicit VOICE.md (hand-tuned capsule) if present; otherwise
+# falls back to the head of SOUL.md. Capped to ~1.5KB. This is the
+# counterweight to the terseness defaults — brevity applies to filler, not
+# to voice (see the Response Style section in CLAUDE.md).
+voice_file=""
+if [[ -f "$AGENT_DIR/VOICE.md" ]]; then
+    voice_file="$AGENT_DIR/VOICE.md"
+elif [[ -f "$AGENT_DIR/SOUL.md" ]]; then
+    voice_file="$AGENT_DIR/SOUL.md"
+fi
+if [[ -n "$voice_file" ]]; then
+    echo "## Voice (who you are, how you sound)"
+    echo ""
+    # Skip the top H1 line; emit up to line 40 or 1500 bytes, whichever hits first.
+    sed -n '2,40p' "$voice_file" | head -c 1500
+    echo ""
+    echo ""
+    echo "_(Full persona at \`$voice_file\` + persona-index.md. Read on demand for deeper context.)_"
     echo ""
 fi
 
