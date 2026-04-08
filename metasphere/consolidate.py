@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from . import messages as _messages
 from . import schedule as _sched
 from . import tasks as _tasks
 from .events import log_event
@@ -56,6 +57,28 @@ VERDICT_UNOWNED = "UNOWNED"
 VERDICT_DONE = "DONE"
 
 VERDICTS = (VERDICT_ACTIVE, VERDICT_STALE, VERDICT_BLOCKED, VERDICT_UNOWNED, VERDICT_DONE)
+
+# Message-lifecycle verdicts. Parallel to task verdicts but distinct so
+# the two scans don't stomp on each other's rendering.
+MSG_VERDICT_ACTIVE = "MSG-ACTIVE"
+MSG_VERDICT_STALE = "MSG-STALE"
+MSG_VERDICT_UNREAD_OLD = "MSG-UNREAD-OLD"
+MSG_VERDICT_DONE_PENDING_ARCHIVE = "MSG-DONE-PENDING-ARCHIVE"
+MSG_VERDICT_INFO_AUTO_ARCHIVE = "MSG-INFO-AUTO-ARCHIVE"
+MSG_VERDICT_SACRED = "MSG-SACRED"  # !task/!query — sacred, leave alone
+
+MSG_VERDICTS = (
+    MSG_VERDICT_ACTIVE,
+    MSG_VERDICT_STALE,
+    MSG_VERDICT_UNREAD_OLD,
+    MSG_VERDICT_DONE_PENDING_ARCHIVE,
+    MSG_VERDICT_INFO_AUTO_ARCHIVE,
+    MSG_VERDICT_SACRED,
+)
+
+# Info messages are auto-archived once they've been read for more than
+# this long. They're just notifications; nothing acts on them.
+INFO_AUTO_ARCHIVE_AFTER_MINUTES = 60
 
 # Default lifecycle window. Anything not touched within this many minutes
 # is a candidate for a status-check ping.
@@ -513,6 +536,212 @@ def apply_verdict(
 
 
 # ---------------------------------------------------------------------------
+# Message lifecycle
+# ---------------------------------------------------------------------------
+
+
+def classify_message(
+    msg: _messages.Message,
+    *,
+    now: _dt.datetime | None = None,
+    stale_window_minutes: int = STALE_WINDOW_MINUTES_DEFAULT,
+    info_archive_after_minutes: int = INFO_AUTO_ARCHIVE_AFTER_MINUTES,
+) -> str:
+    """Return one of the MSG_VERDICT_* constants for ``msg``."""
+    now = now or _utcnow()
+    window = _dt.timedelta(minutes=stale_window_minutes)
+
+    # Sacred labels: never touched by the consolidator beyond reporting.
+    if msg.label in _messages.SACRED_LABELS:
+        return MSG_VERDICT_SACRED
+
+    # DONE-PENDING-ARCHIVE: already completed, still sitting in inbox/.
+    if msg.status == _messages.STATUS_COMPLETED:
+        return MSG_VERDICT_DONE_PENDING_ARCHIVE
+
+    # UNREAD-OLD: status still unread after the stale window. Rare after
+    # T1 (auto-mark-read on view), but catches messages on agents that
+    # never render their inbox.
+    if msg.status == _messages.STATUS_UNREAD:
+        created = _parse_iso(msg.created)
+        if created and (now - created) >= window:
+            return MSG_VERDICT_UNREAD_OLD
+        return MSG_VERDICT_ACTIVE
+
+    # From here on, status is STATUS_READ or STATUS_REPLIED.
+    read_at = _parse_iso(msg.read_at)
+
+    # INFO-AUTO-ARCHIVE: !info messages that have been read long enough
+    # and haven't been explicitly acted on. The posthook doesn't need
+    # them anymore.
+    if msg.label == "!info" and msg.status == _messages.STATUS_READ and read_at:
+        info_window = _dt.timedelta(minutes=info_archive_after_minutes)
+        if (now - read_at) >= info_window and not msg.completed_at:
+            return MSG_VERDICT_INFO_AUTO_ARCHIVE
+
+    # !done notifications: archive once read + cooled down, just like info.
+    if msg.label == "!done" and msg.status == _messages.STATUS_READ and read_at:
+        info_window = _dt.timedelta(minutes=info_archive_after_minutes)
+        if (now - read_at) >= info_window:
+            return MSG_VERDICT_INFO_AUTO_ARCHIVE
+
+    # Replied messages are already "handled" — archive after cooldown.
+    if msg.status == _messages.STATUS_REPLIED:
+        replied_at = _parse_iso(msg.replied_at)
+        if replied_at and (now - replied_at) >= window:
+            return MSG_VERDICT_INFO_AUTO_ARCHIVE
+        return MSG_VERDICT_ACTIVE
+
+    # STALE: read_at is older than stale window, message was never acted
+    # on (no replied_at, no completed_at). Could mean the recipient
+    # forgot to follow up. Ping them.
+    if read_at and (now - read_at) >= window and not msg.replied_at and not msg.completed_at:
+        # Cooldown: if we pinged recently, leave alone.
+        last_ping = _parse_iso(msg.last_pinged_at)
+        if last_ping and (now - last_ping) < window:
+            return MSG_VERDICT_ACTIVE
+        return MSG_VERDICT_STALE
+
+    return MSG_VERDICT_ACTIVE
+
+
+def _ping_msg_recipient(
+    msg: _messages.Message,
+    paths: Paths,
+    *,
+    sender: Callable[..., object] | None = None,
+) -> dict:
+    sender = sender or _default_sender()
+    target = msg.to or "@orchestrator"
+    body = (
+        f"stale message check on {msg.id}: read but not acted on. "
+        f"label={msg.label}, from={msg.from_}, "
+        f"read_at={msg.read_at or '(none)'}"
+    )
+    try:
+        sender(target, "!query", body, "@consolidate", paths=paths)
+        delivered = True
+    except Exception:
+        delivered = False
+    if msg.path is not None:
+        try:
+            _messages.bump_ping(msg.path, msg.ping_count)
+        except Exception:
+            pass
+    return {"action": "pinged", "target": target, "delivered": delivered}
+
+
+def _escalate_msg_to_orchestrator(
+    msg: _messages.Message,
+    reason: str,
+    paths: Paths,
+    *,
+    sender: Callable[..., object] | None = None,
+) -> dict:
+    sender = sender or _default_sender()
+    body = (
+        f"stale message review: {msg.id} ({reason}) — "
+        f"label={msg.label}, from={msg.from_} → to={msg.to}, "
+        f"created={msg.created}, status={msg.status}, "
+        f"ping_count={msg.ping_count}"
+    )
+    try:
+        sender("@orchestrator", "!info", body, "@consolidate", paths=paths)
+        delivered = True
+    except Exception:
+        delivered = False
+    if msg.path is not None:
+        try:
+            _messages.bump_ping(msg.path, msg.ping_count)
+        except Exception:
+            pass
+    return {"action": "escalated-orchestrator", "target": "@orchestrator", "delivered": delivered}
+
+
+def _archive_msg(msg: _messages.Message, reason: str) -> dict:
+    if msg.path is None:
+        return {"action": "noop", "target": "", "delivered": False}
+    try:
+        dest = _messages.archive_message(msg.path)
+        return {"action": "archived", "target": str(dest), "delivered": True, "reason": reason}
+    except Exception as e:  # pragma: no cover - defensive
+        return {"action": f"error:{e}", "target": "", "delivered": False}
+
+
+def apply_message_verdict(
+    msg: _messages.Message,
+    verdict: str,
+    paths: Paths,
+    *,
+    dry_run: bool = False,
+    ping_escalate_threshold: int = PING_ESCALATE_THRESHOLD_DEFAULT,
+    sender: Callable[..., object] | None = None,
+) -> dict:
+    result: dict = {
+        "msg_id": msg.id,
+        "label": msg.label,
+        "from": msg.from_,
+        "to": msg.to,
+        "verdict": verdict,
+        "action": "noop",
+        "target": "",
+        "delivered": False,
+        "dry_run": dry_run,
+    }
+
+    if verdict in (MSG_VERDICT_ACTIVE, MSG_VERDICT_SACRED):
+        pass  # no action
+    elif verdict == MSG_VERDICT_DONE_PENDING_ARCHIVE:
+        if dry_run:
+            result["action"] = "would-archive"
+        else:
+            result.update(_archive_msg(msg, "done-pending-archive"))
+    elif verdict == MSG_VERDICT_INFO_AUTO_ARCHIVE:
+        if dry_run:
+            result["action"] = "would-archive"
+        else:
+            result.update(_archive_msg(msg, "info-auto-archive"))
+    elif verdict == MSG_VERDICT_UNREAD_OLD:
+        if dry_run:
+            result["action"] = "would-escalate-orchestrator"
+            result["target"] = "@orchestrator"
+        else:
+            result.update(_escalate_msg_to_orchestrator(msg, "unread-old", paths, sender=sender))
+    elif verdict == MSG_VERDICT_STALE:
+        if msg.ping_count >= ping_escalate_threshold:
+            if dry_run:
+                result["action"] = "would-escalate-orchestrator"
+                result["target"] = "@orchestrator"
+            else:
+                result.update(_escalate_msg_to_orchestrator(msg, "stale-pinged-out", paths, sender=sender))
+        else:
+            if dry_run:
+                result["action"] = "would-ping"
+                result["target"] = msg.to
+            else:
+                result.update(_ping_msg_recipient(msg, paths, sender=sender))
+
+    try:
+        log_event(
+            "message.consolidate",
+            f"{msg.id}: {verdict} → {result['action']}",
+            meta={
+                "msg_id": msg.id,
+                "label": msg.label,
+                "verdict": verdict,
+                "action": result["action"],
+                "target": result.get("target", ""),
+                "dry_run": dry_run,
+                "ping_count": msg.ping_count,
+            },
+            paths=paths,
+        )
+    except Exception:
+        pass
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Top-level pass
 # ---------------------------------------------------------------------------
 
@@ -523,10 +752,17 @@ class ConsolidateReport:
     since: str
     dry_run: bool
     results: list[dict] = field(default_factory=list)
+    message_results: list[dict] = field(default_factory=list)
 
     def counts(self) -> dict[str, int]:
         out: dict[str, int] = {}
         for r in self.results:
+            out[r["action"]] = out.get(r["action"], 0) + 1
+        return out
+
+    def message_counts(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for r in self.message_results:
             out[r["action"]] = out.get(r["action"], 0) + 1
         return out
 
@@ -578,5 +814,19 @@ def run_pass(
         if evidence:
             result["commit_touch"] = evidence[0]
         report.results.append(result)
+
+    # Message lifecycle pass — same engine, parallel verdict path.
+    msgs_found = _messages.scan_inbox_messages(repo_root)
+    for mm in msgs_found:
+        mverdict = classify_message(
+            mm, now=now, stale_window_minutes=stale_window_minutes
+        )
+        mresult = apply_message_verdict(
+            mm, mverdict, paths,
+            dry_run=dry_run,
+            ping_escalate_threshold=ping_escalate_threshold,
+            sender=sender,
+        )
+        report.message_results.append(mresult)
 
     return report

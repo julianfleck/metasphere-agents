@@ -73,6 +73,21 @@ def _cmd_run(argv: list[str]) -> int:
     if counts:
         summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
         print(f"summary: {summary}")
+
+    if report.message_results:
+        print(f"messages scanned: {len(report.message_results)}")
+        for r in report.message_results:
+            if r["action"] == "noop":
+                continue
+            marker = f"[{r['action']}]"
+            line = f"  {marker:32s} {r['verdict']:24s} {r['msg_id']}"
+            if r.get("target"):
+                line += f"  → {r['target']}"
+            print(line)
+        mcounts = report.message_counts()
+        if mcounts:
+            msummary = ", ".join(f"{k}={v}" for k, v in sorted(mcounts.items()))
+            print(f"message summary: {msummary}")
     return 0
 
 

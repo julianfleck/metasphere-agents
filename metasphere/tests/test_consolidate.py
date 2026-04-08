@@ -362,6 +362,167 @@ def test_register_job_idempotent(repo, tmp_paths):
     assert matches[0].cron_expr == "*/5 * * * *"
 
 
+# ---------------------------------------------------------------------------
+# Message lifecycle
+# ---------------------------------------------------------------------------
+
+
+from metasphere import messages as _msgs
+
+
+def _send_msg(tmp_paths, label: str, body: str = "x") -> _msgs.Message:
+    return _msgs.send_message(
+        "@.", label, body, "@sender", paths=tmp_paths, wake=False
+    )
+
+
+def _age_msg(msg: _msgs.Message, *, created_min_ago: int = 0, read_min_ago: int | None = None) -> _msgs.Message:
+    # Force-rewrite frontmatter fields for age manipulation.
+    text = msg.path.read_text()
+    if created_min_ago:
+        text = text.replace(f"created: {msg.created}", f"created: {_iso(created_min_ago)}")
+    if read_min_ago is not None:
+        # Flip status to read and stamp read_at
+        text = text.replace("status: unread", "status: read")
+        text = text.replace("read_at:", f"read_at: {_iso(read_min_ago)}")
+    msg.path.write_text(text)
+    return _msgs.read_message(msg.path)
+
+
+def test_msg_classify_sacred_task(repo, tmp_paths):
+    m_ = _send_msg(tmp_paths, "!task")
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_SACRED
+
+
+def test_msg_classify_sacred_query(repo, tmp_paths):
+    m_ = _send_msg(tmp_paths, "!query")
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_SACRED
+
+
+def test_msg_classify_unread_fresh_is_active(repo, tmp_paths):
+    m_ = _send_msg(tmp_paths, "!info")
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_ACTIVE
+
+
+def test_msg_classify_unread_old(repo, tmp_paths):
+    m_ = _send_msg(tmp_paths, "!info")
+    m_ = _age_msg(m_, created_min_ago=60)
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_UNREAD_OLD
+
+
+def test_msg_classify_done_pending_archive(repo, tmp_paths):
+    m_ = _send_msg(tmp_paths, "!info")
+    _msgs.update_status(m_.path, "status", _msgs.STATUS_COMPLETED)
+    m_ = _msgs.read_message(m_.path)
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_DONE_PENDING_ARCHIVE
+
+
+def test_msg_classify_info_auto_archive(repo, tmp_paths):
+    m_ = _send_msg(tmp_paths, "!info")
+    m_ = _age_msg(m_, read_min_ago=120)
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_INFO_AUTO_ARCHIVE
+
+
+def test_msg_classify_info_read_recent_is_active(repo, tmp_paths):
+    m_ = _send_msg(tmp_paths, "!info")
+    m_ = _age_msg(m_, read_min_ago=5)
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_ACTIVE
+
+
+def test_msg_classify_done_auto_archive(repo, tmp_paths):
+    m_ = _send_msg(tmp_paths, "!done")
+    m_ = _age_msg(m_, read_min_ago=120)
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_INFO_AUTO_ARCHIVE
+
+
+def test_msg_classify_stale_nonsacred(repo, tmp_paths):
+    # A !reply that was read long ago and never followed up on
+    m_ = _send_msg(tmp_paths, "!reply")
+    m_ = _age_msg(m_, read_min_ago=60)
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_STALE
+
+
+def test_msg_classify_stale_cooldown(repo, tmp_paths):
+    m_ = _send_msg(tmp_paths, "!reply")
+    m_ = _age_msg(m_, read_min_ago=60)
+    _msgs.update_status(m_.path, "last_pinged_at", _iso(5))
+    m_ = _msgs.read_message(m_.path)
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_ACTIVE
+
+
+def test_msg_apply_done_pending_archive_moves_file(repo, tmp_paths):
+    m_ = _send_msg(tmp_paths, "!info")
+    _msgs.update_status(m_.path, "status", _msgs.STATUS_COMPLETED)
+    m_ = _msgs.read_message(m_.path)
+    src = m_.path
+    result = _con.apply_message_verdict(
+        m_, _con.MSG_VERDICT_DONE_PENDING_ARCHIVE, tmp_paths
+    )
+    assert result["action"] == "archived"
+    assert not src.exists()
+
+
+def test_msg_apply_info_auto_archive_moves_file(repo, tmp_paths):
+    m_ = _send_msg(tmp_paths, "!info")
+    m_ = _age_msg(m_, read_min_ago=120)
+    src = m_.path
+    result = _con.apply_message_verdict(
+        m_, _con.MSG_VERDICT_INFO_AUTO_ARCHIVE, tmp_paths
+    )
+    assert result["action"] == "archived"
+    assert not src.exists()
+
+
+def test_msg_apply_sacred_noop(repo, tmp_paths):
+    m_ = _send_msg(tmp_paths, "!task")
+    src = m_.path
+    result = _con.apply_message_verdict(
+        m_, _con.MSG_VERDICT_SACRED, tmp_paths
+    )
+    assert result["action"] == "noop"
+    assert src.exists()
+
+
+def test_msg_apply_stale_pings_recipient(repo, tmp_paths):
+    m_ = _send_msg(tmp_paths, "!reply")
+    m_ = _age_msg(m_, read_min_ago=60)
+    sender = _FakeSender()
+    result = _con.apply_message_verdict(
+        m_, _con.MSG_VERDICT_STALE, tmp_paths, sender=sender
+    )
+    assert result["action"] == "pinged"
+    assert len(sender.calls) == 1
+    assert sender.calls[0]["label"] == "!query"
+    # ping_count bumped
+    reloaded = _msgs.read_message(m_.path)
+    assert reloaded.ping_count == 1
+    assert reloaded.last_pinged_at != ""
+
+
+def test_msg_apply_stale_threshold_escalates(repo, tmp_paths):
+    m_ = _send_msg(tmp_paths, "!reply")
+    m_ = _age_msg(m_, read_min_ago=60)
+    _msgs.update_status(m_.path, "ping_count", "5")
+    m_ = _msgs.read_message(m_.path)
+    sender = _FakeSender()
+    result = _con.apply_message_verdict(
+        m_, _con.MSG_VERDICT_STALE, tmp_paths, sender=sender
+    )
+    assert result["action"] == "escalated-orchestrator"
+    assert sender.calls[0]["target"] == "@orchestrator"
+
+
+def test_msg_run_pass_archives_old_info(repo, tmp_paths):
+    m1 = _send_msg(tmp_paths, "!info")
+    m1 = _age_msg(m1, read_min_ago=120)
+    m2 = _send_msg(tmp_paths, "!task")  # sacred, leave alone
+    sender = _FakeSender()
+    r = _con.run_pass(repo_root=repo, paths=tmp_paths, sender=sender)
+    assert any(res["action"] == "archived" for res in r.message_results)
+    assert not m1.path.exists()
+    assert m2.path.exists()
+
+
 def test_unregister_job(repo, tmp_paths):
     _con.register_job(tmp_paths)
     assert _con.unregister_job(tmp_paths) is True

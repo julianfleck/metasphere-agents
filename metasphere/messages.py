@@ -543,6 +543,64 @@ def mark_done(
     return None
 
 
+def scan_inbox_messages(repo_root: Path) -> list[Message]:
+    """Return every message currently in any ``.messages/inbox/`` under the repo.
+
+    Mirrors :func:`metasphere.consolidate.scan_active_tasks`: used by
+    the lifecycle consolidator to drive verdict classification.
+    """
+    repo_root = Path(repo_root).resolve()
+    out: list[Message] = []
+    for msg_dir in repo_root.rglob(".messages"):
+        inbox = msg_dir / "inbox"
+        if not inbox.is_dir():
+            continue
+        for f in sorted(inbox.glob("*.msg")):
+            try:
+                out.append(read_message(f))
+            except Exception:
+                continue
+    return out
+
+
+def bump_ping(msg_path: Path, ping_count: int) -> Message:
+    """Set ``last_pinged_at=now`` and increment ``ping_count`` in place."""
+    msg_path = Path(msg_path)
+    with file_lock(_lock_path(msg_path)):
+        msg = read_message(msg_path)
+        msg.last_pinged_at = _utcnow()
+        msg.ping_count = (ping_count or 0) + 1
+        write_frontmatter_file(msg_path, msg.to_frontmatter())
+        return msg
+
+
+def archive_message(msg_path: Path) -> Path:
+    """Move a message out of ``inbox/`` into ``archive/YYYY-MM-DD/``.
+
+    Returns the destination path. Safe to call on any message (unread,
+    read, completed) — the mover doesn't inspect state.
+    """
+    msg_path = Path(msg_path)
+    inbox = msg_path.parent
+    msgs_dir = inbox.parent  # .messages/
+    today = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+    archive_dir = msgs_dir / "archive" / today
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    dest = archive_dir / msg_path.name
+    # Avoid clobber if a same-id archive already exists.
+    if dest.exists():
+        return dest
+    os.replace(str(msg_path), str(dest))
+    # Clean up sidecar lock to avoid orphans in inbox/.
+    lock = _lock_path(msg_path)
+    try:
+        if lock.exists():
+            os.remove(lock)
+    except OSError:
+        pass
+    return dest
+
+
 def mark_read(msg_id: str, paths: Paths | None = None) -> Message:
     paths = paths or resolve()
     p = _find_inbox_msg(msg_id, paths.repo, paths=paths)
