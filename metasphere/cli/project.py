@@ -201,8 +201,16 @@ def _cmd_chat(rest: list[str], paths) -> int:
         return 2
     name, message = rest[0], " ".join(rest[1:])
     proj = get_project(name, paths=paths)
-    if proj is None or not proj.telegram_topic:
-        print("project has no telegram topic", file=sys.stderr)
+    if proj is None:
+        print(f"project not found: {name}", file=sys.stderr)
+        return 1
+    if not proj.telegram_topic:
+        print(
+            f"project {proj.name!r} has no telegram topic. "
+            f"Attach one with `metasphere project topic create {proj.name}` "
+            f"(requires `metasphere telegram groups setup` first).",
+            file=sys.stderr,
+        )
         return 1
     from metasphere.telegram import groups as tg_groups
     try:
@@ -214,6 +222,29 @@ def _cmd_chat(rest: list[str], paths) -> int:
         print(f"send failed: {e}", file=sys.stderr)
         return 1
     print("sent")
+    return 0
+
+
+def _cmd_topic(rest: list[str], paths) -> int:
+    from metasphere.project import attach_topic
+    if not rest or rest[0] not in ("create", "attach"):
+        print("usage: project topic create <name>", file=sys.stderr)
+        return 2
+    if len(rest) < 2:
+        print("usage: project topic create <name>", file=sys.stderr)
+        return 2
+    name = rest[1]
+    try:
+        proj = attach_topic(name, paths=paths)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    except RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    if proj.telegram_topic:
+        print(f"topic: {proj.telegram_topic['name']} "
+              f"(id={proj.telegram_topic['id']})")
     return 0
 
 
@@ -250,6 +281,7 @@ _DISPATCH = {
     "wake":       _cmd_wake,
     "for":        _cmd_for,
     "chat":       _cmd_chat,
+    "topic":      _cmd_topic,
     "changelog":  _cmd_changelog,
     "changes":    _cmd_changelog,
     "learnings":  _cmd_learnings,

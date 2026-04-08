@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import logging
 import shutil
 import subprocess
+
+logger = logging.getLogger(__name__)
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -269,15 +272,30 @@ def new_project(
         members=[Member.from_dict(m) for m in (members or [])],
     )
 
-    # Optional telegram forum topic auto-creation. If no forum is
-    # configured, leave telegram_topic=None and carry on silently.
+    # Optional telegram forum topic auto-creation. If the forum isn't
+    # configured (or topic creation fails), warn loudly so the operator
+    # knows what to fix; the project is still created without a topic
+    # and can be retro-attached later via ``project topic create``.
     try:
         from .telegram import groups as tg_groups
-        if tg_groups.get_forum_id(paths):
+        forum_id = tg_groups.get_forum_id(paths)
+        if not forum_id:
+            logger.warning(
+                "project %r: no telegram forum configured "
+                "(missing %s); skipping topic auto-creation. "
+                "Run `metasphere telegram groups setup` then "
+                "`metasphere project topic create %s` to attach.",
+                name, paths.config / "telegram_forum_id", name,
+            )
+        else:
             topic = tg_groups.create_topic(name, paths=paths)
             proj.telegram_topic = {"id": topic.id, "name": topic.name}
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(
+            "project %r: telegram topic auto-creation failed: %s. "
+            "Run `metasphere project topic create %s` to retry.",
+            name, e, name,
+        )
 
     save_project(proj)
     _register(paths, proj)
@@ -287,6 +305,38 @@ def new_project(
         if m.persistent:
             _ensure_stub_mission(m.id, proj, paths=paths)
 
+    return proj
+
+
+# ---------------------------------------------------------------------------
+# Retro-attach a telegram forum topic to an existing project
+# ---------------------------------------------------------------------------
+
+
+def attach_topic(name_or_path: str | Path, *,
+                 paths: Optional[Paths] = None) -> Project:
+    """Idempotently attach a telegram forum topic to an existing project.
+
+    If the project already has ``telegram_topic`` set, this is a no-op
+    (returns the project unchanged). Otherwise creates a forum topic
+    via the bot API, writes ``telegram_topic`` into ``project.json``,
+    and returns the updated project.
+    """
+    paths = paths or resolve()
+    proj = _require(name_or_path, paths)
+    if proj.telegram_topic:
+        return proj
+    from .telegram import groups as tg_groups
+    forum_id = tg_groups.get_forum_id(paths)
+    if not forum_id:
+        raise RuntimeError(
+            f"telegram forum not configured "
+            f"(missing {paths.config / 'telegram_forum_id'}); "
+            f"run `metasphere telegram groups setup` first"
+        )
+    topic = tg_groups.create_topic(proj.name, paths=paths)
+    proj.telegram_topic = {"id": topic.id, "name": topic.name}
+    save_project(proj)
     return proj
 
 
