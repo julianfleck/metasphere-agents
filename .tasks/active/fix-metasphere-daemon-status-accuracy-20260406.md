@@ -4,13 +4,16 @@ title: Fix metasphere daemon status accuracy
 priority: !normal
 status: pending
 scope: /
+project: default
 created: 2026-04-07T03:51:03Z
 created_by: @orchestrator
-assigned_to:
-started_at:
-completed_at:
+assigned_to: 
+started_at: 
+updated_at: 2026-04-08T12:02:17Z
+completed_at: 
+last_pinged_at: 2026-04-08T12:02:17Z
+ping_count: 2
 ---
-
 # Fix metasphere daemon status accuracy
 
 ## Description
@@ -31,4 +34,3 @@ completed_at:
 <!-- Add subtasks as needed -->
 
 ## Notes
-

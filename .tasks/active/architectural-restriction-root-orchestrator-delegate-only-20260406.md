@@ -1,16 +1,19 @@
 ---
 id: architectural-restriction-root-orchestrator-delegate-only-20260406
-title: Architectural restriction: root orchestrator delegate-only
+title: "Architectural restriction: root orchestrator delegate-only"
 priority: !high
 status: pending
 scope: /
+project: default
 created: 2026-04-07T03:51:00Z
 created_by: @orchestrator
-assigned_to:
-started_at:
-completed_at:
+assigned_to: 
+started_at: 
+updated_at: 2026-04-08T12:02:16Z
+completed_at: 
+last_pinged_at: 2026-04-08T12:02:16Z
+ping_count: 2
 ---
-
 # Architectural restriction: root orchestrator delegate-only
 
 ## Description
@@ -31,4 +34,3 @@ completed_at:
 <!-- Add subtasks as needed -->
 
 ## Notes
-

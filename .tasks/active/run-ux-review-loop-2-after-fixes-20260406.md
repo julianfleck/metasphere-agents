@@ -1,16 +1,19 @@
 ---
 id: run-ux-review-loop-2-after-fixes-20260406
-title: Run UX review loop #2 after fixes
+title: "Run UX review loop #2 after fixes"
 priority: !high
 status: pending
 scope: /
+project: default
 created: 2026-04-07T03:50:59Z
 created_by: @orchestrator
-assigned_to:
-started_at:
-completed_at:
+assigned_to: 
+started_at: 
+updated_at: 2026-04-08T12:02:23Z
+completed_at: 
+last_pinged_at: 2026-04-08T12:02:23Z
+ping_count: 2
 ---
-
 # Run UX review loop #2 after fixes
 
 ## Description
@@ -31,4 +34,3 @@ completed_at:
 <!-- Add subtasks as needed -->
 
 ## Notes
-

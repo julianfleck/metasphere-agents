@@ -4,11 +4,15 @@ title: Add 👍 ack reaction when @orchestrator finishes responding to a user me
 priority: !normal
 status: pending
 scope: /.
+project: default
 created: 2026-04-08T07:41:19Z
 created_by: @orchestrator
 assigned_to: 
 started_at: 
+updated_at: 2026-04-08T12:02:15Z
 completed_at: 
+last_pinged_at: 2026-04-08T12:02:15Z
+ping_count: 2
 ---
 # Add 👍 ack reaction when @orchestrator finishes responding to a user message
 
