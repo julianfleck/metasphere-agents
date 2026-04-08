@@ -67,28 +67,12 @@ def _cmd_list(args: list[str]) -> int:
         owner_norm = owner_filter if owner_filter.startswith("@") else "@" + owner_filter
         items = [t for t in items if t.assignee == owner_norm]
     if not items:
-        print(f"## Tasks: No {filter_} tasks in scope")
+        print(f"Tasks: no {filter_} tasks in scope")
         return 0
-    print(f"## Tasks ({scope})")
+    from metasphere.format import format_task_table
+    print(f"Tasks ({scope}) — {len(items)} {filter_}")
     print()
-    for t in items:
-        icon = {
-            "pending": "○",
-            "in-progress": "◐",
-            "blocked": "◼",
-            "completed": "●",
-        }.get(t.status, "?")
-        suffix = f" → {t.assignee}" if t.assignee else ""
-        print(f"{icon} {t.priority} {t.title} [{t.id}]{suffix}")
-        lifecycle = ""
-        if t.created:
-            lifecycle = f"created {t.created[:10]}"
-            if t.updated and t.updated[:10] != t.created[:10]:
-                lifecycle += f", updated {t.updated[:10]}"
-        if lifecycle:
-            print(f"  {t.scope} | {t.status} | {lifecycle}")
-        else:
-            print(f"  {t.scope} | {t.status}")
+    print(format_task_table(items))
     return 0
 
 

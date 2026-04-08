@@ -91,13 +91,37 @@ def cmd_status(args: str, ctx: Context) -> str:
 
 
 def cmd_tasks(args: str, ctx: Context) -> str:
-    try:
-        from metasphere import tasks as ms_tasks  # type: ignore
+    """Dispatch to ``metasphere.cli.tasks`` with plain-mode output.
 
-        return ms_tasks.list_tasks_text()  # pragma: no cover
+    Telegram renders plain ASCII cleanly but hates ANSI escapes and
+    unicode box drawing, so we force METASPHERE_PLAIN=1 around the call.
+    """
+    import shlex
+    import contextlib
+    import io as _io
+    sub_argv = shlex.split(args) if args.strip() else []
+    try:
+        from metasphere.cli import tasks as cli_tasks  # type: ignore
+        prev_plain = os.environ.get("METASPHERE_PLAIN")
+        os.environ["METASPHERE_PLAIN"] = "1"
+        try:
+            buf = _io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                try:
+                    rc = cli_tasks.main(sub_argv)
+                except SystemExit as e:
+                    rc = int(e.code) if isinstance(e.code, int) else 2
+            out = buf.getvalue().strip()
+            if rc != 0 and not out:
+                out = f"(exit {rc})"
+            return out or "(no output)"
+        finally:
+            if prev_plain is None:
+                os.environ.pop("METASPHERE_PLAIN", None)
+            else:
+                os.environ["METASPHERE_PLAIN"] = prev_plain
     except Exception:
-        pass
-    return _run([os.path.join(SCRIPTS_DIR, "tasks")])
+        return _run([os.path.join(SCRIPTS_DIR, "tasks")])
 
 
 def cmd_messages(args: str, ctx: Context) -> str:
@@ -250,12 +274,20 @@ def cmd_schedule(args: str, ctx: Context) -> str:
         import contextlib
         import io as _io
 
-        buf = _io.StringIO()
-        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-            try:
-                rc = cli_schedule.main(sub_argv)
-            except SystemExit as e:
-                rc = int(e.code) if isinstance(e.code, int) else 2
+        prev_plain = os.environ.get("METASPHERE_PLAIN")
+        os.environ["METASPHERE_PLAIN"] = "1"
+        try:
+            buf = _io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                try:
+                    rc = cli_schedule.main(sub_argv)
+                except SystemExit as e:
+                    rc = int(e.code) if isinstance(e.code, int) else 2
+        finally:
+            if prev_plain is None:
+                os.environ.pop("METASPHERE_PLAIN", None)
+            else:
+                os.environ["METASPHERE_PLAIN"] = prev_plain
         out = buf.getvalue().strip()
         if rc != 0 and not out:
             out = f"(exit {rc})"

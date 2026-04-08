@@ -32,18 +32,11 @@ def _cmd_list() -> int:
     if not jobs:
         print("(no scheduled jobs)")
         return 0
+    from metasphere.format import format_schedule_table
+    ordered = sorted(jobs, key=lambda x: (not x.enabled, x.name))
     print(f"Scheduled Jobs ({len(jobs)})")
     print()
-    for j in sorted(jobs, key=lambda x: (not x.enabled, x.name)):
-        flag = "" if j.enabled else " (disabled)"
-        kind = f"[{j.kind}]"
-        print(f"  {j.id}")
-        print(f"    {kind}{flag} [@{j.agent_id}] {j.name}")
-        if j.kind == "cron":
-            print(f"    Expr: {j.cron_expr} ({j.tz})")
-        if j.last_fired_at:
-            print(f"    Last fired: {_fmt_ts(j.last_fired_at)}")
-        print()
+    print(format_schedule_table(ordered))
     return 0
 
 
