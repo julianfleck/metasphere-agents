@@ -20,7 +20,7 @@ from ..telegram import poller
 from ..telegram.commands import Context as _CmdContext, dispatch as _dispatch_command
 from ..telegram.api import send_message as _tg_send, set_message_reaction as _tg_react
 from ..telegram.inject import submit_to_tmux
-from .session import ensure_session
+from .session import ensure_session, write_harness_hash_baseline
 from .watchdog import run_watchdog
 
 
@@ -88,6 +88,14 @@ def run_daemon(
     poll_fn = poll_fn or _poll_once
     sleep_fn = sleep_fn or time.sleep
     time_fn = time_fn or time.time
+
+    # Refresh harness hash baseline at boot so an existing-on-startup
+    # session uses the latest harness as its drift reference. Mirrors the
+    # bash daemon_mode write_harness_hash_baseline call.
+    try:
+        write_harness_hash_baseline(paths)
+    except Exception:
+        pass
 
     try:
         ensure_session(paths)

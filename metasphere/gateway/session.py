@@ -16,9 +16,22 @@ from pathlib import Path
 from typing import Tuple
 
 from ..agents import session_alive as _agents_session_alive
+from ..context import harness_hash
 from ..events import log_event
 from ..io import atomic_write_text
 from ..paths import Paths, resolve
+
+
+def write_harness_hash_baseline(paths: Paths) -> None:
+    """Mirror the bash ``write_harness_hash_baseline``: snapshot the
+    current harness content hash so the per-turn context hook can detect
+    drift and surface a reload warning to the agent. Best-effort; never
+    raises."""
+    try:
+        paths.state.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(paths.state / "harness_hash_baseline", harness_hash(paths) + "\n")
+    except OSError:
+        pass
 
 SESSION_NAME = "metasphere-orchestrator"
 
@@ -111,6 +124,9 @@ def start_session(paths: Paths | None = None) -> bool:
     _tmux("set-option", "-t", SESSION_NAME, "mouse", "on")
     _tmux("set-option", "-t", SESSION_NAME, "history-limit", "100000")
     _tmux("send-keys", "-t", SESSION_NAME, _RESPAWN_CMD, "Enter")
+
+    # Snapshot harness hash so drift detection has a reference point.
+    write_harness_hash_baseline(paths)
 
     # Status marker for the agent dir (best-effort).
     try:
