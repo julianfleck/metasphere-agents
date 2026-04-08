@@ -912,6 +912,22 @@ register_auto_update_job() {
     fi
 }
 
+register_consolidate_job() {
+    info "Registering task consolidation cron job..."
+    local bin="$METASPHERE_DIR/bin/metasphere"
+    if [[ ! -x "$bin" ]] && ! command -v metasphere &>/dev/null; then
+        warn "metasphere command not found yet, skipping consolidate job registration"
+        return 0
+    fi
+    # Idempotent: register_job in metasphere.consolidate replaces an
+    # existing entry in place rather than duplicating it.
+    if "${bin:-metasphere}" consolidate --register-job 2>/dev/null; then
+        ok "Task consolidation job registered (every 4h; see: metasphere consolidate --status)"
+    else
+        warn "Could not register consolidate job (run 'metasphere consolidate --register-job' manually)"
+    fi
+}
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -929,6 +945,7 @@ main() {
     seed_claude_permissions
     setup_daemon
     register_auto_update_job
+    register_consolidate_job
     show_completion
 }
 
