@@ -695,8 +695,13 @@ check_stuck_prompts() {
     pane=$($TMUX_CMD capture-pane -t "$SESSION_NAME" -p -S -50 2>/dev/null || echo "")
     [[ -z "$pane" ]] && return 0
 
-    # Safety-hooks / generic confirmation prompt: auto-approve "1"
-    if echo "$pane" | grep -qE "(Do you want to proceed\?|\[plugin:safety-hooks\]|^[[:space:]]*1\.[[:space:]]+Yes\b)"; then
+    # Safety-hooks / generic confirmation prompt / initial trust prompt: auto-approve "1" or Enter
+    # Patterns:
+    #   - "[plugin:safety-hooks]" prompts
+    #   - "Do you want to proceed?"
+    #   - "1. Yes" style confirmations
+    #   - Initial trust prompt: "Yes, I trust this folder"
+    if echo "$pane" | grep -qE "(Do you want to proceed\?|\[plugin:safety-hooks\]|^[[:space:]]*1\.[[:space:]]+Yes\b|Yes, I trust this folder)"; then
         # Avoid spamming: only intervene if we haven't just intervened
         local marker="$METASPHERE_DIR/state/last_safety_hook_intervention"
         local now=$(date +%s)
