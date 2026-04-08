@@ -751,6 +751,19 @@ setup_daemon_linux() {
         rm "$old_service"
     fi
 
+    # Dual-poller race fix: the legacy metasphere-telegram.service polled
+    # getUpdates in parallel with the gateway, causing message loss when
+    # both were enabled simultaneously. Canonical poller is metasphere.service
+    # (the gateway daemon). Stop, disable, and mask the legacy unit so it
+    # cannot be brought back up by an old install or by hand.
+    for legacy in metasphere-telegram metasphere-gateway; do
+        if systemctl --user list-unit-files "${legacy}.service" 2>/dev/null | grep -q "${legacy}.service"; then
+            systemctl --user stop "${legacy}.service" 2>/dev/null || true
+            systemctl --user disable "${legacy}.service" 2>/dev/null || true
+            systemctl --user mask "${legacy}.service" 2>/dev/null || true
+        fi
+    done
+
     cat > "$service_file" << EOF
 [Unit]
 Description=Metasphere - Multi-agent orchestration

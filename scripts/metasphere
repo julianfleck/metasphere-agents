@@ -89,6 +89,19 @@ cmd_status() {
         else
             warn "Daemon not running"
         fi
+        # Dual-poller race detection: warn if a legacy poller is also enabled.
+        local _dual=()
+        for legacy in metasphere-telegram metasphere-gateway; do
+            if systemctl --user is-enabled "${legacy}.service" 2>/dev/null | grep -q '^enabled$'; then
+                _dual+=("${legacy}.service")
+            fi
+        done
+        if systemctl --user is-enabled metasphere.service 2>/dev/null | grep -q '^enabled$'; then
+            if [[ ${#_dual[@]} -gt 0 ]]; then
+                warn "Dual-poller race: legacy unit(s) still enabled alongside metasphere.service: ${_dual[*]}"
+                dim "Fix: systemctl --user disable --now ${_dual[*]} && systemctl --user mask ${_dual[*]}"
+            fi
+        fi
     fi
 
     # Telegram
