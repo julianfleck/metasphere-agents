@@ -122,8 +122,15 @@ def cmd_tasks(args: str, ctx: Context) -> "Reply | str":
         from metasphere.cli import tasks as cli_tasks  # type: ignore
         prev_plain = os.environ.get("METASPHERE_PLAIN")
         prev_html = os.environ.get("METASPHERE_HTML")
+        prev_scope = os.environ.get("METASPHERE_SCOPE")
         os.environ["METASPHERE_PLAIN"] = "1"
         os.environ["METASPHERE_HTML"] = "1"
+        # Pin scope to the repo root so the gateway daemon's cwd
+        # (typically /home/openclaw, NOT inside the repo) doesn't
+        # cause an empty scope and "no tasks" output.
+        repo_root = os.environ.get("METASPHERE_REPO_ROOT")
+        if repo_root:
+            os.environ["METASPHERE_SCOPE"] = repo_root
         try:
             buf = _io.StringIO()
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
@@ -144,6 +151,10 @@ def cmd_tasks(args: str, ctx: Context) -> "Reply | str":
                 os.environ.pop("METASPHERE_HTML", None)
             else:
                 os.environ["METASPHERE_HTML"] = prev_html
+            if prev_scope is None:
+                os.environ.pop("METASPHERE_SCOPE", None)
+            else:
+                os.environ["METASPHERE_SCOPE"] = prev_scope
     except Exception:
         return _run([os.path.join(SCRIPTS_DIR, "tasks")])
 
