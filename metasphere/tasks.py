@@ -69,6 +69,7 @@ class Task:
     created_by: str = ""
     started: str = ""
     completed: str = ""
+    updated: str = ""
     assignee: str = ""
     body: str = ""
     # runtime-only fields (excluded from serialisation)
@@ -91,6 +92,7 @@ class Task:
             "created_by": self.created_by,
             "assigned_to": self.assignee,
             "started_at": self.started,
+            "updated_at": self.updated,
             "completed_at": self.completed,
         }
         return serialize_frontmatter(Frontmatter(meta, self.body))
@@ -111,6 +113,7 @@ class Task:
             created=s("created"),
             created_by=s("created_by"),
             started=s("started_at"),
+            updated=s("updated_at"),
             completed=s("completed_at"),
             assignee=s("assigned_to"),
             body=fm.body,
@@ -190,6 +193,7 @@ def create_task(
         status=STATUS_PENDING,
         scope=_rel_to_repo(scope, repo_root),
         created=_utcnow(),
+        updated=_utcnow(),
         created_by=created_by if created_by is not None else resolve_agent_id(),
         body=f"\n# {title}\n\n## Updates\n\n- {_utcnow()} Created task\n",
         path=path,
@@ -199,15 +203,33 @@ def create_task(
 
 
 def _find_task_file(task_id: str, repo_root: Path, *, include_completed: bool = True) -> Path | None:
-    """Walk every ``.tasks/`` under ``repo_root`` looking for ``<task_id>.md``."""
+    """Walk every ``.tasks/`` under ``repo_root`` looking for ``<task_id>.md``.
+
+    Searches ``active/``, legacy ``completed/``, and dated ``archive/YYYY-MM-DD/``.
+    """
     repo_root = Path(repo_root)
     for tasks_dir in repo_root.rglob(".tasks"):
         if not tasks_dir.is_dir():
             continue
-        for sub in ("active", "completed") if include_completed else ("active",):
-            cand = tasks_dir / sub / f"{task_id}.md"
-            if cand.exists():
-                return cand
+        # active/ always
+        cand = tasks_dir / "active" / f"{task_id}.md"
+        if cand.exists():
+            return cand
+        if not include_completed:
+            continue
+        # legacy completed/
+        cand = tasks_dir / "completed" / f"{task_id}.md"
+        if cand.exists():
+            return cand
+        # dated archive/YYYY-MM-DD/
+        archive = tasks_dir / "archive"
+        if archive.is_dir():
+            for day in sorted(archive.iterdir(), reverse=True):
+                if not day.is_dir():
+                    continue
+                cand = day / f"{task_id}.md"
+                if cand.exists():
+                    return cand
     return None
 
 
@@ -240,6 +262,7 @@ def update_task(
             setattr(task, attr, v)
         if note:
             task.body = _append_update(task.body, note)
+        task.updated = _utcnow()
         atomic_write_text(path, task.to_text())
         return task
 
@@ -263,6 +286,7 @@ def add_update(task_id: str, note: str, repo_root: Path) -> Task:
     with file_lock(_lock_path(path)):
         task = _load(path)
         task.body = _append_update(task.body, note)
+        task.updated = _utcnow()
         atomic_write_text(path, task.to_text())
         return task
 
@@ -273,9 +297,11 @@ def start_task(task_id: str, agent: str, repo_root: Path) -> Task:
         raise FileNotFoundError(f"task {task_id} not found")
     with file_lock(_lock_path(path)):
         task = _load(path)
+        now = _utcnow()
         task.status = STATUS_IN_PROGRESS
         task.assignee = agent
-        task.started = _utcnow()
+        task.started = now
+        task.updated = now
         task.body = _append_update(task.body, f"Started by {agent}")
         atomic_write_text(path, task.to_text())
         return task
@@ -290,16 +316,21 @@ def complete_task(task_id: str, summary: str, repo_root: Path) -> Task:
     lock_src = _lock_path(path)
     with file_lock(lock_src):
         task = _load(path)
+        now = _utcnow()
         task.status = STATUS_COMPLETED
-        task.completed = _utcnow()
+        task.completed = now
+        task.updated = now
         if summary:
             task.body = _append_update(task.body, f"Completed: {summary}")
         atomic_write_text(path, task.to_text())
 
-        # active/<slug>.md → completed/<slug>.md (sibling dir)
-        completed_dir = path.parent.parent / "completed"
-        completed_dir.mkdir(parents=True, exist_ok=True)
-        dest = completed_dir / path.name
+        # active/<slug>.md → archive/YYYY-MM-DD/<slug>.md (dated daily bucket).
+        # Legacy completed/ is left untouched for pre-cutover tasks; readers
+        # (find_task, list_tasks) still include it.
+        today = now[:10]  # YYYY-MM-DD
+        archive_dir = path.parent.parent / "archive" / today
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        dest = archive_dir / path.name
         shutil.move(str(path), str(dest))
         task.path = dest
 
@@ -328,8 +359,13 @@ def list_tasks(
     while True:
         td = current / ".tasks"
         if td.is_dir():
-            for sub in ("active", "completed") if include_completed else ("active",):
-                d = td / sub
+            dirs: list[Path] = [td / "active"]
+            if include_completed:
+                dirs.append(td / "completed")  # legacy pre-cutover
+                archive = td / "archive"
+                if archive.is_dir():
+                    dirs.extend(sorted(p for p in archive.iterdir() if p.is_dir()))
+            for d in dirs:
                 if d.is_dir():
                     for f in sorted(d.glob("*.md")):
                         try:

@@ -51,7 +51,15 @@ def _cmd_list(args: list[str]) -> int:
         }.get(t.status, "?")
         suffix = f" → {t.assignee}" if t.assignee else ""
         print(f"{icon} {t.priority} {t.title} [{t.id}]{suffix}")
-        print(f"  {t.scope} | {t.status}")
+        lifecycle = ""
+        if t.created:
+            lifecycle = f"created {t.created[:10]}"
+            if t.updated and t.updated[:10] != t.created[:10]:
+                lifecycle += f", updated {t.updated[:10]}"
+        if lifecycle:
+            print(f"  {t.scope} | {t.status} | {lifecycle}")
+        else:
+            print(f"  {t.scope} | {t.status}")
     return 0
 
 
@@ -103,12 +111,17 @@ def _cmd_update(args: list[str]) -> int:
 def _cmd_done(args: list[str]) -> int:
     if not args:
         print('Usage: tasks done <task-id> ["summary"]', file=sys.stderr)
+        print('       tasks archive <task-id> ["summary"]   (alias)', file=sys.stderr)
         return 1
     task_id, *rest = args
     summary = " ".join(rest)
     _, repo = _ctx()
     t = _tasks.complete_task(task_id, summary, repo)
-    print(f"Completed: {t.id}")
+    dest = t.path
+    if dest is not None:
+        print(f"Archived: {t.id} → {dest}")
+    else:
+        print(f"Archived: {t.id}")
     if summary:
         print(f"Summary: {summary}")
     return 0
@@ -140,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         "start": _cmd_start,
         "update": _cmd_update,
         "done": _cmd_done,
+        "archive": _cmd_done,
         "show": _cmd_show,
         "all": lambda _r: _cmd_list(["all"]),
     }

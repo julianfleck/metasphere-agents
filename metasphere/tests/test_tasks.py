@@ -105,16 +105,59 @@ def test_start_task(tmp_paths):
 # ---------------------------------------------------------------------------
 
 
-def test_complete_task_moves_file(tmp_paths):
+def test_complete_task_archives_to_dated_dir(tmp_paths):
     task = t.create_task("ship it", "!normal", tmp_paths.scope, tmp_paths.repo)
     active_path = task.path
     done = t.complete_task(task.id, "shipped", tmp_paths.repo)
     assert done.status == t.STATUS_COMPLETED
     assert done.completed
+    assert done.updated == done.completed
     assert not active_path.exists()
     assert done.path.exists()
-    assert done.path.parent.name == "completed"
+    # archive/YYYY-MM-DD/<slug>.md
+    assert done.path.parent.parent.name == "archive"
+    day = done.path.parent.name
+    assert len(day) == 10 and day[4] == "-" and day[7] == "-"
     assert "shipped" in done.path.read_text()
+
+
+def test_find_task_includes_archive_and_legacy_completed(tmp_paths):
+    # fresh completion goes to archive/ and is findable
+    a = t.create_task("archived one", "!normal", tmp_paths.scope, tmp_paths.repo)
+    t.complete_task(a.id, "done", tmp_paths.repo)
+    assert t._find_task_file(a.id, tmp_paths.repo) is not None
+
+    # legacy completed/ is still findable
+    b = t.create_task("legacy one", "!normal", tmp_paths.scope, tmp_paths.repo)
+    legacy_dir = b.path.parent.parent / "completed"
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    import shutil as _sh
+    dest = legacy_dir / b.path.name
+    _sh.move(str(b.path), str(dest))
+    assert t._find_task_file(b.id, tmp_paths.repo) == dest
+
+
+def test_list_includes_archive_when_completed_requested(tmp_paths):
+    a = t.create_task("a", "!normal", tmp_paths.scope, tmp_paths.repo)
+    t.create_task("b", "!normal", tmp_paths.scope, tmp_paths.repo)
+    t.complete_task(a.id, "done", tmp_paths.repo)
+    active = t.list_tasks(tmp_paths.scope, tmp_paths.repo)
+    assert {x.title for x in active} == {"b"}
+    everything = t.list_tasks(tmp_paths.scope, tmp_paths.repo, include_completed=True)
+    assert {x.title for x in everything} == {"a", "b"}
+
+
+def test_create_sets_updated_at(tmp_paths):
+    task = t.create_task("u", "!normal", tmp_paths.scope, tmp_paths.repo)
+    raw = task.path.read_text()
+    assert "updated_at:" in raw
+    assert task.updated == task.created
+
+
+def test_start_bumps_updated(tmp_paths):
+    task = t.create_task("u2", "!normal", tmp_paths.scope, tmp_paths.repo)
+    started = t.start_task(task.id, "@w", tmp_paths.repo)
+    assert started.updated == started.started
 
 
 # ---------------------------------------------------------------------------

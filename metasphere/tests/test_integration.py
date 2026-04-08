@@ -113,12 +113,12 @@ def test_task_lifecycle_with_slash_title(tmp_path):
     T.update_task(task.id, paths.repo, note="midway progress")
     completed = T.complete_task(task.id, "all done", paths.repo)
 
-    # File moved active/ → completed/
+    # File moved active/ → archive/YYYY-MM-DD/
     assert not active_file.exists()
-    completed_file = paths.repo / ".tasks" / "completed" / f"{task.slug}.md"
-    assert completed_file.exists()
+    assert completed.path is not None and completed.path.exists()
+    assert completed.path.parent.parent.name == "archive"
     assert completed.status == T.STATUS_COMPLETED
-    body = completed_file.read_text()
+    body = completed.path.read_text()
     assert "midway progress" in body
     assert "Completed: all done" in body
 
