@@ -329,6 +329,30 @@ Or chat directly with @orchestrator"
             reply_code "Spot" "$spot_output"
             ;;
 
+        /project*|/p\ *|/p)
+            # /project [sub args...] — dispatch to `metasphere project ...`.
+            # Also accepts /project_list, /project_show, etc. as aliases for
+            # users with cached BotFather autocomplete from before the
+            # underscore variants were collapsed.
+            local sub_argv=""
+            case "$text" in
+                /project_list*)  sub_argv="list ${text#/project_list}" ;;
+                /project_show*)  sub_argv="show ${text#/project_show}" ;;
+                /project_new*)   sub_argv="new ${text#/project_new}" ;;
+                /project_wake*)  sub_argv="wake ${text#/project_wake}" ;;
+                /project_chat*)  sub_argv="chat ${text#/project_chat}" ;;
+                /project*)       sub_argv="${text#/project}" ;;
+                /p\ *|/p)        sub_argv="${text#/p}" ;;
+            esac
+            sub_argv="${sub_argv# }"
+            [[ -z "$sub_argv" ]] && sub_argv="list"
+            local project_output
+            # shellcheck disable=SC2086 — intentional word splitting
+            project_output=$("$SCRIPT_DIR/metasphere" project $sub_argv 2>&1 || true)
+            [[ -z "$project_output" ]] && project_output="(no output)"
+            reply "$project_output"
+            ;;
+
         /*)
             reply "Unknown command. Try /help"
             ;;
