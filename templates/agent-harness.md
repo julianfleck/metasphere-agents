@@ -75,6 +75,16 @@ echo "complete: finished jwt security analysis" > ~/.metasphere/agents/{{AGENT_I
 - Use `cam context "topic"` for focused context
 - Your findings will be automatically indexed into memory
 
+## Staying alive in the lifecycle system
+
+At every checkpoint, call `tasks update <id> "progress note"` to bump
+`updated_at`. This tells the lifecycle consolidator you're still alive
+on the task. Even a line like "still working on X" counts. If you go
+silent for more than 15 minutes, the consolidation cycle will ping you
+with a `!query` status check, and after a few ignored pings it
+escalates to `@orchestrator` or `@user`. One update every 15 minutes
+keeps you out of that loop.
+
 ## Completion
 
 When your task is complete:

@@ -71,6 +71,8 @@ class Task:
     completed: str = ""
     updated: str = ""
     assignee: str = ""
+    last_pinged_at: str = ""
+    ping_count: int = 0
     body: str = ""
     # runtime-only fields (excluded from serialisation)
     path: Path | None = field(default=None, repr=False, compare=False)
@@ -94,6 +96,8 @@ class Task:
             "started_at": self.started,
             "updated_at": self.updated,
             "completed_at": self.completed,
+            "last_pinged_at": self.last_pinged_at,
+            "ping_count": self.ping_count,
         }
         return serialize_frontmatter(Frontmatter(meta, self.body))
 
@@ -116,6 +120,8 @@ class Task:
             updated=s("updated_at"),
             completed=s("completed_at"),
             assignee=s("assigned_to"),
+            last_pinged_at=s("last_pinged_at"),
+            ping_count=int(m.get("ping_count") or 0),
             body=fm.body,
             path=path,
         )

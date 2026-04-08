@@ -1,65 +1,72 @@
-"""Memory consolidation: scan active tasks, match against git history.
+"""Task lifecycle consolidation.
 
-Walks every ``.tasks/active/*.md`` under the repo, asks ``git log`` for
-commits in the recent window, and assigns each task one of three
-verdicts:
+This module runs on a short cron (every ~5 minutes) and classifies every
+active task into one of five lifecycle verdicts:
 
-* **high**   — commit subject/body references the task slug verbatim.
-               Auto-archive (move to ``archive/YYYY-MM-DD/``) with a
-               consolidation note.
-* **medium** — commit subject contains >50% of the task title's
-               significant tokens. Annotate the task with a "possibly
-               completed via <sha>?" line; do not archive.
-* **low**    — no signal. Leave alone.
+* **ACTIVE**   — ``updated_at`` (or ``last_pinged_at``, used as a cooldown
+                 marker) is within the stale window. Leave alone.
+* **STALE**    — assigned, but both ``updated_at`` and ``last_pinged_at``
+                 are older than the stale window. Ping the owning agent
+                 for a status check; escalate to @orchestrator or @user
+                 if the ping count crosses the threshold.
+* **BLOCKED**  — ``status`` starts with ``blocked``. Waiting on something
+                 external — don't ping.
+* **UNOWNED**  — ``assigned_to`` is empty and no recent activity. Escalate
+                 to @orchestrator for triage.
+* **DONE**     — ``status`` starts with ``complete`` but the file is still
+                 in ``active/``. Archive immediately.
 
-Every verdict (including ``low``) emits a ``task.consolidate`` event so
-the audit trail survives even when nothing was changed on disk.
+The git-commit collector from the previous incarnation of this module is
+kept as ONE optional signal: if a commit in the recent window references
+the task slug verbatim, the task's effective ``updated_at`` is bumped to
+the commit time before classification. This closes the loop for code
+work without a separate code path — most tasks won't have any commit
+evidence and that's fine.
 
-Safety: this module never deletes anything. The only mutating action is
-``tasks.complete_task`` (which moves to ``archive/``) and
-``tasks.add_update`` (which appends a note). Both are reversible.
-
-The bar for **high** is intentionally strict — the user explicitly
-preferred leaving a stale task open over wrongly archiving a live one.
+Safety: the only mutating actions are
+:func:`metasphere.tasks.add_update` (appends a note / bumps updated_at),
+:func:`metasphere.tasks.update_task` (writes ``last_pinged_at`` +
+``ping_count``), :func:`metasphere.tasks.complete_task` (archive), and
+:func:`metasphere.messages.send_message` (ping/escalate). No silent
+deletions.
 """
 
 from __future__ import annotations
 
-import dataclasses
+import datetime as _dt
 import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from . import schedule as _sched
 from . import tasks as _tasks
 from .events import log_event
 from .paths import Paths, resolve
 
-# Verdict levels, ordered weakest → strongest.
-VERDICT_LOW = "low"
-VERDICT_MEDIUM = "medium"
-VERDICT_HIGH = "high"
-VERDICT_ORDER = {VERDICT_LOW: 0, VERDICT_MEDIUM: 1, VERDICT_HIGH: 2}
+# ---------------------------------------------------------------------------
+# Verdicts
+# ---------------------------------------------------------------------------
 
-# Default lookback window for git log scanning.
-DEFAULT_SINCE = "14d"
+VERDICT_ACTIVE = "ACTIVE"
+VERDICT_STALE = "STALE"
+VERDICT_BLOCKED = "BLOCKED"
+VERDICT_UNOWNED = "UNOWNED"
+VERDICT_DONE = "DONE"
 
-# Default minimum verdict that triggers a mutating action.
-DEFAULT_THRESHOLD = VERDICT_MEDIUM
+VERDICTS = (VERDICT_ACTIVE, VERDICT_STALE, VERDICT_BLOCKED, VERDICT_UNOWNED, VERDICT_DONE)
 
-# Tokens that are too generic to count toward fuzzy title matching.
-_STOPWORDS = frozenset(
-    """
-    a an the and or but for to of in on with from by at as is be it
-    this that these those add fix update create make new use
-    task tasks work do done feature bug
-    """.split()
-)
+# Default lifecycle window. Anything not touched within this many minutes
+# is a candidate for a status-check ping.
+STALE_WINDOW_MINUTES_DEFAULT = 15
 
-# Slug pattern: tasks slugs are lowercase hyphen-separated identifiers
-# (see metasphere.tasks.slugify).
-_SLUG_RE_CACHE: dict[str, re.Pattern[str]] = {}
+# After this many pings without progress, escalate a step further
+# (orchestrator → user).
+PING_ESCALATE_THRESHOLD_DEFAULT = 3
+
+# Git lookback window. Only used as a soft signal that bumps updated_at.
+DEFAULT_SINCE = "2d"
 
 
 # ---------------------------------------------------------------------------
@@ -68,11 +75,10 @@ _SLUG_RE_CACHE: dict[str, re.Pattern[str]] = {}
 
 JOB_ID = "metasphere-task-consolidate"
 JOB_NAME = "task:consolidate"
-JOB_CRON = "17 */4 * * *"  # every 4h at :17 (offset from heartbeat ticks)
+JOB_CRON = "*/5 * * * *"  # every 5 minutes
 
 
 def build_job() -> _sched.Job:
-    """Construct the consolidate cron job (mirrors update.build_job)."""
     return _sched.Job(
         id=JOB_ID,
         source="consolidate",
@@ -91,7 +97,6 @@ def build_job() -> _sched.Job:
 
 
 def register_job(paths: Paths | None = None) -> _sched.Job:
-    """Idempotently install/refresh the consolidate cron job."""
     paths = paths or resolve()
     paths.schedule.mkdir(parents=True, exist_ok=True)
     new_job = build_job()
@@ -131,28 +136,6 @@ def unregister_job(paths: Paths | None = None) -> bool:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class Evidence:
-    sha: str
-    subject: str
-    verdict: str
-    score: float
-    reason: str
-
-
-@dataclass
-class TaskVerdict:
-    task: _tasks.Task
-    verdict: str
-    evidence: list[Evidence] = field(default_factory=list)
-
-    @property
-    def best(self) -> Evidence | None:
-        if not self.evidence:
-            return None
-        return max(self.evidence, key=lambda e: (VERDICT_ORDER[e.verdict], e.score))
-
-
 def scan_active_tasks(repo_root: Path) -> list[_tasks.Task]:
     """Return every task currently in any ``.tasks/active/`` under the repo."""
     repo_root = Path(repo_root).resolve()
@@ -170,20 +153,15 @@ def scan_active_tasks(repo_root: Path) -> list[_tasks.Task]:
 
 
 # ---------------------------------------------------------------------------
-# Evidence collection
+# Git-commit soft signal
 # ---------------------------------------------------------------------------
 
-
-def _significant_tokens(title: str) -> list[str]:
-    raw = re.findall(r"[a-z0-9]+", title.lower())
-    return [t for t in raw if len(t) >= 4 and t not in _STOPWORDS]
+_SLUG_RE_CACHE: dict[str, re.Pattern[str]] = {}
 
 
 def _slug_pattern(slug: str) -> re.Pattern[str]:
     p = _SLUG_RE_CACHE.get(slug)
     if p is None:
-        # Word boundary on either side. Slugs contain hyphens which are
-        # not \w, so anchor with non-word lookarounds instead.
         p = re.compile(r"(?<![\w-])" + re.escape(slug) + r"(?![\w-])", re.IGNORECASE)
         _SLUG_RE_CACHE[slug] = p
     return p
@@ -193,7 +171,6 @@ _SINCE_SHORTHAND = re.compile(r"^(\d+)\s*([dwhm])$")
 
 
 def _normalize_since(since: str) -> str:
-    """Translate ``7d``/``2w``/``6h``/``30m`` into git's ``--since`` format."""
     m = _SINCE_SHORTHAND.match(since.strip())
     if not m:
         return since
@@ -202,152 +179,337 @@ def _normalize_since(since: str) -> str:
     return f"{n} {word} ago"
 
 
-def _git_log(repo_root: Path, since: str) -> list[tuple[str, str, str]]:
-    """Return ``[(sha, subject, body)]`` for commits in the window.
-
-    Uses a NUL-delimited format so commit messages with newlines stay
-    intact.
-    """
-    sep = "\x1e"  # record separator
-    fmt = f"%H%x09%s%x09%b{sep}"
+def _git_log(repo_root: Path, since: str) -> list[tuple[str, str, str, str]]:
+    """Return ``[(sha, iso_date, subject, body)]`` for commits in the window."""
+    sep = "\x1e"
+    fmt = f"%H%x09%cI%x09%s%x09%b{sep}"
     try:
         out = subprocess.check_output(
-            ["git", "-C", str(repo_root), "log", f"--since={_normalize_since(since)}", f"--pretty=format:{fmt}"],
+            ["git", "-C", str(repo_root), "log",
+             f"--since={_normalize_since(since)}", f"--pretty=format:{fmt}"],
             text=True,
             stderr=subprocess.DEVNULL,
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         return []
-    records: list[tuple[str, str, str]] = []
+    records: list[tuple[str, str, str, str]] = []
     for chunk in out.split(sep):
         chunk = chunk.strip("\n")
         if not chunk:
             continue
-        parts = chunk.split("\t", 2)
-        if len(parts) < 2:
+        parts = chunk.split("\t", 3)
+        if len(parts) < 3:
             continue
         sha = parts[0]
-        subject = parts[1]
-        body = parts[2] if len(parts) > 2 else ""
-        records.append((sha, subject, body))
+        iso = parts[1]
+        subject = parts[2]
+        body = parts[3] if len(parts) > 3 else ""
+        records.append((sha, iso, subject, body))
     return records
 
 
-def find_evidence_for_task(
-    task: _tasks.Task,
-    commits: list[tuple[str, str, str]],
-) -> list[Evidence]:
-    """Score each commit against this task. Returns evidence sorted strongest first."""
+def _commit_touches(
+    task: _tasks.Task, commits: list[tuple[str, str, str, str]]
+) -> tuple[str, str] | None:
+    """If any commit references the task slug, return (sha, iso_date) of the newest."""
     slug = task.id
-    slug_re = _slug_pattern(slug) if slug else None
-    title_tokens = _significant_tokens(task.title or "")
-    title_set = set(title_tokens)
-
-    out: list[Evidence] = []
-    for sha, subject, body in commits:
-        verdict = VERDICT_LOW
-        score = 0.0
-        reason = ""
-
-        haystack = f"{subject}\n{body}"
-
-        # HIGH: slug literal hit anywhere in commit message.
-        if slug_re and slug_re.search(haystack):
-            verdict = VERDICT_HIGH
-            score = 1.0
-            reason = f"slug '{slug}' present in commit message"
-            out.append(Evidence(sha=sha[:12], subject=subject, verdict=verdict, score=score, reason=reason))
-            continue
-
-        # MEDIUM: >50% of significant title tokens land in the subject.
-        if title_set:
-            subject_tokens = set(_significant_tokens(subject))
-            overlap = title_set & subject_tokens
-            ratio = len(overlap) / max(1, len(title_set))
-            if ratio > 0.5 and len(overlap) >= 2:
-                verdict = VERDICT_MEDIUM
-                score = ratio
-                reason = f"{len(overlap)}/{len(title_set)} title tokens in subject: {sorted(overlap)}"
-                out.append(Evidence(sha=sha[:12], subject=subject, verdict=verdict, score=score, reason=reason))
-                continue
-
-        # LOW: no record (don't add — keeps output noise down).
-
-    out.sort(key=lambda e: (VERDICT_ORDER[e.verdict], e.score), reverse=True)
-    return out
+    if not slug:
+        return None
+    pat = _slug_pattern(slug)
+    best: tuple[str, str] | None = None
+    for sha, iso, subject, body in commits:
+        if pat.search(f"{subject}\n{body}"):
+            if best is None or iso > best[1]:
+                best = (sha[:12], iso)
+    return best
 
 
 # ---------------------------------------------------------------------------
-# Apply
+# Classification
 # ---------------------------------------------------------------------------
 
 
-def _meets_threshold(verdict: str, threshold: str) -> bool:
-    return VERDICT_ORDER[verdict] >= VERDICT_ORDER[threshold]
+def _utcnow() -> _dt.datetime:
+    return _dt.datetime.now(_dt.timezone.utc)
+
+
+def _parse_iso(s: str) -> _dt.datetime | None:
+    if not s:
+        return None
+    try:
+        # Accept trailing Z and offset forms alike.
+        v = s.replace("Z", "+00:00")
+        dt = _dt.datetime.fromisoformat(v)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_dt.timezone.utc)
+        return dt
+    except ValueError:
+        return None
+
+
+def classify_task(
+    task: _tasks.Task,
+    *,
+    now: _dt.datetime | None = None,
+    stale_window_minutes: int = STALE_WINDOW_MINUTES_DEFAULT,
+) -> str:
+    """Return one of the five lifecycle verdicts for ``task``."""
+    now = now or _utcnow()
+    window = _dt.timedelta(minutes=stale_window_minutes)
+
+    status = (task.status or "").strip().lower()
+    if status.startswith("complete"):
+        return VERDICT_DONE
+    if status.startswith("blocked"):
+        return VERDICT_BLOCKED
+
+    updated = _parse_iso(task.updated)
+    if updated and (now - updated) < window:
+        return VERDICT_ACTIVE
+
+    # Cooldown: if we recently pinged, don't re-ping even though
+    # updated_at is stale. Treat as ACTIVE for this cycle.
+    last_ping = _parse_iso(task.last_pinged_at)
+    if last_ping and (now - last_ping) < window:
+        return VERDICT_ACTIVE
+
+    if not task.assignee:
+        return VERDICT_UNOWNED
+    return VERDICT_STALE
+
+
+# ---------------------------------------------------------------------------
+# Actions
+# ---------------------------------------------------------------------------
+
+
+def _is_persistent_agent(agent_id: str, paths: Paths) -> bool:
+    if not agent_id:
+        return False
+    name = agent_id if agent_id.startswith("@") else "@" + agent_id
+    agent_dir = paths.agent_dir(name)
+    return (agent_dir / "MISSION.md").exists()
+
+
+def _bump_ping(task: _tasks.Task, repo_root: Path) -> _tasks.Task:
+    """Write ``last_pinged_at`` (now) and increment ``ping_count``."""
+    now_iso = _utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _tasks.update_task(
+        task.id,
+        repo_root,
+        last_pinged_at=now_iso,
+        ping_count=task.ping_count + 1,
+    )
+
+
+def _last_update_line(body: str) -> str:
+    """Extract the most recent ``- <ts> <note>`` line under ``## Updates``."""
+    if "## Updates" not in body:
+        return ""
+    section = body.split("## Updates", 1)[1]
+    lines = [l.strip() for l in section.splitlines() if l.strip().startswith("- ")]
+    return lines[-1].lstrip("- ").strip() if lines else ""
+
+
+def ping_persistent_agent(
+    task: _tasks.Task,
+    repo_root: Path,
+    paths: Paths,
+    *,
+    sender: Callable[..., object] | None = None,
+) -> dict:
+    """Send a ``!query`` status-check to the task's assignee."""
+    sender = sender or _default_sender()
+    body = (
+        f"status check on {task.id}: still working, done, blocked, or paused?\n"
+        f"title: {task.title}\n"
+        f"last update: {_last_update_line(task.body) or '(none)'}"
+    )
+    try:
+        sender(task.assignee, "!query", body, "@consolidate", paths=paths)
+        delivered = True
+    except Exception as e:  # pragma: no cover - defensive
+        delivered = False
+        body = f"error: {e}"
+    _bump_ping(task, repo_root)
+    return {"action": "pinged", "target": task.assignee, "delivered": delivered}
+
+
+def escalate_to_orchestrator(
+    task: _tasks.Task,
+    reason: str,
+    repo_root: Path,
+    paths: Paths,
+    *,
+    sender: Callable[..., object] | None = None,
+) -> dict:
+    sender = sender or _default_sender()
+    body = (
+        f"stale task review: {task.id} ({reason}) — "
+        f"original: {task.title}, "
+        f"last update: {_last_update_line(task.body) or '(none)'}, "
+        f"ping_count={task.ping_count}"
+    )
+    try:
+        sender("@orchestrator", "!info", body, "@consolidate", paths=paths)
+        delivered = True
+    except Exception as e:  # pragma: no cover - defensive
+        delivered = False
+        body = f"error: {e}"
+    _bump_ping(task, repo_root)
+    return {"action": "escalated-orchestrator", "target": "@orchestrator", "delivered": delivered}
+
+
+def escalate_to_user(
+    task: _tasks.Task,
+    reason: str,
+    repo_root: Path,
+    paths: Paths,
+    *,
+    telegram_sender: Callable[[str], bool] | None = None,
+) -> dict:
+    telegram_sender = telegram_sender or _default_telegram_sender()
+    body = (
+        f"URGENT stale task: {task.id} ({reason}) — "
+        f"{task.title}; ping_count={task.ping_count}; "
+        f"last update: {_last_update_line(task.body) or '(none)'}"
+    )
+    try:
+        delivered = bool(telegram_sender(body))
+    except Exception:
+        delivered = False
+    return {"action": "escalated-user", "target": "@user", "delivered": delivered}
+
+
+def archive_done_task(
+    task: _tasks.Task,
+    repo_root: Path,
+    *,
+    reason: str = "consolidation cleanup",
+) -> dict:
+    try:
+        _tasks.complete_task(task.id, reason, repo_root)
+        return {"action": "archived", "target": "", "delivered": True}
+    except Exception as e:  # pragma: no cover - defensive
+        return {"action": f"error:{e}", "target": "", "delivered": False}
+
+
+def _default_sender() -> Callable[..., object]:
+    # Lazy import to keep consolidate importable in minimal contexts.
+    from . import messages as _messages
+
+    def send(target: str, label: str, body: str, from_agent: str, *, paths: Paths):
+        return _messages.send_message(
+            target, label, body, from_agent, paths=paths, wake=False
+        )
+
+    return send
+
+
+def _default_telegram_sender() -> Callable[[str], bool]:
+    def send(body: str) -> bool:
+        try:
+            from . import telegram as _tg
+            # Best-effort: many install shapes expose different entrypoints.
+            fn = getattr(_tg, "send_user_message", None) or getattr(_tg, "send", None)
+            if fn is None:
+                return False
+            fn(body)
+            return True
+        except Exception:
+            return False
+    return send
+
+
+# ---------------------------------------------------------------------------
+# Apply (verdict → action)
+# ---------------------------------------------------------------------------
 
 
 def apply_verdict(
-    tv: TaskVerdict,
+    task: _tasks.Task,
+    verdict: str,
     repo_root: Path,
+    paths: Paths,
     *,
-    threshold: str,
-    dry_run: bool,
-    paths: Paths | None = None,
+    dry_run: bool = False,
+    ping_escalate_threshold: int = PING_ESCALATE_THRESHOLD_DEFAULT,
+    sender: Callable[..., object] | None = None,
+    telegram_sender: Callable[[str], bool] | None = None,
 ) -> dict:
-    """Apply the verdict to the task on disk and emit an event.
+    """Dispatch verdict → side effect. Returns a result dict for rendering."""
+    result: dict = {
+        "task_id": task.id,
+        "title": task.title,
+        "verdict": verdict,
+        "action": "noop",
+        "target": "",
+        "delivered": False,
+        "dry_run": dry_run,
+    }
 
-    Returns a small dict with the action taken (for the CLI to render).
-    """
-    paths = paths or resolve()
-    best = tv.best
-    action = "noop"
-    sha = best.sha if best else ""
-    note = ""
-
-    # Decide what to do based on verdict + threshold.
-    if tv.verdict == VERDICT_HIGH and _meets_threshold(VERDICT_HIGH, threshold):
-        note = f"consolidation: presumed-complete via {sha}"
-        if not dry_run:
-            try:
-                _tasks.complete_task(tv.task.id, note, repo_root)
-                action = "archived"
-            except Exception as e:  # pragma: no cover - defensive
-                action = f"error:{e}"
+    if verdict in (VERDICT_ACTIVE, VERDICT_BLOCKED):
+        pass  # no action
+    elif verdict == VERDICT_DONE:
+        if dry_run:
+            result["action"] = "would-archive"
         else:
-            action = "would-archive"
-    elif tv.verdict == VERDICT_MEDIUM and _meets_threshold(VERDICT_MEDIUM, threshold):
-        note = f"possibly-completed via {sha}? ({best.reason if best else ''})"
-        if not dry_run:
-            try:
-                _tasks.add_update(tv.task.id, note, repo_root)
-                action = "annotated"
-            except Exception as e:  # pragma: no cover - defensive
-                action = f"error:{e}"
+            result.update(archive_done_task(task, repo_root))
+    elif verdict == VERDICT_UNOWNED:
+        reason = "unowned"
+        if dry_run:
+            result["action"] = "would-escalate-orchestrator"
+            result["target"] = "@orchestrator"
         else:
-            action = "would-annotate"
+            result.update(escalate_to_orchestrator(task, reason, repo_root, paths, sender=sender))
+    elif verdict == VERDICT_STALE:
+        # If we already pinged enough times, go up one level. Otherwise
+        # either ping the assignee (if persistent) or escalate right away.
+        reason = f"stale>{STALE_WINDOW_MINUTES_DEFAULT}m"
+        if task.ping_count >= ping_escalate_threshold:
+            if dry_run:
+                result["action"] = "would-escalate-user"
+                result["target"] = "@user"
+            else:
+                result.update(escalate_to_user(
+                    task, reason, repo_root, paths, telegram_sender=telegram_sender
+                ))
+                # Also bump ping count via orchestrator path so we don't
+                # re-fire at the user next cycle either.
+                _bump_ping(task, repo_root)
+        elif _is_persistent_agent(task.assignee, paths):
+            if dry_run:
+                result["action"] = "would-ping"
+                result["target"] = task.assignee
+            else:
+                result.update(ping_persistent_agent(task, repo_root, paths, sender=sender))
+        else:
+            if dry_run:
+                result["action"] = "would-escalate-orchestrator"
+                result["target"] = "@orchestrator"
+            else:
+                result.update(escalate_to_orchestrator(task, reason, repo_root, paths, sender=sender))
 
-    # Always emit an event — even for low/skip — for the audit trail.
+    # Always emit an event for the audit trail.
     try:
         log_event(
             "task.consolidate",
-            f"{tv.task.id}: {tv.verdict} → {action}",
+            f"{task.id}: {verdict} → {result['action']}",
             meta={
-                "task_id": tv.task.id,
-                "title": tv.task.title,
-                "verdict": tv.verdict,
-                "action": action,
-                "threshold": threshold,
+                "task_id": task.id,
+                "title": task.title,
+                "verdict": verdict,
+                "action": result["action"],
+                "target": result.get("target", ""),
                 "dry_run": dry_run,
-                "sha": sha,
-                "reason": best.reason if best else "",
-                "evidence_count": len(tv.evidence),
+                "ping_count": task.ping_count,
             },
             paths=paths,
         )
-    except Exception:  # pragma: no cover - defensive
+    except Exception:
         pass
 
-    return {"task_id": tv.task.id, "verdict": tv.verdict, "action": action, "sha": sha, "note": note}
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +519,7 @@ def apply_verdict(
 
 @dataclass
 class ConsolidateReport:
-    threshold: str
+    stale_window_minutes: int
     since: str
     dry_run: bool
     results: list[dict] = field(default_factory=list)
@@ -373,27 +535,48 @@ def run_pass(
     *,
     repo_root: Path | None = None,
     since: str = DEFAULT_SINCE,
-    threshold: str = DEFAULT_THRESHOLD,
+    stale_window_minutes: int = STALE_WINDOW_MINUTES_DEFAULT,
+    ping_escalate_threshold: int = PING_ESCALATE_THRESHOLD_DEFAULT,
     dry_run: bool = False,
     paths: Paths | None = None,
+    sender: Callable[..., object] | None = None,
+    telegram_sender: Callable[[str], bool] | None = None,
 ) -> ConsolidateReport:
-    """One full consolidation pass over the repo."""
+    """One full lifecycle consolidation pass over the repo."""
     paths = paths or resolve()
     repo_root = Path(repo_root) if repo_root else paths.repo
-    if threshold not in VERDICT_ORDER:
-        raise ValueError(f"invalid threshold {threshold!r}; want high|medium|low")
 
-    tasks = scan_active_tasks(repo_root)
+    tasks_found = scan_active_tasks(repo_root)
     commits = _git_log(repo_root, since)
 
-    report = ConsolidateReport(threshold=threshold, since=since, dry_run=dry_run)
-    for t in tasks:
-        evidence = find_evidence_for_task(t, commits)
-        verdict = evidence[0].verdict if evidence else VERDICT_LOW
-        tv = TaskVerdict(task=t, verdict=verdict, evidence=evidence)
-        result = apply_verdict(tv, repo_root, threshold=threshold, dry_run=dry_run, paths=paths)
-        # Decorate with the title for nicer rendering.
-        result["title"] = t.title
+    now = _utcnow()
+    report = ConsolidateReport(
+        stale_window_minutes=stale_window_minutes, since=since, dry_run=dry_run
+    )
+
+    for t in tasks_found:
+        # Git-commit soft signal: if a recent commit references the slug,
+        # treat that commit's date as a touch on updated_at.
+        evidence = _commit_touches(t, commits)
+        if evidence:
+            sha, iso = evidence
+            commit_dt = _parse_iso(iso)
+            task_dt = _parse_iso(t.updated)
+            if commit_dt and (not task_dt or commit_dt > task_dt):
+                t.updated = commit_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        verdict = classify_task(
+            t, now=now, stale_window_minutes=stale_window_minutes
+        )
+        result = apply_verdict(
+            t, verdict, repo_root, paths,
+            dry_run=dry_run,
+            ping_escalate_threshold=ping_escalate_threshold,
+            sender=sender,
+            telegram_sender=telegram_sender,
+        )
+        if evidence:
+            result["commit_touch"] = evidence[0]
         report.results.append(result)
 
     return report

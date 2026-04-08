@@ -1,12 +1,8 @@
-"""Tests for metasphere.consolidate.
-
-Builds a temp git repo with real ``.tasks/active/`` files and a real
-``git log`` history, then exercises HIGH / MEDIUM / LOW classification
-and the apply step (archive vs annotate vs noop).
-"""
+"""Tests for metasphere.consolidate (lifecycle verdicts)."""
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import subprocess
 from pathlib import Path
@@ -39,7 +35,6 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "config", "user.name", "Test")
-    # Seed an initial commit so HEAD exists.
     (repo / "README.md").write_text("seed\n")
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-q", "-m", "seed")
@@ -60,6 +55,20 @@ def _commit(repo: Path, filename: str, message: str) -> str:
     ).strip()
 
 
+def _set_updated(task: _tasks.Task, iso: str, repo: Path) -> _tasks.Task:
+    # update_task bumps updated_at to now; we need to force it older.
+    # Rewrite the file directly.
+    text = task.path.read_text()
+    new = text.replace(f"updated_at: {task.updated}", f"updated_at: {iso}")
+    task.path.write_text(new)
+    return _tasks.Task.from_text(task.path.read_text(), path=task.path)
+
+
+def _iso(minutes_ago: int) -> str:
+    dt = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=minutes_ago)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 # ---------------------------------------------------------------------------
 # Scan
 # ---------------------------------------------------------------------------
@@ -73,114 +82,269 @@ def test_scan_active_tasks_returns_only_active(repo, tmp_paths):
 
 
 # ---------------------------------------------------------------------------
-# Verdicts
+# Classification
 # ---------------------------------------------------------------------------
 
 
-def test_high_confidence_when_slug_in_commit_message(repo, tmp_paths):
-    t = _create_task(repo, "Implement payment retry queue")
-    _commit(repo, "f.txt", f"feat: ship {t.id} end-to-end")
-    commits = _con._git_log(repo, "30d")
-    ev = _con.find_evidence_for_task(t, commits)
-    assert ev
-    assert ev[0].verdict == _con.VERDICT_HIGH
+def test_classify_active_when_recently_updated(repo, tmp_paths):
+    t = _create_task(repo, "fresh")
+    t = _tasks.start_task(t.id, "@worker", repo)
+    assert _con.classify_task(t, stale_window_minutes=15) == _con.VERDICT_ACTIVE
 
 
-def test_medium_confidence_when_title_tokens_overlap(repo, tmp_paths):
-    t = _create_task(repo, "Refactor billing notification dispatcher")
-    # Subject has 3/4 significant tokens (refactor, billing, notification, dispatcher)
-    # — but NOT the slug literally.
-    _commit(repo, "f.txt", "refactor billing notification dispatcher cleanup")
-    commits = _con._git_log(repo, "30d")
-    ev = _con.find_evidence_for_task(t, commits)
-    assert ev
-    # Slug is also present in this case (sluggified title); check medium fallback
-    # works by stripping the slug match path:
-    # The literal slug "refactor-billing-notification-dispatcher" won't appear
-    # word-bounded in the subject ("refactor billing notification dispatcher
-    # cleanup") because the slug uses hyphens. So it should be MEDIUM, not HIGH.
-    assert ev[0].verdict == _con.VERDICT_MEDIUM
+def test_classify_stale_when_owner_and_old(repo, tmp_paths):
+    t = _create_task(repo, "old")
+    t = _tasks.start_task(t.id, "@worker", repo)
+    t = _set_updated(t, _iso(60), repo)
+    assert _con.classify_task(t, stale_window_minutes=15) == _con.VERDICT_STALE
 
 
-def test_low_confidence_when_no_signal(repo, tmp_paths):
-    t = _create_task(repo, "Investigate quarterly report skew")
-    _commit(repo, "f.txt", "chore: bump deps")
-    commits = _con._git_log(repo, "30d")
-    ev = _con.find_evidence_for_task(t, commits)
-    assert ev == []
+def test_classify_unowned_when_no_owner_and_old(repo, tmp_paths):
+    t = _create_task(repo, "orphan")
+    t = _set_updated(t, _iso(60), repo)
+    assert _con.classify_task(t, stale_window_minutes=15) == _con.VERDICT_UNOWNED
 
 
-def test_common_words_alone_do_not_match(repo, tmp_paths):
-    # Title is mostly stopwords — should not produce a false positive.
-    t = _create_task(repo, "Add a new task for the team")
-    _commit(repo, "f.txt", "Add a new feature for the user")
-    commits = _con._git_log(repo, "30d")
-    ev = _con.find_evidence_for_task(t, commits)
-    assert ev == []
+def test_classify_blocked_on_status(repo, tmp_paths):
+    t = _create_task(repo, "waiting")
+    _tasks.update_task(t.id, repo, status="blocked: upstream")
+    t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    t = _set_updated(t, _iso(60), repo)
+    assert _con.classify_task(t, stale_window_minutes=15) == _con.VERDICT_BLOCKED
+
+
+def test_classify_done_on_status(repo, tmp_paths):
+    t = _create_task(repo, "fake-done")
+    _tasks.update_task(t.id, repo, status="complete: all set")
+    t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    assert _con.classify_task(t, stale_window_minutes=15) == _con.VERDICT_DONE
+
+
+def test_cooldown_suppresses_reping(repo, tmp_paths):
+    # stale but recently pinged → treated as ACTIVE
+    t = _create_task(repo, "cooldown")
+    t = _tasks.start_task(t.id, "@worker", repo)
+    t = _set_updated(t, _iso(60), repo)
+    _tasks.update_task(t.id, repo, last_pinged_at=_iso(5))
+    t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    # update_task bumps updated_at, force it back.
+    t = _set_updated(t, _iso(60), repo)
+    assert _con.classify_task(t, stale_window_minutes=15) == _con.VERDICT_ACTIVE
 
 
 # ---------------------------------------------------------------------------
-# Apply
+# Schema migration
 # ---------------------------------------------------------------------------
 
 
-def test_apply_high_archives_task(repo, tmp_paths):
-    t = _create_task(repo, "Wire up cron consolidation")
-    _commit(repo, "f.txt", f"build: {t.id} landed")
-    report = _con.run_pass(repo_root=repo, since="30d", threshold="medium", paths=tmp_paths)
-    actions = {r["task_id"]: r["action"] for r in report.results}
-    assert actions[t.id] == "archived"
-    # Active dir no longer holds it.
+def test_legacy_task_without_new_fields_loads_with_defaults(repo, tmp_paths):
+    t = _create_task(repo, "legacy")
+    # Simulate pre-migration file by stripping the new keys.
+    raw = t.path.read_text()
+    lines = [l for l in raw.splitlines() if not l.startswith("last_pinged_at") and not l.startswith("ping_count")]
+    t.path.write_text("\n".join(lines) + "\n")
+    reloaded = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    assert reloaded.last_pinged_at == ""
+    assert reloaded.ping_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Actions
+# ---------------------------------------------------------------------------
+
+
+class _FakeSender:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, target, label, body, from_agent, *, paths=None):
+        self.calls.append({"target": target, "label": label, "body": body, "from": from_agent})
+        return None
+
+
+def _make_persistent(paths, agent_id: str):
+    d = paths.agent_dir(agent_id)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "MISSION.md").write_text("test persona\n")
+
+
+def test_ping_persistent_agent_sends_query(repo, tmp_paths):
+    _make_persistent(tmp_paths, "@worker")
+    t = _create_task(repo, "ping me")
+    t = _tasks.start_task(t.id, "@worker", repo)
+    t = _set_updated(t, _iso(60), repo)
+
+    sender = _FakeSender()
+    result = _con.apply_verdict(
+        t, _con.VERDICT_STALE, repo, tmp_paths, sender=sender
+    )
+    assert result["action"] == "pinged"
+    assert result["target"] == "@worker"
+    assert len(sender.calls) == 1
+    assert sender.calls[0]["label"] == "!query"
+    assert t.id in sender.calls[0]["body"]
+
+    # ping_count bumped + last_pinged_at set
+    reloaded = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    assert reloaded.ping_count == 1
+    assert reloaded.last_pinged_at != ""
+
+
+def test_stale_nonpersistent_owner_escalates_to_orchestrator(repo, tmp_paths):
+    # No MISSION.md → @someone is ephemeral → escalate
+    t = _create_task(repo, "ephemeral owner")
+    t = _tasks.start_task(t.id, "@ephem", repo)
+    t = _set_updated(t, _iso(60), repo)
+
+    sender = _FakeSender()
+    result = _con.apply_verdict(
+        t, _con.VERDICT_STALE, repo, tmp_paths, sender=sender
+    )
+    assert result["action"] == "escalated-orchestrator"
+    assert sender.calls[0]["target"] == "@orchestrator"
+    assert sender.calls[0]["label"] == "!info"
+
+
+def test_unowned_escalates_to_orchestrator(repo, tmp_paths):
+    t = _create_task(repo, "orphan task")
+    t = _set_updated(t, _iso(60), repo)
+
+    sender = _FakeSender()
+    result = _con.apply_verdict(
+        t, _con.VERDICT_UNOWNED, repo, tmp_paths, sender=sender
+    )
+    assert result["action"] == "escalated-orchestrator"
+    assert sender.calls[0]["target"] == "@orchestrator"
+
+
+def test_ping_count_threshold_escalates_to_user(repo, tmp_paths):
+    _make_persistent(tmp_paths, "@worker")
+    t = _create_task(repo, "loud")
+    t = _tasks.start_task(t.id, "@worker", repo)
+    _tasks.update_task(t.id, repo, ping_count=5)
+    t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    t = _set_updated(t, _iso(60), repo)
+
+    sender = _FakeSender()
+    telegrams: list[str] = []
+
+    def fake_tg(body: str) -> bool:
+        telegrams.append(body)
+        return True
+
+    result = _con.apply_verdict(
+        t, _con.VERDICT_STALE, repo, tmp_paths,
+        sender=sender, telegram_sender=fake_tg,
+    )
+    assert result["action"] == "escalated-user"
+    assert telegrams
+    assert t.id in telegrams[0]
+
+
+def test_done_task_is_archived(repo, tmp_paths):
+    t = _create_task(repo, "silent done")
+    _tasks.update_task(t.id, repo, status="complete: externally")
+    t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+
+    result = _con.apply_verdict(
+        t, _con.VERDICT_DONE, repo, tmp_paths
+    )
+    assert result["action"] == "archived"
     assert not (repo / ".tasks" / "active" / f"{t.id}.md").exists()
-    # Archive dir does.
-    archive_root = repo / ".tasks" / "archive"
-    archived_files = list(archive_root.rglob(f"{t.id}.md"))
-    assert len(archived_files) == 1
-    body = archived_files[0].read_text()
-    assert "presumed-complete" in body
 
 
-def test_apply_medium_annotates_only(repo, tmp_paths):
-    t = _create_task(repo, "Refactor billing notification dispatcher")
-    _commit(repo, "f.txt", "refactor billing notification dispatcher cleanup")
-    report = _con.run_pass(repo_root=repo, since="30d", threshold="medium", paths=tmp_paths)
-    actions = {r["task_id"]: r["action"] for r in report.results}
-    assert actions[t.id] == "annotated"
-    # Still active.
-    active = repo / ".tasks" / "active" / f"{t.id}.md"
-    assert active.exists()
-    body = active.read_text()
-    assert "possibly-completed" in body
+def test_active_noop(repo, tmp_paths):
+    t = _create_task(repo, "fresh")
+    sender = _FakeSender()
+    result = _con.apply_verdict(
+        t, _con.VERDICT_ACTIVE, repo, tmp_paths, sender=sender
+    )
+    assert result["action"] == "noop"
+    assert sender.calls == []
+
+
+def test_blocked_noop(repo, tmp_paths):
+    t = _create_task(repo, "waiting")
+    sender = _FakeSender()
+    result = _con.apply_verdict(
+        t, _con.VERDICT_BLOCKED, repo, tmp_paths, sender=sender
+    )
+    assert result["action"] == "noop"
+    assert sender.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Dry-run
+# ---------------------------------------------------------------------------
 
 
 def test_dry_run_does_not_mutate(repo, tmp_paths):
-    t = _create_task(repo, "Migrate legacy harness pointer")
-    _commit(repo, "f.txt", f"chore: {t.id} done")
-    report = _con.run_pass(
-        repo_root=repo, since="30d", threshold="medium", dry_run=True, paths=tmp_paths
+    _make_persistent(tmp_paths, "@worker")
+    t = _create_task(repo, "keep-me")
+    t = _tasks.start_task(t.id, "@worker", repo)
+    t = _set_updated(t, _iso(60), repo)
+
+    result = _con.apply_verdict(
+        t, _con.VERDICT_STALE, repo, tmp_paths, dry_run=True
     )
-    assert report.results[0]["action"] == "would-archive"
-    assert (repo / ".tasks" / "active" / f"{t.id}.md").exists()
+    assert result["action"] == "would-ping"
+    reloaded = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    assert reloaded.ping_count == 0
+    assert reloaded.last_pinged_at == ""
 
 
-def test_threshold_high_skips_medium(repo, tmp_paths):
-    t = _create_task(repo, "Refactor billing notification dispatcher")
-    _commit(repo, "f.txt", "refactor billing notification dispatcher cleanup")
-    report = _con.run_pass(repo_root=repo, since="30d", threshold="high", paths=tmp_paths)
-    actions = {r["task_id"]: r["action"] for r in report.results}
-    assert actions[t.id] == "noop"
+# ---------------------------------------------------------------------------
+# run_pass integration
+# ---------------------------------------------------------------------------
 
 
-def test_emits_consolidate_event(repo, tmp_paths):
-    t = _create_task(repo, "Wire up cron consolidation")
-    _commit(repo, "f.txt", f"build: {t.id} landed")
-    _con.run_pass(repo_root=repo, since="30d", threshold="medium", paths=tmp_paths)
-    events_log = tmp_paths.events_log
-    assert events_log.exists()
-    lines = [json.loads(l) for l in events_log.read_text().splitlines() if l.strip()]
-    consolidate_events = [e for e in lines if e["type"] == "task.consolidate"]
-    assert consolidate_events
-    assert any(e["meta"]["task_id"] == t.id and e["meta"]["verdict"] == "high" for e in consolidate_events)
+def test_run_pass_cooldown_prevents_reping(repo, tmp_paths):
+    _make_persistent(tmp_paths, "@worker")
+    t = _create_task(repo, "coolme")
+    t = _tasks.start_task(t.id, "@worker", repo)
+    t = _set_updated(t, _iso(60), repo)
+
+    sender = _FakeSender()
+    r1 = _con.run_pass(repo_root=repo, paths=tmp_paths, sender=sender)
+    assert r1.results[0]["action"] == "pinged"
+    assert len(sender.calls) == 1
+
+    # Force updated_at old again (ping bumped it).
+    t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    t = _set_updated(t, _iso(60), repo)
+
+    r2 = _con.run_pass(repo_root=repo, paths=tmp_paths, sender=sender)
+    # Cooldown: still only one send in total.
+    assert r2.results[0]["action"] == "noop"
+    assert len(sender.calls) == 1
+
+
+def test_run_pass_git_commit_bumps_updated(repo, tmp_paths):
+    _make_persistent(tmp_paths, "@worker")
+    t = _create_task(repo, "code task")
+    t = _tasks.start_task(t.id, "@worker", repo)
+    t = _set_updated(t, _iso(60), repo)
+    _commit(repo, "f.txt", f"feat: {t.id} landed")
+
+    sender = _FakeSender()
+    r = _con.run_pass(repo_root=repo, paths=tmp_paths, sender=sender, since="7d")
+    # Commit references the slug → updated_at bumped → ACTIVE
+    assert r.results[0]["verdict"] == _con.VERDICT_ACTIVE
+    assert r.results[0]["action"] == "noop"
+    assert sender.calls == []
+
+
+def test_run_pass_emits_event(repo, tmp_paths):
+    t = _create_task(repo, "orphan")
+    _set_updated(t, _iso(60), repo)
+
+    _con.run_pass(repo_root=repo, paths=tmp_paths, sender=_FakeSender())
+    log = tmp_paths.events_log
+    assert log.exists()
+    lines = [json.loads(l) for l in log.read_text().splitlines() if l.strip()]
+    cons = [e for e in lines if e["type"] == "task.consolidate"]
+    assert cons
+    assert any(e["meta"]["task_id"] == t.id for e in cons)
 
 
 # ---------------------------------------------------------------------------
@@ -195,8 +359,7 @@ def test_register_job_idempotent(repo, tmp_paths):
     jobs = _sched.load_jobs(tmp_paths)
     matches = [j for j in jobs if j.id == _con.JOB_ID]
     assert len(matches) == 1
-    assert matches[0].kind == "cron"
-    assert matches[0].payload_kind == "command"
+    assert matches[0].cron_expr == "*/5 * * * *"
 
 
 def test_unregister_job(repo, tmp_paths):
@@ -204,23 +367,3 @@ def test_unregister_job(repo, tmp_paths):
     assert _con.unregister_job(tmp_paths) is True
     jobs = _sched.load_jobs(tmp_paths)
     assert all(j.id != _con.JOB_ID for j in jobs)
-
-
-# ---------------------------------------------------------------------------
-# dispatch_command
-# ---------------------------------------------------------------------------
-
-
-def test_dispatch_command_executes_argv(tmp_path):
-    marker = tmp_path / "ran"
-    ok = _sched.dispatch_command(f"touch {marker}")
-    assert ok is True
-    assert marker.exists()
-
-
-def test_dispatch_command_returns_false_on_failure():
-    assert _sched.dispatch_command("false") is False
-
-
-def test_dispatch_command_rejects_empty():
-    assert _sched.dispatch_command("") is False
