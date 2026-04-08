@@ -238,6 +238,40 @@ def cmd_spot(args: str, ctx: Context) -> str:
     )
 
 
+def cmd_schedule(args: str, ctx: Context) -> str:
+    """Inspect or interact with the metasphere schedule (cron-style jobs).
+
+    Default action is ``list``. Forwards to ``metasphere schedule ...``.
+    """
+    import shlex
+    sub_argv = shlex.split(args) if args.strip() else ["list"]
+    try:
+        from metasphere.cli import schedule as cli_schedule  # type: ignore
+        import contextlib
+        import io as _io
+
+        buf = _io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            try:
+                rc = cli_schedule.main(sub_argv)
+            except SystemExit as e:
+                rc = int(e.code) if isinstance(e.code, int) else 2
+        out = buf.getvalue().strip()
+        if rc != 0 and not out:
+            out = f"(exit {rc})"
+        return out or "(no output)"
+    except Exception:
+        # Fallback to the entry-point binary
+        return _run(
+            [
+                "/home/openclaw/.openclaw/workspace/repos/rage-substrate/.venv/bin/metasphere",
+                "schedule",
+                *sub_argv,
+            ],
+            timeout=10,
+        )
+
+
 def cmd_session(args: str, ctx: Context) -> str:
     """Restart the orchestrator REPL so it picks up new CLAUDE.md / hooks.
 
@@ -291,6 +325,8 @@ COMMANDS: Dict[str, Callable[[str, Context], str]] = {
     "project_new": lambda args, ctx: cmd_project(("new " + args).strip(), ctx),
     "project_wake": lambda args, ctx: cmd_project(("wake " + args).strip(), ctx),
     "project_chat": lambda args, ctx: cmd_project(("chat " + args).strip(), ctx),
+    "schedule": cmd_schedule,
+    "sched": cmd_schedule,
     "session": cmd_session,
 }
 
@@ -305,6 +341,7 @@ BOT_COMMANDS_MANIFEST: list[tuple[str, str]] = [
     ("agents", "List registered agents"),
     ("send", "Send: /send @agent !label message"),
     ("project", "Projects: /project [list|show|new|wake|chat ...]"),
+    ("schedule", "Inspect schedule: /schedule [list|show|run ...]"),
     ("cam", "Search CAM memory: /cam <query>"),
     ("groups", "Telegram groups admin"),
     ("link", "Copy current topic link"),

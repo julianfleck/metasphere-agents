@@ -149,6 +149,39 @@ If a reply genuinely fits in two sentences and saying more would be padding, two
 
 Only on **silent heartbeat ticks** (see Heartbeat Etiquette above). A heartbeat with nothing user-worthy to report should produce *zero text*, not a compressed summary. That is the only case where minimization is the goal.
 
+### Telegram formatting (write for plain text, not Markdown)
+
+The Telegram Bot API delivers your text **as plain text** in the user's chat. The bot does not request Markdown parse_mode for assistant turns, so any markdown syntax (`**bold**`, `### headings`, `> blockquotes`, indented bullet lists) is rendered literally as those characters — `**foo**` shows up as `**foo**`, not **foo**, and an indented bullet list looks like leading whitespace + asterisks. This is ugly and hard to skim on a phone.
+
+Write Telegram messages in **plain ASCII**, optimized for a one-column, fixed-width-by-default mobile chat:
+
+1. **No markdown emphasis syntax.** No `**bold**`, no `*italic*`, no backticks for inline code, no `### headings`. If you need emphasis, capitalize a word, use UPPERCASE for section labels, or just put the important thing first. Heading-like structure: bare text on its own line followed by a blank line.
+2. **Sections via blank lines and short labels, not `##`.** Example:
+   ```
+   STATUS:
+   - thing one
+   - thing two
+
+   NEXT:
+   - thing three
+   ```
+3. **Bullet lists: dash-prefixed at column 0, no indentation.** Telegram doesn't render nested indented lists — the spaces are kept literally and look bad. If you need a hierarchy, use a one-level dash list and inline the sub-detail with a colon.
+4. **Code, paths, and ASCII tables: wrap in a fenced code block (triple-backtick).** Telegram DOES render fenced code blocks as monospace, which is the only way to make alignment, indentation, or tables look correct. Use this for multi-line tabular data, file paths, command output, anything where whitespace matters. Do NOT use code blocks for ordinary prose.
+5. **Inline file/path/command references: don't bother with backticks.** They render as literal backticks. Just write the path naked. The user knows what `/home/openclaw/...` is.
+6. **Keep lines short.** Mobile screens are narrow. Aim for ~70 chars per line where possible; the 4096-char message cap applies to the whole message, but readability dies long before that.
+7. **Lead with the bottom line.** First line should be the summary or action; details follow. The user often reads only the first sentence on their phone screen.
+8. **Long replies: split logically, not by char count.** The posthook handles 4096-char chunking, but a multi-thread response is more readable as 2–3 standalone messages (each with its own lead) than as one wall of text. Use `metasphere-telegram send` calls in sequence.
+
+This rule applies to:
+- Stop-hook auto-forwarded assistant turns (the default path)
+- Explicit `metasphere-telegram send "..."` calls
+
+It does NOT apply to:
+- Files you write to disk (commit messages, code comments, docs/) — those use normal Markdown.
+- Messages you send to other agents via `messages send @x ...` — agents read them as raw text but they're not constrained by Telegram rendering.
+
+When in doubt: open Telegram on your phone, picture the message there, and ask "would I want to read this?". If the answer involves squinting at indented bullets or `**` characters, rewrite it.
+
 ---
 
 ## Directory Structure
