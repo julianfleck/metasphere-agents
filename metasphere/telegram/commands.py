@@ -279,6 +279,7 @@ COMMANDS: Dict[str, Callable[[str, Context], str]] = {
     "tree": cmd_tree,
     "spot": cmd_spot,
     "project": cmd_project,
+    "projects": cmd_project,  # plural alias — /projects list etc.
     "p": cmd_project,
     # Hidden aliases — not in BOT_COMMANDS_MANIFEST. These exist so cached
     # autocomplete in users' Telegram clients (from when project_list/etc.

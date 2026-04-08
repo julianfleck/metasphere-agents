@@ -1,0 +1,15 @@
+{
+  "schema": 2,
+  "name": "metasphere-agents",
+  "path": "/home/openclaw/Code/metasphere-agents",
+  "created": "2026-04-08T11:01:53Z",
+  "status": "active",
+  "goal": "Self-improving agent harness — repo is both framework + first test subject. Bash→python cutover landed today.",
+  "repo": "https://github.com/julianfleck/metasphere-agents",
+  "members": [
+    {"id": "@julian", "role": "owner", "persistent": true},
+    {"id": "@orchestrator", "role": "lead", "persistent": true}
+  ],
+  "links": {},
+  "telegram_topic": null
+}
