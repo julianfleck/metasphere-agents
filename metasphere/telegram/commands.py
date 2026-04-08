@@ -65,7 +65,8 @@ def cmd_start(args: str, ctx: Context) -> str:
         "Commands:\n"
         "/status /tasks /agents /messages /inbox\n"
         "/send @agent !label msg\n"
-        "/cam query | /groups | /link | /events | /tree | /spot | /ping | /help\n\n"
+        "/project [sub args...] | /cam query | /groups | /link\n"
+        "/events | /tree | /spot | /ping | /help\n\n"
         "Or just message me directly."
     )
 
@@ -189,6 +190,17 @@ def cmd_tree(args: str, ctx: Context) -> str:
     return _run([os.path.join(SCRIPTS_DIR, "metasphere-agent"), "tree"])
 
 
+def cmd_project(args: str, ctx: Context) -> str:
+    """Dispatch to ``metasphere project`` subcommands.
+
+    Bare ``/project`` -> list. ``/project <sub> [args...]`` -> shells out.
+    Quoted args are honored via shlex so users can pass messages.
+    """
+    import shlex
+    sub_argv = shlex.split(args) if args.strip() else ["list"]
+    return _run(["metasphere", "project", *sub_argv])
+
+
 def cmd_spot(args: str, ctx: Context) -> str:
     return _run(
         [
@@ -221,6 +233,8 @@ COMMANDS: Dict[str, Callable[[str, Context], str]] = {
     "events": cmd_events,
     "tree": cmd_tree,
     "spot": cmd_spot,
+    "project": cmd_project,
+    "p": cmd_project,
 }
 
 
