@@ -733,7 +733,7 @@ check_stuck_prompts() {
         fi
     else
         # No placeholder - clear timer
-        [[ -f "$STUCK_PASTE_STATE" ]] && rm -f "$STUCK_PASTE_STATE"
+        [[ -f "$STUCK_PASTE_STATE" ]] && rm -f "$STUCK_PASTE_STATE" || true
     fi
 }
 
