@@ -195,3 +195,104 @@ def test_list_tasks_excludes_completed_by_default(tmp_paths):
 
     everything = t.list_tasks(tmp_paths.scope, tmp_paths.repo, include_completed=True)
     assert {x.title for x in everything} == {"a", "b"}
+
+
+# ---------------------------------------------------------------------------
+# Assignment + project hardening
+# ---------------------------------------------------------------------------
+
+
+def test_create_autofills_assignee_from_env(tmp_paths, monkeypatch):
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@alice")
+    task = t.create_task("owned", "!normal", tmp_paths.scope, tmp_paths.repo)
+    assert task.assignee == "@alice"
+    assert task.project == "default"
+    raw = task.path.read_text()
+    assert "assigned_to: @alice" in raw
+    assert "project: default" in raw
+
+
+def test_create_explicit_project_and_assignee(tmp_paths, monkeypatch):
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@alice")
+    task = t.create_task(
+        "explicit", "!normal", tmp_paths.scope, tmp_paths.repo,
+        project="recurse", assigned_to="@bob",
+    )
+    assert task.project == "recurse"
+    assert task.assignee == "@bob"
+
+
+def test_create_autofills_project_from_scope(tmp_paths, monkeypatch):
+    # Create a fake project at scope
+    from metasphere import project as _project
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@carol")
+    (tmp_paths.scope / ".metasphere").mkdir(parents=True, exist_ok=True)
+    (tmp_paths.scope / ".metasphere" / "project.json").write_text(
+        '{"schema": 2, "name": "demoproj", "path": "'
+        + str(tmp_paths.scope) + '", "created": "", "status": "active"}'
+    )
+    task = t.create_task("inproj", "!normal", tmp_paths.scope, tmp_paths.repo)
+    assert task.project == "demoproj"
+
+
+def test_assign_task_updates_assignee(tmp_paths, monkeypatch):
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@owner")
+    task = t.create_task("a", "!normal", tmp_paths.scope, tmp_paths.repo)
+    updated = t.assign_task(task.id, "@dave", tmp_paths.repo)
+    assert updated.assignee == "@dave"
+    # idempotent-ish: normalizes missing @
+    updated2 = t.assign_task(task.id, "eve", tmp_paths.repo)
+    assert updated2.assignee == "@eve"
+
+
+def test_move_task_project(tmp_paths, monkeypatch):
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@owner")
+    task = t.create_task("a", "!normal", tmp_paths.scope, tmp_paths.repo)
+    assert task.project == "default"
+    moved = t.move_task_project(task.id, "recurse", tmp_paths.repo)
+    assert moved.project == "recurse"
+
+
+def test_legacy_task_without_project_field_loads_as_default(tmp_paths):
+    # Simulate a pre-migration task file lacking 'project:' frontmatter.
+    active = tmp_paths.scope / ".tasks" / "active"
+    active.mkdir(parents=True, exist_ok=True)
+    legacy = active / "legacy.md"
+    legacy.write_text(
+        "---\nid: legacy\ntitle: legacy one\npriority: !normal\nstatus: pending\n"
+        "scope: /\ncreated: 2025-01-01T00:00:00Z\nupdated_at: 2025-01-01T00:00:00Z\n"
+        "---\n\nbody\n"
+    )
+    loaded = t.Task.from_text(legacy.read_text())
+    assert loaded.project == "default"
+
+
+def test_cli_new_warns_and_defaults(tmp_paths, monkeypatch, capsys):
+    from metasphere.cli import tasks as cli_tasks
+    monkeypatch.delenv("METASPHERE_AGENT_ID", raising=False)
+    rc = cli_tasks._cmd_new(["write docs"])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "no --project" in err
+    assert "METASPHERE_AGENT_ID" in err
+
+
+def test_cli_list_filters(tmp_paths, monkeypatch, capsys):
+    from metasphere.cli import tasks as cli_tasks
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@alice")
+    t.create_task("alpha", "!normal", tmp_paths.scope, tmp_paths.repo,
+                  project="recurse", assigned_to="@alice")
+    t.create_task("beta", "!normal", tmp_paths.scope, tmp_paths.repo,
+                  project="default", assigned_to="@bob")
+    t.create_task("gamma", "!normal", tmp_paths.scope, tmp_paths.repo,
+                  project="default", assigned_to="@unassigned")
+    capsys.readouterr()
+    cli_tasks._cmd_list(["--project", "recurse"])
+    out = capsys.readouterr().out
+    assert "alpha" in out and "beta" not in out and "gamma" not in out
+    cli_tasks._cmd_list(["--owner", "@bob"])
+    out = capsys.readouterr().out
+    assert "beta" in out and "alpha" not in out
+    cli_tasks._cmd_list(["--unassigned"])
+    out = capsys.readouterr().out
+    assert "gamma" in out and "alpha" not in out

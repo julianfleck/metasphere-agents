@@ -71,6 +71,7 @@ class Task:
     completed: str = ""
     updated: str = ""
     assignee: str = ""
+    project: str = "default"
     last_pinged_at: str = ""
     ping_count: int = 0
     body: str = ""
@@ -90,6 +91,7 @@ class Task:
             "priority": self.priority,
             "status": self.status,
             "scope": self.scope,
+            "project": self.project,
             "created": self.created,
             "created_by": self.created_by,
             "assigned_to": self.assignee,
@@ -114,6 +116,7 @@ class Task:
             priority=s("priority", PRIORITY_DEFAULT) or PRIORITY_DEFAULT,
             status=s("status", STATUS_PENDING) or STATUS_PENDING,
             scope=s("scope", "/") or "/",
+            project=s("project", "default") or "default",
             created=s("created"),
             created_by=s("created_by"),
             started=s("started_at"),
@@ -172,6 +175,18 @@ def _lock_path(task_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
+def _auto_project(scope: Path) -> str:
+    """Determine project slug from scope via project_for_scope, else 'default'."""
+    try:
+        from .project import project_for_scope
+        proj = project_for_scope(Path(scope))
+        if proj is not None and proj.name:
+            return proj.name
+    except Exception:
+        pass
+    return "default"
+
+
 def create_task(
     title: str,
     priority: str,
@@ -179,8 +194,17 @@ def create_task(
     repo_root: Path,
     *,
     created_by: str | None = None,
+    project: str | None = None,
+    assigned_to: str | None = None,
 ) -> Task:
-    """Create a new task at ``<scope>/.tasks/active/<slug>.md``."""
+    """Create a new task at ``<scope>/.tasks/active/<slug>.md``.
+
+    ``project`` defaults to the enclosing project (via
+    ``project_for_scope``) or ``"default"``. ``assigned_to`` defaults to
+    ``$METASPHERE_AGENT_ID`` (the resolving agent). Tasks should always
+    have both; callers that can't determine an owner should explicitly
+    pass ``"@unassigned"``.
+    """
     if priority not in VALID_PRIORITIES:
         raise ValueError(f"invalid priority {priority!r}; want one of {VALID_PRIORITIES}")
 
@@ -192,20 +216,45 @@ def create_task(
     slug = _unique_slug(active, slugify(title))
     path = active / f"{slug}.md"
 
+    import os as _os
+    resolved_creator = created_by if created_by is not None else resolve_agent_id()
+    if assigned_to is not None:
+        resolved_assignee = assigned_to
+    else:
+        env_agent = _os.environ.get("METASPHERE_AGENT_ID", "").strip()
+        resolved_assignee = env_agent  # empty string preserves legacy unowned semantics
+    resolved_project = project if project is not None else _auto_project(scope)
+
     task = Task(
         id=slug,
         title=title,
         priority=priority,
         status=STATUS_PENDING,
         scope=_rel_to_repo(scope, repo_root),
+        project=resolved_project,
         created=_utcnow(),
         updated=_utcnow(),
-        created_by=created_by if created_by is not None else resolve_agent_id(),
+        created_by=resolved_creator,
+        assignee=resolved_assignee,
         body=f"\n# {title}\n\n## Updates\n\n- {_utcnow()} Created task\n",
         path=path,
     )
     atomic_write_text(path, task.to_text())
     return task
+
+
+def assign_task(task_id: str, agent: str, repo_root: Path) -> Task:
+    """Retroactively set ``assigned_to`` on a task without changing status."""
+    if not agent.startswith("@"):
+        agent = "@" + agent
+    return update_task(task_id, repo_root, assigned_to=agent,
+                       note=f"Assigned to {agent}")
+
+
+def move_task_project(task_id: str, project: str, repo_root: Path) -> Task:
+    """Retroactively set the ``project`` field on a task."""
+    return update_task(task_id, repo_root, project=project,
+                       note=f"Moved to project {project}")
 
 
 def _find_task_file(task_id: str, repo_root: Path, *, include_completed: bool = True) -> Path | None:

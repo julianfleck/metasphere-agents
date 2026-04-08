@@ -31,12 +31,41 @@ def _agent() -> str:
 
 
 def _cmd_list(args: list[str]) -> int:
-    filter_ = args[0] if args else "active"
+    # Parse positional filter + long-flag filters
+    filter_ = "active"
+    unassigned = False
+    project_filter: str | None = None
+    owner_filter: str | None = None
+    rest = list(args)
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "--unassigned":
+            unassigned = True
+            i += 1
+        elif a == "--project" and i + 1 < len(rest):
+            project_filter = rest[i + 1]
+            i += 2
+        elif a == "--owner" and i + 1 < len(rest):
+            owner_filter = rest[i + 1]
+            i += 2
+        elif a in ("active", "all", "completed"):
+            filter_ = a
+            i += 1
+        else:
+            i += 1
     include_completed = filter_ in ("all", "completed")
     scope, repo = _ctx()
     items = _tasks.list_tasks(scope, repo, include_completed=include_completed)
     if filter_ == "completed":
         items = [t for t in items if t.status == _tasks.STATUS_COMPLETED]
+    if unassigned:
+        items = [t for t in items if not t.assignee or t.assignee == "@unassigned"]
+    if project_filter is not None:
+        items = [t for t in items if (t.project or "default") == project_filter]
+    if owner_filter is not None:
+        owner_norm = owner_filter if owner_filter.startswith("@") else "@" + owner_filter
+        items = [t for t in items if t.assignee == owner_norm]
     if not items:
         print(f"## Tasks: No {filter_} tasks in scope")
         return 0
@@ -65,22 +94,96 @@ def _cmd_list(args: list[str]) -> int:
 
 def _cmd_new(args: list[str]) -> int:
     priority = _tasks.PRIORITY_DEFAULT
+    explicit_project: str | None = None
+    explicit_assign: str | None = None
     title_parts: list[str] = []
-    for a in args:
+    i = 0
+    while i < len(args):
+        a = args[i]
         if a in _tasks.VALID_PRIORITIES:
             priority = a
+            i += 1
+        elif a == "--project" and i + 1 < len(args):
+            explicit_project = args[i + 1]
+            i += 2
+        elif a == "--assign" and i + 1 < len(args):
+            explicit_assign = args[i + 1]
+            i += 2
         else:
             title_parts.append(a)
+            i += 1
     title = " ".join(title_parts)
     if not title:
-        print('Usage: tasks new "title" [!priority]', file=sys.stderr)
+        print(
+            'Usage: tasks new "title" [!priority] [--project name] [--assign @agent]',
+            file=sys.stderr,
+        )
         return 1
+
     scope, repo = _ctx()
-    t = _tasks.create_task(title, priority, scope, repo)
+
+    # Soft enforcement: warn if auto-fill can't determine owner/project.
+    auto_project = _tasks._auto_project(scope)
+    auto_owner = os.environ.get("METASPHERE_AGENT_ID", "").strip()
+    project = explicit_project
+    if project is None and auto_project == "default":
+        if explicit_project is None:
+            print(
+                "warning: no --project given and scope is not inside a registered "
+                "project; filing under 'default'",
+                file=sys.stderr,
+            )
+        project = "default"
+    assigned = explicit_assign
+    if assigned is None and not auto_owner:
+        print(
+            "warning: no --assign given and METASPHERE_AGENT_ID unset; "
+            "assigning '@unassigned'",
+            file=sys.stderr,
+        )
+        assigned = "@unassigned"
+    if assigned and not assigned.startswith("@"):
+        assigned = "@" + assigned
+
+    t = _tasks.create_task(
+        title, priority, scope, repo,
+        project=project, assigned_to=assigned,
+    )
     print(f"Created task: {t.id}")
     print(f"  Title: {t.title}")
     print(f"  Priority: {t.priority}")
+    print(f"  Project: {t.project}")
+    print(f"  Assigned: {t.assignee or '(none)'}")
     print(f"  File: {t.path}")
+    return 0
+
+
+def _cmd_assign(args: list[str]) -> int:
+    if len(args) < 2:
+        print("Usage: tasks assign <task-id> @agent", file=sys.stderr)
+        return 1
+    task_id, agent = args[0], args[1]
+    _, repo = _ctx()
+    t = _tasks.assign_task(task_id, agent, repo)
+    print(f"Assigned: {t.id} → {t.assignee}")
+    return 0
+
+
+def _cmd_move(args: list[str]) -> int:
+    # Usage: tasks move <task-id> --project <name>
+    if not args or "--project" not in args:
+        print("Usage: tasks move <task-id> --project <name>", file=sys.stderr)
+        return 1
+    task_id = args[0]
+    try:
+        idx = args.index("--project")
+        project = args[idx + 1]
+    except (ValueError, IndexError):
+        print("Usage: tasks move <task-id> --project <name>", file=sys.stderr)
+        return 1
+    _, repo = _ctx()
+    t = _tasks.move_task_project(task_id, project, repo)
+    print(f"Moved: {t.id} → project={t.project}")
     return 0
 
 
@@ -150,6 +253,8 @@ def main(argv: list[str] | None = None) -> int:
     cmd, rest = argv[0], argv[1:]
     handlers = {
         "new": _cmd_new,
+        "assign": _cmd_assign,
+        "move": _cmd_move,
         "start": _cmd_start,
         "update": _cmd_update,
         "done": _cmd_done,

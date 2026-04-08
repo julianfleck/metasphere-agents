@@ -258,6 +258,7 @@ def spawn_ephemeral(
             scope=scope_abs,
             repo_root=paths.repo,
             created_by=parent,
+            assigned_to=agent_id,
         )
         _atomic_meta_write(agent_dir, "task_id", backing.id)
     except Exception:  # noqa: BLE001 — task linkage is best-effort
