@@ -188,28 +188,32 @@ def route_to_telegram(text: str, paths: Paths) -> None:
     except OSError:
         pass
 
-    # Replace the gateway's 👀 read-receipt with 👍 on the user message that
-    # triggered this turn, so the user sees their message has been
-    # acted-on, not just received. Best-effort: a missing pending-ack file
-    # (heartbeat ticks, scheduled jobs, child wakes) means there is no
-    # user-side message to react to — skip silently. Always consume the
-    # marker so a stale entry can't ack the next unrelated reply.
+
+def consume_pending_ack(paths: Paths) -> None:
+    """Replace the gateway's 👀 with 👍 on the user message that triggered
+    this turn. Called from ``run_posthook`` after we know the turn produced
+    user-visible text — regardless of which path (auto-forward or explicit
+    ``metasphere-telegram send``) delivered the reply. Always consumes the
+    marker so a stale entry can't ack the next unrelated turn. Best-effort.
+    """
     pending = paths.state / "telegram_pending_ack.json"
     try:
-        if pending.exists():
-            data = json.loads(pending.read_text(encoding="utf-8"))
-            try:
-                pending.unlink()
-            except OSError:
-                pass
-            cid = data.get("chat_id")
-            mid = data.get("message_id")
-            if cid is not None and mid is not None:
-                try:
-                    from .telegram import api as telegram_api
-                    telegram_api.set_message_reaction(cid, int(mid), "👍")
-                except Exception as exc:  # noqa: BLE001
-                    _log_telegram_error(paths, f"ack reaction failed: {exc}")
+        if not pending.exists():
+            return
+        data = json.loads(pending.read_text(encoding="utf-8"))
+        try:
+            pending.unlink()
+        except OSError:
+            pass
+        cid = data.get("chat_id")
+        mid = data.get("message_id")
+        if cid is None or mid is None:
+            return
+        try:
+            from .telegram import api as telegram_api
+            telegram_api.set_message_reaction(cid, int(mid), "👍")
+        except Exception as exc:  # noqa: BLE001
+            _log_telegram_error(paths, f"ack reaction failed: {exc}")
     except Exception as exc:  # noqa: BLE001
         _log_telegram_error(paths, f"ack pending read failed: {exc}")
 
@@ -408,6 +412,12 @@ def run_posthook(stdin_bytes: bytes, paths: Paths | None = None) -> int:
                     # marker file with mtime=now on every explicit send.
                     if not _explicit_send_marker_fresh(paths):
                         route_to_telegram(text or "", paths)
+                    # Either way the user got something user-visible this
+                    # turn — flip 👀 → 👍 on the message that triggered it.
+                    try:
+                        consume_pending_ack(paths)
+                    except Exception:  # noqa: BLE001
+                        pass
 
         track_turn_completion(agent, paths)
 
