@@ -178,7 +178,7 @@ Write Telegram messages in **plain ASCII**, optimized for a one-column, fixed-wi
    ```
 3. **Bullet lists: dash-prefixed at column 0, no indentation.** Telegram doesn't render nested indented lists — the spaces are kept literally and look bad. If you need a hierarchy, use a one-level dash list and inline the sub-detail with a colon.
 4. **Code, paths, and ASCII tables: wrap in a fenced code block (triple-backtick).** Telegram DOES render fenced code blocks as monospace, which is the only way to make alignment, indentation, or tables look correct. Use this for multi-line tabular data, file paths, command output, anything where whitespace matters. Do NOT use code blocks for ordinary prose.
-5. **Inline file/path/command references: don't bother with backticks.** They render as literal backticks. Just write the path naked. The user knows what `/home/openclaw/...` is.
+5. **Inline file/path/command references: don't bother with backticks.** They render as literal backticks. Just write the path naked. The user can read a bare path or command just fine.
 6. **Keep lines short.** Mobile screens are narrow. Aim for ~70 chars per line where possible; the 4096-char message cap applies to the whole message, but readability dies long before that.
 7. **Lead with the bottom line.** First line should be the summary or action; details follow. The user often reads only the first sentence on their phone screen.
 8. **Long replies: split logically, not by char count.** The posthook handles 4096-char chunking, but a multi-thread response is more readable as 2–3 standalone messages (each with its own lead) than as one wall of text. Use `metasphere-telegram send` calls in sequence.
