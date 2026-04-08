@@ -1,16 +1,16 @@
 ---
 id: migration-port-openclaw-cron-jobs-and-research-agents-to-metasphere-scheduling-system-20260407
-title: Migration: port openclaw cron jobs and research agents to metasphere scheduling system
+title: "Migration: port openclaw cron jobs and research agents to metasphere scheduling system"
 priority: !high
-status: pending
+status: completed
 scope: /
 created: 2026-04-07T09:41:18Z
 created_by: @orchestrator
-assigned_to:
-started_at:
-completed_at:
+assigned_to: 
+started_at: 
+updated_at: 2026-04-08T11:07:08Z
+completed_at: 2026-04-08T11:07:08Z
 ---
-
 # Migration: port openclaw cron jobs and research agents to metasphere scheduling system
 
 ## Description
@@ -115,6 +115,7 @@ schedule.<jobId>.run ok|error ...`) plus a state file under
       reference).
 
 ## Updates
+- 2026-04-08T11:07:08Z Completed: completed in a6809ac: migration copy persona files, port openclaw cron jobs, native settings.local.json hooks
 
 - 2026-04-07T09:41:18Z [@orchestrator] Created task
 
@@ -123,4 +124,3 @@ schedule.<jobId>.run ok|error ...`) plus a state file under
 <!-- Add subtasks as needed -->
 
 ## Notes
-
