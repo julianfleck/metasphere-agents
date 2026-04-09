@@ -1,276 +1,273 @@
 # Metasphere Agents
 
-A multi-agent orchestration harness for Claude Code with Telegram as the human interface.
+A multi-agent orchestration harness for Claude Code. Persistent sessions, Telegram as the human interface, fractal task/message scoping, agent spawning, scheduled automation.
 
-> This repo is both the harness AND its first test subject. It evolves itself.
+> Coming from OpenClaw? Metasphere is the successor. Run `metasphere migrate run` to bring your identity, memory, and Telegram bot across. Everything carries over.
 
-## Features
+## What it does
 
-- **Telegram Gateway**: Persistent Claude Code session with Telegram polling for human-in-the-loop interaction
-- **Fractal Scoping**: Hierarchical task and message management with upward visibility
-- **Agent Spawning**: Create specialized child agents with scoped permissions
-- **CAM Integration**: Collective Agent Memory for searchable session history
-- **OpenClaw Migration**: Backwards compatibility migration from OpenClaw installations
-- **Timezone Support**: UTC storage with user-preferred timezone display
+- **Persistent Claude Code sessions** — runs in tmux, survives disconnects, picks up where it left off
+- **Telegram as your interface** — talk to your agent from your phone. It reads your messages, thinks, responds, forwards tool output
+- **Agent spawning** — break complex work into child agents with scoped permissions. They report back when done
+- **Fractal tasks and messages** — every directory can have `.tasks/` and `.messages/`. Agents see their scope + all parent scopes
+- **Scheduled automation** — cron-style scheduling for recurring tasks (market scans, memory consolidation, health checks)
+- **Claude Code hooks** — context injection before each turn (messages, tasks, memory, persona). Stop hook routes output to Telegram
+- **OpenClaw migration** — one command to migrate your identity, memory, Telegram token, and session history
 
 ## Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/julianfleck/metasphere-agents.git
 cd metasphere-agents
-
-# Run the installer
 ./install.sh
 ```
 
-The installer will:
-1. Create `~/.metasphere/` runtime directory
-2. Install scripts to `~/.metasphere/bin/`
-3. Set up the @orchestrator agent identity
-4. Configure launchd (macOS) or systemd (Linux) daemon
-5. Verify Claude Code authentication
-6. Optionally migrate from OpenClaw
+### Prerequisites
 
-### Requirements
+- **Claude Code CLI** — authenticated (`claude /login`)
+- **tmux** — persistent sessions (`brew install tmux` / `apt install tmux`)
+- **jq** — JSON processing (`brew install jq` / `apt install jq`)
+- **curl** — HTTP requests (usually pre-installed)
+- **Python 3.11+** — for the Python package
 
-- **Claude Code CLI** - Must be authenticated (`claude /login`)
-- **tmux** - For persistent sessions (`brew install tmux`)
-- **jq** - For JSON processing (`brew install jq`)
-- **curl** - For Telegram API calls
+### What the installer does
 
-## Configuration
-
-Configure Telegram and timezone in `~/.metasphere/config`:
-
-```bash
-# Set Telegram bot token
-metasphere config telegram <your-bot-token>
-
-# Set your timezone for agent context
-metasphere config timezone Europe/Berlin
-
-# View current configuration
-metasphere config
-```
+1. Creates `~/.metasphere/` runtime directory
+2. Installs scripts to `~/.metasphere/bin/` and adds to PATH
+3. Sets up the @orchestrator agent identity (SOUL.md, MISSION.md, etc.)
+4. Configures launchd (macOS) or systemd (Linux) daemon
+5. Verifies Claude Code authentication
+6. Optionally migrates from OpenClaw
 
 ## Quick Start
 
 ```bash
-# Check system status
-metasphere status
+# Configure Telegram bot token (get one from @BotFather)
+metasphere config telegram <your-bot-token>
 
-# Start the gateway daemon
+# Set your timezone
+metasphere config timezone Europe/Berlin
+
+# Start the daemon
 metasphere daemon start
 
-# View logs
-metasphere logs          # Gateway logs
-metasphere logs events   # Event stream
-metasphere logs -f       # Follow mode
+# Check status
+metasphere status
 
-# Send a test message via Telegram or CLI
+# Send a test message
 metasphere telegram send "Hello from Metasphere!"
 ```
 
+Your agent is now running. Message it on Telegram.
+
 ## Commands
 
-### Core Commands
+### System
 
 ```bash
-metasphere status              # System overview
-metasphere ls                  # Project landscape
-metasphere daemon start|stop|restart|status
-metasphere logs [gateway|events|error] [-f]
-metasphere update              # Update from git source
-```
-
-### Configuration
-
-```bash
-metasphere config                        # Show all config
-metasphere config telegram <token>       # Set Telegram token
-metasphere config timezone <tz>          # Set timezone (e.g., America/New_York)
-```
-
-### Agent Management
-
-```bash
-metasphere agent list                    # List agents
-metasphere agent spawn @name --scope /path --task "description"
-metasphere agent update @name --status "working: task"
-metasphere agent report @name "progress note"
+metasphere status                      # System overview
+metasphere daemon start|stop|restart   # Daemon control
+metasphere logs [gateway|events] [-f]  # View logs
+metasphere update                      # Update from git
+metasphere config                      # Show configuration
+metasphere config telegram <token>     # Set Telegram token
+metasphere config timezone <tz>        # Set timezone
 ```
 
 ### Tasks
 
-Tasks use hierarchical naming: `project/@agent/taskname`
+Tasks are file-based and hierarchical. They live in `.tasks/active/` directories and survive across sessions.
 
 ```bash
-tasks                              # Show active tasks
-tasks new "title" !priority        # Create task (!urgent, !high, !normal, !low)
-tasks new "title" --name heartbeat # Explicit naming
-tasks start <task-id>              # Start working on task
-tasks update <task-id> "note"      # Add progress update
-tasks done <task-id> "summary"     # Complete task
+tasks                              # Show active tasks in scope
+tasks new "title" !priority        # Create (!urgent, !high, !normal, !low)
+tasks start <task-id>              # Assign to self
+tasks update <task-id> "note"      # Add progress
+tasks done <task-id> "summary"     # Complete
 tasks tree                         # Show task tree across scopes
 ```
 
 ### Messages
 
+File-based inter-agent messaging with labels.
+
 ```bash
-messages                           # Show unread
-messages all                       # Show all
-messages send @target !label "msg" # Send message
+messages                           # Show unread in scope
+messages all                       # Show all including read
+messages send @target !label "msg" # Send (!task, !urgent, !info, !query, !done)
 messages reply <msg-id> "text"     # Reply
 messages done <msg-id> "note"      # Mark complete
 ```
 
-### Interactive Sessions
+### Agent Management
+
+```bash
+metasphere agent list              # List all agents
+metasphere agent spawn @name \
+  --scope /path \
+  --task "description" \
+  --sandbox scoped                 # Spawn child agent
+
+metasphere agent update @name --status "working: task"
+metasphere agent report @name "progress note"
+```
+
+### Sessions
 
 ```bash
 metasphere session start @agent    # Start tmux session
 metasphere session attach @agent   # Attach to session
 metasphere session send @agent "msg" # Send input
-metasphere session list            # List sessions
+metasphere session list            # List active sessions
 metasphere session stop @agent     # Stop session
 ```
 
-### Migration
+### Scheduling
 
 ```bash
-metasphere migrate detect          # Detect OpenClaw installation
-metasphere migrate run             # Migrate OpenClaw data
+metasphere schedule add \
+  --name daily-summary \
+  --cron "0 9 * * *" \
+  --command "python3 -m metasphere.cli.main consolidate run"
+
+metasphere schedule list           # Show scheduled tasks
+metasphere schedule remove <name>  # Remove a schedule
+```
+
+### Migration from OpenClaw
+
+```bash
+metasphere migrate detect          # Check what will be migrated
+metasphere migrate run             # Migrate everything
 metasphere migrate run --disable   # Migrate and disable OpenClaw
-metasphere migrate telegram        # Migrate Telegram token only
-metasphere migrate sessions        # Trigger CAM session indexing
+```
+
+Migrates: Telegram bot token, SOUL.md, memory files, session history (via CAM indexing).
+
+## Claude Code Hooks
+
+Metasphere uses Claude Code's hook system to inject context and route output:
+
+### UserPromptSubmit (pre-turn)
+
+The `metasphere-context` hook runs before each agent turn, injecting:
+- Unread messages from current scope + parent scopes
+- Active tasks from current scope + parent scopes
+- Voice capsule (persona excerpt from SOUL.md)
+- Recent events (heartbeats, schedule fires, agent completions)
+- Memory context (FTS search against CAM)
+
+### Stop (post-turn)
+
+The `metasphere-posthook` routes assistant output:
+- Forwards text to Telegram (if configured)
+- Logs events to the event stream
+- Updates heartbeat state
+
+### Configuration
+
+Hooks are configured in `.claude/settings.json` (repo-level) or `.claude/settings.local.json` (user-level):
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [{
+      "command": "metasphere-context"
+    }],
+    "Stop": [{
+      "command": "python3 -m metasphere.cli.posthook"
+    }]
+  }
+}
 ```
 
 ## Architecture
 
-### Directory Structure
+### Runtime Directory
 
 ```
-~/.metasphere/                    # Runtime directory
-├── config                        # Configuration file
-├── agents/@orchestrator/         # Agent identity
-│   ├── SOUL.md                   # Identity and values
+~/.metasphere/
+├── config                        # Telegram token, timezone, settings
+├── agents/@orchestrator/         # Agent identity files
+│   ├── SOUL.md                   # Identity, values, voice
+│   ├── USER.md                   # Who the human is
 │   ├── HEARTBEAT.md              # Current status
 │   ├── LEARNINGS.md              # Accumulated insights
-│   └── MISSION.md                # Objectives
+│   ├── MISSION.md                # Objectives
+│   └── daily/YYYY-MM-DD.md      # Daily narrative logs
 ├── bin/                          # Installed scripts
-├── logs/                         # Log files
-│   ├── gateway.log               # Gateway daemon log
-│   ├── error.log                 # Error log
-│   └── events/                   # Event stream
-└── telegram/
-    └── stream/                   # Telegram message archive
+├── logs/                         # Gateway, error, event logs
+├── schedules/                    # Cron definitions
+└── telegram/stream/              # Telegram message archive
 ```
 
 ### Fractal Scoping
 
-Every directory can have `.tasks/` and `.messages/` subdirectories:
+Every directory can have `.tasks/` and `.messages/` subdirectories. Agents see content from their scope + all parent scopes (upward visibility):
 
 ```
 project/
 ├── .tasks/active/                # Project-level tasks
 ├── .messages/inbox/              # Project-level messages
 ├── src/
-│   ├── .tasks/active/            # src-level tasks
+│   ├── .tasks/active/            # src-level tasks (sees project tasks too)
 │   └── components/
-│       └── .tasks/active/        # Component-level tasks
+│       └── .tasks/active/        # Component tasks (sees src + project)
 ```
-
-Agents see content from their scope + all parent scopes (upward visibility).
 
 ### Sandbox Levels
 
-When spawning agents, control their permissions:
+Control what spawned agents can do:
 
 | Level | Description |
 |-------|-------------|
 | `none` | Full access (default) |
 | `scoped` | Restricted to agent's scope directory |
-| `nobash` | No Bash tool (safer for untrusted tasks) |
+| `nobash` | No Bash tool |
 | `readonly` | Only Read, Glob, Grep tools |
 
-```bash
-metasphere agent spawn @untrusted --scope /path --sandbox=readonly
-```
+### Agent Identity
 
-## OpenClaw Migration
+Each agent has persona files that define its voice, knowledge, and objectives. The orchestrator reads `SOUL.md` and `USER.md` at session start, lazy-loads everything else via `persona-index.md`.
 
-For users migrating from OpenClaw:
+The SPIRAL cognitive loop guides each turn: **Sample** (check context) → **Pursue** (explore) → **Integrate** (connect) → **Reflect** (evaluate) → **Abstract** (synthesize) → **Loop** (continue).
 
-```bash
-# Check what will be migrated
-metasphere migrate detect
+## Telegram Setup
 
-# Migrate everything and disable OpenClaw
-metasphere migrate run --disable
-```
+1. Create a bot via [@BotFather](https://t.me/BotFather) on Telegram
+2. Copy the bot token
+3. Run `metasphere config telegram <token>`
+4. Start the daemon: `metasphere daemon start`
+5. Message your bot — it forwards to Claude Code, responses come back
 
-This migrates:
-- Telegram bot token from `~/.openclaw/openclaw.json`
-- SOUL.md and memory files
-- Triggers CAM to index existing sessions
-
-## Updating
-
-```bash
-# Update from git source
-metasphere update
-
-# This will:
-# 1. Git pull latest changes
-# 2. Copy updated scripts
-# 3. Restart the daemon
-```
+The gateway polls Telegram for new messages, injects them into the Claude Code session via the heartbeat system, and forwards assistant responses back.
 
 ## Daemon Management
 
 ### macOS (launchd)
 
 ```bash
-# Start/stop
-metasphere daemon start
-metasphere daemon stop
-
-# View status
-metasphere daemon status
-
-# Manual control
-launchctl load ~/Library/LaunchAgents/com.metasphere.plist
-launchctl unload ~/Library/LaunchAgents/com.metasphere.plist
+metasphere daemon start            # launchctl load
+metasphere daemon stop             # launchctl unload
+metasphere daemon status           # Check if running
 ```
 
 ### Linux (systemd)
 
 ```bash
-systemctl --user start metasphere
-systemctl --user stop metasphere
-systemctl --user status metasphere
+metasphere daemon start            # systemctl --user start
+metasphere daemon stop             # systemctl --user stop
+systemctl --user status metasphere # Detailed status
+journalctl --user -u metasphere -f # Follow logs
 ```
 
-## Development
+## Updating
 
-The repository structure:
+```bash
+metasphere update
+```
 
-```
-metasphere-agents/
-├── scripts/                      # CLI tools
-│   ├── metasphere                # Main CLI
-│   ├── metasphere-gateway        # Telegram gateway daemon
-│   ├── metasphere-agent          # Agent management
-│   ├── metasphere-session        # Interactive sessions
-│   ├── metasphere-migrate        # OpenClaw migration
-│   ├── tasks                     # Task management
-│   └── messages                  # Message management
-├── templates/                    # Agent templates
-├── docs/                         # Documentation
-│   └── ARCHITECTURE.md           # Architecture details
-├── install.sh                    # Installer
-└── claude.md                     # Operational instructions
-```
+Pulls latest from git, reinstalls scripts, restarts the daemon.
 
 ## License
 
@@ -279,20 +276,19 @@ metasphere-agents/
 
 You can read, fork, modify, and use the code for anything *except* offering
 it as a commercial product or service that competes with what we offer using
-the same software. Two years after each release we publish, that release
-auto-converts to the standard Apache License 2.0 — fully open source.
+the same software. Two years after each release, that release auto-converts
+to the standard Apache License 2.0 — fully open source.
 
 See [`LICENSE`](LICENSE) for the full text and <https://fsl.software/> for
 background on the license shape.
 
 ## Contributing
 
-This project evolves itself through the Evolution Loop:
+Metasphere evolves itself through a continuous improvement loop:
 
-1. **Identify** - What needs improvement?
-2. **Experiment** - Make a targeted change
-3. **Evaluate** - Did it improve things?
-4. **Integrate** - Keep or discard
-5. **Loop** - Continue to next improvement
+1. **Identify** — friction in a workflow, missing functionality, confusion
+2. **Experiment** — make a targeted change, keep it small
+3. **Evaluate** — test in real operation
+4. **Integrate** — keep or revert, update LEARNINGS.md either way
 
-See `CHANGELOG.md` for recent changes.
+See `CHANGELOG.md` for recent changes, `docs/CLI.md` for the full CLI reference, and `CLAUDE.md` for the operational instructions that guide the agent.
