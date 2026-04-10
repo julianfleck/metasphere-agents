@@ -65,6 +65,18 @@ if [[ -n "$voice_file" ]]; then
 fi
 
 # =============================================================================
+# 1b. Mission capsule — inject MISSION.md so all persistent agents know their
+# purpose every turn, not just @orchestrator. Capped to ~1KB.
+# =============================================================================
+if [[ -f "$AGENT_DIR/MISSION.md" ]]; then
+    echo "## Mission"
+    echo ""
+    sed -n '2,30p' "$AGENT_DIR/MISSION.md" | head -c 1024
+    echo ""
+    echo ""
+fi
+
+# =============================================================================
 # 0. Stale-harness detection. The gateway writes a content-hash baseline of
 # the files baked into the REPL on startup (CLAUDE.md, .claude/settings*.json,
 # scripts/metasphere-context). If the live hash differs, the agent's baked
