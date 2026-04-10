@@ -41,25 +41,49 @@ If `persona-index.md` doesn't exist for your agent, the install
 hasn't been seeded yet — run `metasphere-migrate run` (or seed the
 directory by hand on a fresh install).
 
-### Working Scripts (Use These)
+### CLI Reference
+
+The `metasphere` command is the unified entry point. Direct script
+names (`messages`, `tasks`, `metasphere-spawn`) still work and are
+equivalent — they route to the same Python backend.
 
 ```bash
-# Check messages in current scope + parent scopes
+# ── Messages ─────────────────────────────────────────────
 messages                              # Show unread
 messages all                          # Show all including read
 messages send @target !label "msg"    # Send to target
 messages reply <msg-id> "response"    # Reply
 messages done <msg-id> "note"         # Mark complete
 
-# Manage tasks in current scope + parent scopes
+# ── Tasks ────────────────────────────────────────────────
 tasks                                 # Show active
 tasks new "title" !priority           # Create task
 tasks start <task-id>                 # Assign to self
 tasks update <task-id> "note"         # Add progress
 tasks done <task-id> "summary"        # Complete
 
-# Spawn child agents
-metasphere-spawn @agent-name /scope/path/ "task" [@parent]
+# ── Agents ───────────────────────────────────────────────
+metasphere agent spawn @name /scope/ "task"   # One-shot agent
+metasphere agent wake @name                   # Persistent collaborator
+metasphere agents                             # List all agents
+
+# ── Telegram ─────────────────────────────────────────────
+metasphere telegram send "message"            # Send to default chat
+metasphere telegram send --to ella "hi"       # Send to named contact
+metasphere telegram send --chat-id 123 "msg"  # Send to arbitrary chat
+metasphere telegram send-document path.pdf    # Upload a file
+
+# ── System ───────────────────────────────────────────────
+metasphere status                     # Full system overview
+metasphere gateway status             # Gateway + session health
+metasphere schedule list              # Cron jobs
+metasphere update                     # Pull latest + restart
+metasphere session restart            # Restart orchestrator REPL
+
+# ── Slash Commands (in Claude Code) ──────────────────────
+/project new|list|show|wake|chat      # Manage metasphere projects
+/session restart|status               # Restart orchestrator REPL
+/team review|research|implement|plan  # Invoke agent teams
 ```
 
 ---
@@ -355,23 +379,27 @@ LEARNINGS.md captures patterns that should inform future behavior. CHANGELOG.md 
 
 ## Current State
 
-### Active Work
-- This repo is bootstrapping itself as a multi-agent harness
-- Core scripts implemented: messages, tasks, metasphere-spawn, metasphere-context
-- Testing fractal messaging and task delegation
+### What works
+- **Unified CLI** (`metasphere` command) routing to Python backend
+- **Multi-agent orchestration**: spawn, wake, heartbeat, lifecycle
+- **Telegram bridge**: bidirectional (gateway polls inbound, posthook
+  relays outbound), named contacts (`--to`), file uploads, 👀/👍
+  reactions, slash command dispatch
+- **Scheduling**: cron-style jobs via `metasphere schedule`
+- **CAM integration**: memory search + session indexing
+- **Auto-update**: `metasphere update` with pip reinstall + daemon restart
+- **Task consolidation**: lifecycle management (stale/active/blocked/done)
+- **Fractal scoping**: messages, tasks, and agents work at any directory
+  level with upward visibility
 
-### Known Gaps
-- No `metasphere` user-facing CLI yet (status, ls, agents, watch)
-- No Telegram integration for human escalation
-- No CAM integration (cam command not yet connected)
-- No auto-commit on session complete
-- No cron scheduling for autonomous operation
-
-### Next Evolution Targets
-1. Test message round-trip with spawned agents
-2. Implement progress tracking in HEARTBEAT.md
-3. Add `--json` output to scripts for programmatic use
-4. Connect CAM for memory search
+### Architecture
+- Python package at `metasphere/` (editable install in `.venv/`)
+- Bash shims in `scripts/` delegate to Python for most commands
+- Gateway daemon handles telegram polling + tmux session management
+- Per-turn hooks: `metasphere-context` (pre-turn injection) +
+  `metasphere-posthook` (post-turn relay to telegram)
+- Three active instances: spot (data.basicbold.de/openclaw), bean
+  (data.basicbold.de/bean), wintermute (local Mac)
 
 ---
 
