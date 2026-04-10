@@ -562,7 +562,7 @@ def classify_message(
         return MSG_VERDICT_DONE_PENDING_ARCHIVE
 
     # UNREAD-OLD: status still unread after the stale window. Rare after
-    # T1 (auto-mark-read on view), but catches messages on agents that
+    # auto-mark-read on view, but catches messages on agents that
     # never render their inbox.
     if msg.status == _messages.STATUS_UNREAD:
         created = _parse_iso(msg.created)

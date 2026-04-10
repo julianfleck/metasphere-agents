@@ -31,7 +31,7 @@ def test_install_creates_executable_shims(tmp_path):
         body = f.read_text()
         assert "Metasphere managed hook" in body
         assert f"metasphere.cli.git_hooks {hook}" in body
-        # gap-5: shim must resolve interpreter at run time, not bake an
+        # Shim must resolve interpreter at run time, not bake an
         # absolute install-time path.
         assert "command -v python3" in body
         assert "python3" in body

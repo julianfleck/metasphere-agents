@@ -1,4 +1,4 @@
-"""CLI shim mirroring the bash ``scripts/tasks`` command surface.
+"""CLI shim for the task management module.
 
 Usage:
     python -m metasphere.cli.tasks                       # list active

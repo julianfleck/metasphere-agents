@@ -1,4 +1,4 @@
-"""CLI shim mirroring the bash ``scripts/messages`` command surface.
+"""CLI shim for the messaging module.
 
 Usage::
 

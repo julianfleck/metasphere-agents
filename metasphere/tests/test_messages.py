@@ -1,8 +1,7 @@
-"""Tests for metasphere.messages — the Python port of scripts/messages.
+"""Tests for metasphere.messages.
 
-Specifically locks down the pieces the bash version was unsafe about:
-ordered frontmatter round-trips, field updates under flock, and parent
-scope walking.
+Covers ordered frontmatter round-trips, field updates under flock, and
+parent scope walking.
 """
 
 from __future__ import annotations

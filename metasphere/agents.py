@@ -1,6 +1,5 @@
 """Agent lifecycle: spawn (ephemeral) and wake (persistent).
 
-Python port of ``scripts/metasphere-spawn`` and ``scripts/metasphere-wake``.
 This module owns identity-directory creation, the spawn-vs-wake split, and
 the tmux/REPL bring-up sequence for persistent agents.
 
@@ -10,10 +9,9 @@ Why this shape:
   loop around ``claude --dangerously-skip-permissions``. Persistence is
   declared by the presence of ``MISSION.md`` in the agent dir.
 
-Tmux paste-submission stays in bash (``scripts/metasphere-tmux-submit``)
-per PORTING invariant 15 — Python shells out to it. The same goes for
-the respawn loop and readiness poll: this module just orchestrates the
-tmux commands and the script call.
+Tmux paste-submission stays in bash (``scripts/metasphere-tmux-submit``);
+Python shells out to it. The same goes for the respawn loop and readiness
+poll: this module just orchestrates the tmux commands and the script call.
 """
 
 from __future__ import annotations
@@ -88,7 +86,7 @@ class AgentRecord:
 def session_name_for(agent_name: str) -> str:
     """Return the canonical tmux session name for ``agent_name``.
 
-    Invariant 7: ``metasphere-<name>`` with the leading ``@`` stripped.
+    Convention: ``metasphere-<name>`` with the leading ``@`` stripped.
     """
     return _SESSION_PREFIX + _normalize_name(agent_name)[1:]
 
@@ -228,7 +226,7 @@ When done:
 
 def _resolve_scope(scope_path: str, repo_root: Path) -> Path:
     if scope_path.startswith("/"):
-        # Repo-relative absolute (the bash convention).
+        # Repo-relative absolute path.
         s = repo_root / scope_path.lstrip("/")
     else:
         s = repo_root / scope_path
@@ -253,7 +251,7 @@ def spawn_ephemeral(
     """Create an ephemeral one-shot agent and (unless opted out) launch
     it headless via ``claude -p``.
 
-    Mirrors ``scripts/metasphere-spawn``. Honors ``METASPHERE_SPAWN_NO_EXEC=1``.
+    Honors ``METASPHERE_SPAWN_NO_EXEC=1`` to skip execution.
     """
     paths = paths or resolve()
     agent_id = _normalize_name(agent_name)
@@ -453,13 +451,13 @@ def _wait_for_ready(session: str, timeout_s: int = _READY_TIMEOUT_S) -> bool:
 
 
 def _submit_via_bash(session: str, body: str, paths: Paths) -> None:
-    """Shell out to scripts/metasphere-tmux-submit (invariant 15)."""
+    """Shell out to scripts/metasphere-tmux-submit."""
     submit_script = paths.repo / "scripts" / "metasphere-tmux-submit"
     if not submit_script.is_file():
         return
-    # The bash file defines submit_to_tmux as a function — source it then call.
+    # The script defines submit_to_tmux as a function — source it then call.
     # shlex.quote both the script path and tmux binary so a path containing
-    # whitespace or quotes can never break the bash -c source.
+    # whitespace or quotes can never break the invocation.
     cmd = (
         f"source {shlex.quote(str(submit_script))}; "
         f"TMUX_CMD={shlex.quote(_tmux_bin())} submit_to_tmux \"$1\" \"$2\""
@@ -477,8 +475,8 @@ def wake_persistent(
 ) -> AgentRecord:
     """Wake (or attach to) a persistent agent's tmux+REPL session.
 
-    Mirrors ``scripts/metasphere-wake``. Invariant 16: if the session is
-    already alive, only the optional task is injected — no new session.
+    If the session is already alive, only the optional task is injected —
+    no new session is created.
     """
     paths = paths or resolve()
     agent_id = _normalize_name(agent_name)
@@ -534,8 +532,8 @@ def wake_persistent(
 
     _wait_for_ready(session)
     # Clear stray buffer characters from the exec-bash transition.
-    # NB: send-keys C-u (no Enter) — readline kill-line. Mirrors the bash
-    # invariant in scripts/metasphere-wake:158; do not "fix" by adding Enter.
+    # NB: send-keys C-u (no Enter) — readline kill-line. Do not "fix" by
+    # adding Enter.
     _tmux_run("send-keys", "-t", session, "C-u")
     time.sleep(0.2)
 

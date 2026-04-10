@@ -117,12 +117,10 @@ def _hooks_dispatch(argv: list[str]) -> int:
 
 
 def _legacy_bash(argv: list[str]) -> int:
-    """Delegate ``metasphere status`` / ``metasphere ls`` to the legacy bash CLI.
+    """Delegate ``metasphere status`` / ``metasphere ls`` to the legacy CLI.
 
-    The Python unification deliberately does not re-implement these — they live
-    in ``~/.metasphere/bin/metasphere`` (944 lines of bash) and are tracked as a
-    follow-up port. We exec the bash script with the original args so behaviour
-    is byte-identical.
+    These subcommands live in ``~/.metasphere/bin/metasphere`` and are
+    exec'd with the original args so behaviour is identical.
     """
     # Recover the head subcommand from sys.argv (the dispatcher consumed it).
     head = sys._metasphere_head  # type: ignore[attr-defined]

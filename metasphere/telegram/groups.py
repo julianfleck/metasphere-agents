@@ -1,10 +1,8 @@
-"""Telegram forum-topic management (port of scripts/metasphere-telegram-groups).
+"""Telegram forum-topic management.
 
 Wraps the Bot API ``createForumTopic`` / ``sendMessage`` calls and
 persists the local name → topic-id mapping under
-``$METASPHERE_DIR/telegram/groups/topics.json``. The bash
-``process_forum_command`` branch was unreachable per PORTING dead-code
-audit and is intentionally not ported.
+``$METASPHERE_DIR/telegram/groups/topics.json``.
 """
 
 from __future__ import annotations
@@ -226,8 +224,8 @@ def send_to_topic(topic: str | int, text: str, *,
     topic_id = resolve_topic_id(topic, paths=paths)
     if topic_id is None:
         raise LookupError(f"topic not found: {topic}")
-    # L5 (wave-4 review): escape underscores so agent names like
-    # @reviewer_quality don't get rendered italic by Markdown.
+    # Escape underscores so agent names like @reviewer_quality don't
+    # get rendered italic by Markdown.
     safe_agent = agent.replace("_", r"\_")
     body = f"*[{safe_agent}]*\n\n{text}"
     resp = tg_api.call(

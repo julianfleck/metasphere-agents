@@ -1,7 +1,6 @@
 """Append-only archive of incoming/outgoing Telegram messages.
 
-Mirrors the bash ``archive_message`` + ``save_latest`` pair from
-metasphere-telegram-stream:
+Archive layout:
 
 - ``~/.metasphere/telegram/stream/YYYY-MM-DD.jsonl`` — daily JSONL log.
 - ``~/.metasphere/telegram/latest.json`` — most recent message, used for

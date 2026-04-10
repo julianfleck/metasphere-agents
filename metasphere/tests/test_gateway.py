@@ -128,8 +128,8 @@ def test_check_safety_hooks_rate_limited(tmp_paths: Paths):
 
 
 def test_safety_hooks_ignores_prose_listing(tmp_paths: Paths):
-    """L3 (wave-4 review): a list-only pane without a confirm-class line
-    must not trigger the watchdog (the bash regex was equally loose)."""
+    """A list-only pane without a confirm-class line must not trigger the
+    watchdog."""
     pane = "Here are options for you:\n  1. Yes — go ahead\n  2. No — abort\n"
     with patch.object(gw_watchdog, "session_alive", return_value=True), \
          patch.object(gw_watchdog, "_capture_pane", return_value=pane), \
@@ -140,7 +140,7 @@ def test_safety_hooks_ignores_prose_listing(tmp_paths: Paths):
 
 
 # ---------------------------------------------------------------------------
-# Daemon: must NOT exit on a single iteration error (the bash bug)
+# Daemon: must NOT exit on a single iteration error
 # ---------------------------------------------------------------------------
 
 def test_run_daemon_continues_on_poll_error(tmp_paths: Paths):

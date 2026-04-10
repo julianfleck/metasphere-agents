@@ -15,7 +15,7 @@ def _worker(i):
 
 def test_log_event_schema(tmp_paths):
     rec = log_event("boot", "hello", agent="@x", meta={"k": 1})
-    # PORTING invariant #6: id, timestamp, type, message, agent, scope, meta
+    # Required schema fields: id, timestamp, type, message, agent, scope, meta
     assert set(rec.keys()) >= {
         "id", "timestamp", "type", "message", "agent", "scope", "meta",
     }

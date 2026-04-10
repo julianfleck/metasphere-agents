@@ -1,12 +1,8 @@
 """Long-polling getUpdates loop with atomic offset persistence.
 
-Replaces the bash ``while curl ... getUpdates`` loop in
-scripts/metasphere-telegram-stream. Improvements:
-
 - Offset is written via tmp+rename under fcntl.flock so a concurrent
   reader/writer cannot observe a half-written file or race a lost update.
-- Updates are returned as ``Update`` dataclasses instead of being parsed
-  ad-hoc with jq at every call site.
+- Updates are returned as ``Update`` dataclasses for typed access.
 """
 
 from __future__ import annotations

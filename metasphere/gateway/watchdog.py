@@ -1,6 +1,6 @@
 """Stuck-prompt recovery for the orchestrator session.
 
-Two failure modes the bash gateway recovered from, ported here:
+Two failure modes handled:
 
 1. **Stuck pasted-text placeholder.** Bracketed-paste race occasionally
    leaves ``[Pasted text #N +M lines]`` in the pane with the Enter
@@ -29,9 +29,9 @@ from ..session import list_sessions
 from .session import SESSION_NAME, session_alive
 
 _PASTE_RE = re.compile(r"\[Pasted text #\d+")
-# L3 (wave-4 review): require BOTH a confirm-class line AND a "1. Yes"
-# option line so prose listing alone (e.g. an enumeration the agent
-# typed into chat) doesn't trip the watchdog.
+# Require BOTH a confirm-class line AND a "1. Yes" option line so prose
+# listing alone (e.g. an enumeration the agent typed into chat) doesn't
+# trip the watchdog.
 _SAFETY_HOOKS_PROMPT_RE = re.compile(
     r"(Do you want to proceed\?|\[plugin:safety-hooks\])",
 )
@@ -89,7 +89,7 @@ def check_stuck_paste(
     """Detect a lingering ``[Pasted text #N`` placeholder; force Enter
     if it has been there ≥15s. Returns True if Enter was sent.
 
-    Mirrors ``check_stuck_prompts``'s paste branch.
+    Handles the stuck-paste branch of prompt recovery.
     """
     paths = paths or resolve()
     if not session_alive(session_name):

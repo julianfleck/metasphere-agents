@@ -1,7 +1,7 @@
-"""Fractal inter-agent messaging — Python port of scripts/messages.
+"""Fractal inter-agent messaging.
 
-Replaces the bash CLI's lossy ``sed -i`` field updates with atomic
-read-modify-write under flock (see :mod:`metasphere.io`). Every message
+Atomic read-modify-write under flock (see :mod:`metasphere.io`).
+Every message
 is a YAML-frontmatter file at ``<scope>/.messages/inbox/<id>.msg``;
 sender keeps a copy in ``<scope>/.messages/outbox/<id>.msg``.
 
@@ -214,7 +214,7 @@ def update_status(msg_path: Path, field: str, value: str) -> Message:
 def collect_inbox(scope: Path, repo_root: Path, *, view: bool = False) -> list[Message]:
     """Walk ``scope`` and every parent up to ``repo_root``, returning all
     messages found in their ``.messages/inbox`` directories. Newest first
-    (sorted by filename descending, matching the bash version)."""
+    (sorted by filename descending)."""
     scope = Path(scope).resolve()
     repo_root = Path(repo_root).resolve()
     paths: list[Path] = []
@@ -303,7 +303,7 @@ def extract_mentions(text: str, *, paths: Paths | None = None) -> list[Mention]:
 def resolve_target(target: str, scope: Path, repo_root: Path, paths: Paths | None = None) -> Path:
     """Resolve an ``@target`` string to an absolute scope directory.
 
-    Mirrors the bash ``resolve_target`` semantics:
+    Resolution rules:
 
       * ``@.``     -> current scope
       * ``@..``    -> parent of scope
@@ -353,7 +353,7 @@ _last_epoch = 0
 
 
 def _gen_msg_id() -> str:
-    """Canonical ``msg-<epoch>-<pid>`` per PORTING invariant #1.
+    """Generate a canonical ``msg-<epoch>-<pid>`` message ID.
 
     To preserve per-second uniqueness within a process, we serialise
     callers via ``_id_lock`` and busy-wait until the wall clock advances
@@ -484,8 +484,7 @@ def _find_inbox_msg(
         hit = _index_lookup(msg_id, paths)
         if hit is not None:
             return hit
-    # Slow path: walk the repo. Preserved for messages written by the bash
-    # CLI which doesn't update the Python index.
+    # Slow path: walk the repo for messages not present in the index.
     repo_root = Path(repo_root)
     for inbox in repo_root.rglob(".messages/inbox"):
         cand = inbox / f"{msg_id}.msg"

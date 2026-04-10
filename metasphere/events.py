@@ -5,8 +5,8 @@ patterns. All writes go through ``io.append_jsonl`` which holds an
 exclusive flock for the duration of the append, so concurrent
 producers (multiple agents, hooks, schedulers) cannot tear records.
 
-Schema (PORTING invariant #6): one JSON object per line with the
-fields ``{id, timestamp, type, message, agent, scope, meta}``.
+Schema: one JSON object per line with the fields
+``{id, timestamp, type, message, agent, scope, meta}``.
 """
 
 from __future__ import annotations

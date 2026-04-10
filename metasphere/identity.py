@@ -1,6 +1,6 @@
 """Resolve the current agent identity.
 
-Python port of scripts/metasphere-identity. Resolution order:
+Resolution order:
     1. $METASPHERE_AGENT_ID
     2. ~/.metasphere/current_agent  (whitespace-stripped)
     3. @orchestrator if ~/.metasphere/agents/@orchestrator exists

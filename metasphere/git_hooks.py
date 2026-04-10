@@ -1,4 +1,4 @@
-"""Install/uninstall git hook shims (port of scripts/metasphere-git-hooks).
+"""Install/uninstall git hook shims.
 
 Each installed hook is a small shell shim that execs back into
 ``python -m metasphere.cli.git_hooks <event> [args...]`` so the
@@ -23,8 +23,8 @@ _MARKER = "# Metasphere managed hook"
 def _shim(event: str) -> str:
     # Resolve the interpreter at hook-run time, not install time, so the
     # shim survives venv rebuilds, pipx upgrades, and repo clones across
-    # machines. We prefer ``python3`` from $PATH, falling back to plain
-    # ``python``. (gap-5, wave-4 review.)
+    # machines. Prefer ``python3`` from $PATH, falling back to plain
+    # ``python``.
     return (
         "#!/bin/bash\n"
         f"{_MARKER}\n"

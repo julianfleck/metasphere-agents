@@ -1,4 +1,4 @@
-"""Proactive monitoring daemon — Python port of scripts/metasphere-heartbeat.
+"""Proactive monitoring daemon.
 
 Walks the repo for urgent unread messages, agents in waiting/blocked
 states, and urgent tasks; optionally invokes the orchestrator agent
@@ -8,10 +8,6 @@ live, otherwise via a ``claude -p`` one-shot).
 State (which urgent items have already been notified about) lives in
 ``$METASPHERE_DIR/state/heartbeat_state`` and is mutated under
 ``metasphere.io.file_lock`` so concurrent ticks cannot tear lines.
-
-Stdlib only. The bash version stays in place during cutover; this
-module must remain feature-equivalent until the systemd unit is
-flipped to ``python -m metasphere.cli.heartbeat``.
 """
 
 from __future__ import annotations
@@ -45,10 +41,9 @@ def _utcnow() -> str:
 def _notify_user(text: str, paths: Paths) -> None:
     """Send a heartbeat-class notification to the user via Telegram.
 
-    Mirrors the bash ``notify()`` helper. Failures are swallowed —
-    heartbeat ticks must never raise. Looks up the chat id via the
-    posthook resolver so the heartbeat and posthook share the same
-    config-file precedence.
+    Failures are swallowed — heartbeat ticks must never raise. Looks up
+    the chat id via the posthook resolver so the heartbeat and posthook
+    share the same config-file precedence.
     """
     try:
         from .posthook import _resolve_chat_id
@@ -182,8 +177,8 @@ def invoke_agent_heartbeat(
 ) -> bool:
     """Submit the heartbeat context to ``agent``.
 
-    If a tmux session for the agent is alive, paste via the bash
-    ``submit_to_tmux`` helper (invariant 15). Otherwise fall back to a
+    If a tmux session for the agent is alive, paste via the
+    ``submit_to_tmux`` helper. Otherwise fall back to a
     ``claude -p`` one-shot. Returns True on best-effort success.
     """
     paths = paths or resolve()
@@ -194,7 +189,7 @@ def invoke_agent_heartbeat(
         submit_script = paths.repo / "scripts" / "metasphere-tmux-submit"
         if not submit_script.is_file():
             return False
-        # Hard-codes the bash function's two-positional-arg signature
+        # Hard-codes the submit function's two-positional-arg signature
         # (session, context). If scripts/metasphere-tmux-submit ever
         # changes submit_to_tmux's argument shape this will silently
         # break — keep this Python wrapper in sync with that file.
@@ -293,9 +288,8 @@ def heartbeat_once(paths: Paths | None = None, invoke_agent: bool = False) -> No
     """Run one heartbeat tick: scan, dedupe-notify, optionally invoke.
 
     The heartbeat daemon always scans the *whole repo* regardless of the
-    cwd it was started from. The bash version uses ``find "$REPO_ROOT"``;
-    the Python equivalent normalises ``paths.scope`` to ``paths.repo``
-    here so a daemon launched from a nested cwd (or with
+    cwd it was started from. ``paths.scope`` is normalised to
+    ``paths.repo`` so a daemon launched from a nested cwd (or with
     ``METASPHERE_SCOPE`` set) doesn't under-report urgent items in
     sibling scopes.
     """
@@ -378,9 +372,8 @@ def heartbeat_daemon(
 ) -> None:
     """Run :func:`heartbeat_once` forever on ``interval_seconds`` cadence.
 
-    The bash daemon historically did double duty: heartbeat ticks plus
-    Telegram inbound long-polling on a 5s cadence. The Python port
-    prefers single-responsibility daemons (run
+    The daemon can optionally combine heartbeat ticks with Telegram
+    inbound long-polling. Single-responsibility is preferred (run
     ``python -m metasphere.cli.telegram poll`` from a sibling unit), but
     callers can opt into the combined behaviour with
     ``with_telegram_poll=True`` to ease cutover from a single systemd

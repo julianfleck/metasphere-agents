@@ -142,7 +142,7 @@ def test_bash_task_md_files_roundtrip(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 3. Live telegram smoke (parallel-track bot)
+# 3. Live telegram smoke
 # ---------------------------------------------------------------------------
 
 @pytest.mark.live

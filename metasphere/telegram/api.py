@@ -2,10 +2,8 @@
 
 This module is the ONLY place in the metasphere package that talks to
 api.telegram.org/sendMessage. All other modules MUST go through
-``send_message`` here. The bash version had four separate curl call sites
-with subtly different parse_mode handling, which silently dropped messages
-when Markdown parsing failed. The Python rewrite collapses them into one
-function so that bug class is impossible.
+``send_message`` here. A single call site ensures consistent parse_mode
+handling and prevents silent message drops on Markdown parse failures.
 """
 
 from __future__ import annotations
@@ -62,8 +60,8 @@ def _load_token() -> str:
     1. ``TELEGRAM_BOT_TOKEN`` env var (canonical @spotspotbotbot — what the
        live orchestrator and human channel use).
     2. ``~/.metasphere/config/telegram.env`` ``TELEGRAM_BOT_TOKEN``.
-    3. ``TELEGRAM_BOT_TOKEN_REWRITE`` env var (explicit opt-in for the
-       parallel-track sandbox bot during dev/testing only).
+    3. ``TELEGRAM_BOT_TOKEN_REWRITE`` env var (explicit opt-in for a
+       staging/sandbox bot during dev/testing only).
     4. ``~/.metasphere/config/telegram-rewrite.env`` ``TELEGRAM_BOT_TOKEN_REWRITE``.
 
     After cutover the canonical bot MUST win by default so daemons that

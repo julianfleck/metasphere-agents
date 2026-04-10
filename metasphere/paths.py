@@ -4,7 +4,7 @@ Replaces ad-hoc ``${METASPHERE_DIR:-$HOME/.metasphere}`` expansions
 scattered across scripts/ (messages, tasks, metasphere-spawn,
 metasphere-context, metasphere-schedule, metasphere-telegram, ...).
 
-Resolution rules mirror the bash:
+Resolution rules:
     METASPHERE_DIR        -> ~/.metasphere
     METASPHERE_REPO_ROOT  -> git toplevel of CWD, else CWD
     METASPHERE_SCOPE      -> CWD

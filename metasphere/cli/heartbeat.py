@@ -7,9 +7,8 @@ Usage::
     python -m metasphere.cli.heartbeat daemon 300   # custom interval
     python -m metasphere.cli.heartbeat --invoke-agent
 
-The systemd unit currently calls ``scripts/metasphere-heartbeat
-daemon 300`` with ``HEARTBEAT_INVOKE_AGENT=true``; this CLI is the
-Python equivalent for the cutover.
+Runs as a systemd unit with ``HEARTBEAT_INVOKE_AGENT=true`` to
+trigger agent context submission on each tick.
 """
 
 from __future__ import annotations

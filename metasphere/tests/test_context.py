@@ -36,7 +36,7 @@ def test_harness_hash_matches_bash_recipe(tmp_paths: Paths):
 
     py_hash = ctx.harness_hash(tmp_paths)
 
-    # Reproduce the bash recipe directly: sort filenames, cat in order,
+    # Reproduce the hash recipe: sort filenames, cat in order,
     # sha256sum the concatenated bytes.
     files = sorted(
         str(tmp_paths.repo / rel)

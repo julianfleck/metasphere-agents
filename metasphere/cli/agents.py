@@ -1,15 +1,12 @@
 """CLI shims for the agent lifecycle module.
 
-Mirrors the bash command surface::
+Command surface::
 
     metasphere-spawn @name /scope/ "task" [@parent]
     metasphere-wake  @name ["first task"]
     metasphere-wake  --list | --status
     agents list
     agents status
-
-The bash entrypoints (``scripts/metasphere-spawn``, ``scripts/metasphere-wake``)
-are slated to become thin shims around these.
 """
 
 from __future__ import annotations

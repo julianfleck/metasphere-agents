@@ -1,25 +1,23 @@
 """metasphere.gateway — persistent orchestrator session + watchdog + daemon.
 
-Python port of ``scripts/metasphere-gateway``. The bash version had four jobs:
+Four jobs:
 
 1. Maintain a persistent tmux+REPL session for ``@orchestrator``.
 2. Poll telegram getUpdates and inject inbound messages into that session.
 3. Watchdog: clear stuck-paste placeholders, auto-approve safety-hooks confirmations.
 4. Daemon loop tying it all together.
 
-The Python rewrite splits these cleanly across submodules:
+Submodules:
 
 - ``session``  — tmux+REPL lifecycle (start/restart/health/ensure).
 - ``watchdog`` — stuck-paste recovery + safety-hooks auto-approve.
 - ``daemon``   — supervisor loop composing telegram poller + watchdog.
 
-The bash daemon had a known restart-flap bug (``set -e`` tripped inside the
-loop body, exiting status=1 every ~6s). The Python rewrite wraps every loop
-step in try/except so a single failure cannot exit the daemon.
+Every loop step is wrapped in try/except so a single failure cannot exit
+the daemon.
 
-We deliberately do NOT reimplement tmux paste-submission (invariant 15 — shell
-out to ``scripts/metasphere-tmux-submit``) or telegram getUpdates (use
-``metasphere.telegram.poller``).
+Tmux paste-submission shells out to ``scripts/metasphere-tmux-submit``;
+telegram polling uses ``metasphere.telegram.poller``.
 """
 
 from __future__ import annotations

@@ -23,7 +23,7 @@ def test_slugify_strips_punctuation():
 
 
 def test_slugify_replaces_slashes():
-    # the bash bug: slashes used to leak into filenames
+    # slashes must not leak into filenames
     assert "/" not in t.slugify("project/agent/task name")
     assert t.slugify("a/b/c") == "a-b-c"
 

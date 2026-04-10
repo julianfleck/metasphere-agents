@@ -1,13 +1,8 @@
-"""Per-turn context block — Python port of scripts/metasphere-context.
-
-The bash hook is what claude-code currently invokes via UserPromptSubmit;
-this module is a parallel implementation. The cutover (replacing the
-symlink in ``~/.metasphere/bin``) happens later.
+"""Per-turn context block builder.
 
 Section order is load-bearing: the orchestrator's per-turn cognition
-keys off the layout, so we match the bash byte-for-byte where it
-matters (status header → drift warning → telegram → messages → tasks
-→ events → FTS).
+keys off the layout (status header → drift warning → telegram →
+messages → tasks → events → FTS).
 
 Pure stdlib. No third-party deps.
 """
@@ -29,7 +24,7 @@ from .identity import resolve_agent_id
 from .paths import Paths, rel_path, resolve
 
 # Files baked into the REPL at session start. Order is irrelevant —
-# the bash recipe sorts before concatenating, and so do we.
+# sorted before concatenating for deterministic hashing.
 _HARNESS_FILES = (
     "CLAUDE.md",
     ".claude/settings.json",
@@ -57,7 +52,7 @@ def truncate_section(text: str, budget: int = DEFAULT_SECTION_BUDGET) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Harness drift detector (PORTING invariant #8)
+# Harness drift detector
 # ---------------------------------------------------------------------------
 
 
@@ -73,11 +68,11 @@ def _existing_harness_files(repo_root: Path) -> list[Path]:
 def harness_hash(paths: Paths) -> str:
     """Sha256 of the harness files, sorted by path then concatenated.
 
-    Matches the bash recipe in scripts/metasphere-context lines 49-87:
+    Sorts filenames, concatenates their content, and hashes:
 
         printf '%s\\n' files | sort | xargs cat | sha256sum
 
-    Returns "" if no files exist (matches bash empty-hash branch).
+    Returns "" if no files exist.
     """
     files = _existing_harness_files(paths.repo)
     if not files:
@@ -157,10 +152,9 @@ _TELEGRAM_BYTE_CAP = 1024
 def _render_telegram(paths: Paths, history: int = 3) -> str:
     """Render the recent telegram conversation.
 
-    Mirrors the bash hook (scripts/metasphere-context ~88-105): shells out to
-    ``scripts/metasphere-telegram-stream context --history 3`` and caps at
-    1024 bytes. Falls back to inline JSONL parsing only if the script is
-    missing — that keeps test environments without the bash side working.
+    Shells out to ``scripts/metasphere-telegram-stream context --history 3``
+    and caps at 1024 bytes. Falls back to inline JSONL parsing if the
+    script is missing (e.g. in test environments).
     """
     streamer = paths.repo / "scripts" / "metasphere-telegram-stream"
     if streamer.is_file() and os.access(streamer, os.X_OK):
@@ -188,9 +182,9 @@ def _render_telegram(paths: Paths, history: int = 3) -> str:
         lines = archive.read_text(encoding="utf-8").splitlines()
     except OSError:
         return "## Telegram (recent conversation)\n(no recent messages)\n"
-    # The bash version uses `tail -n` over JSON-lines but the file actually
-    # contains pretty-printed JSON for outgoing messages. Be defensive: walk
-    # the file as a stream of objects, then take the last `history` of them.
+    # The file may contain pretty-printed JSON for outgoing messages. Be
+    # defensive: walk the file as a stream of objects, then take the last
+    # `history` of them.
     objs = _parse_jsonl_loose(lines)
     if not objs:
         return "## Telegram (recent conversation)\n(no recent messages)\n"
@@ -222,8 +216,8 @@ def _render_telegram(paths: Paths, history: int = 3) -> str:
 def _parse_jsonl_loose(lines: Iterable[str]) -> list[dict]:
     """Parse a file that mixes single-line JSONL with pretty-printed objects.
 
-    The bash archiver writes single-line JSONL, but earlier code (and the
-    outgoing-archive path) sometimes wrote pretty-printed records. Use
+    The archiver writes single-line JSONL, but the outgoing-archive path
+    sometimes writes pretty-printed records. Use
     ``json.JSONDecoder().raw_decode`` over a sliding buffer so that braces
     inside string literals don't desync our offset (the previous brace-
     counting parser had this footgun).
@@ -302,7 +296,7 @@ def _render_events(paths: Paths, n: int = 10) -> str:
         return "## Recent Events\n(no recent events)\n"
     try:
         with open(log, "r", encoding="utf-8") as f:
-            # Constant memory single-pass tail (M5).
+            # Constant memory single-pass tail.
             tail = list(_collections.deque(f, maxlen=n))
     except OSError:
         return "## Recent Events\n(no recent events)\n"

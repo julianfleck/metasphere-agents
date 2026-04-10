@@ -1,6 +1,6 @@
 """Post-turn (Stop) hook: route assistant reply to Telegram + track activity.
 
-Python port of ``scripts/metasphere-posthook``. Two responsibilities:
+Two responsibilities:
 
 1. **Route** the final assistant text of a turn to Telegram for the
    ``@orchestrator`` agent only. Sub-agents communicate via the messages
@@ -152,7 +152,7 @@ def mark_orchestrator_explicit_send(paths: Paths) -> None:
 
 
 def route_to_telegram(text: str, paths: Paths) -> None:
-    """Send ``text`` to Telegram via the parallel-track bot, deduping
+    """Send ``text`` to Telegram, deduping
     against the last-sent hash. Failures are logged, never raised.
     """
     if not text:
@@ -228,11 +228,8 @@ def _resolve_chat_id(paths: Paths) -> str | None:
     2. ``$paths.config/telegram_chat_id`` (one-line bare value).
     3. ``$paths.root/telegram_chat_id`` (legacy fallback).
 
-    The bash posthook delegated to ``metasphere-telegram-stream send``,
-    which loads the chat id from ``telegram.env``. The Python port
-    previously only read the bare one-line file, so on hosts where only
-    ``telegram.env`` was populated it would silently log "no chat_id
-    configured" and deliver nothing.
+    Loads the chat id from ``telegram.env`` (KEY=VALUE env file),
+    falling back to a bare one-line ``telegram_chat_id`` file.
     """
     env_file = paths.config / "telegram.env"
     try:
@@ -291,8 +288,7 @@ def track_turn_completion(agent: str, paths: Paths) -> None:
     turns = 0
     # One lock spans the activity-json + status + updated_at writes so a
     # racing posthook from a sibling process can never observe a
-    # half-updated agent state. The bash version is naturally atomic via
-    # single-process shell; the Python equivalent needs an explicit lock.
+    # half-updated agent state; the explicit lock ensures atomicity.
     try:
         with file_lock(activity_file):
             data: dict[str, Any] = {}

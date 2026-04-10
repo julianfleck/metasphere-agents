@@ -1,10 +1,9 @@
 """Persistent ``@orchestrator`` tmux+REPL session lifecycle.
 
-Mirrors the session-management half of ``scripts/metasphere-gateway``.
 The session is named ``metasphere-orchestrator`` (note: NOT
 ``metasphere-@orchestrator`` — the gateway predates the agent-naming
-convention used by :mod:`metasphere.agents` and the bash gateway has
-historically used the bare name. We preserve that for compatibility.)
+convention used by :mod:`metasphere.agents` and has historically used
+the bare name. Preserved for compatibility.)
 """
 
 from __future__ import annotations
@@ -24,10 +23,9 @@ from ..paths import Paths, resolve
 
 
 def write_harness_hash_baseline(paths: Paths) -> None:
-    """Mirror the bash ``write_harness_hash_baseline``: snapshot the
-    current harness content hash so the per-turn context hook can detect
-    drift and surface a reload warning to the agent. Best-effort; never
-    raises."""
+    """Snapshot the current harness content hash so the per-turn context
+    hook can detect drift and surface a reload warning to the agent.
+    Best-effort; never raises."""
     try:
         paths.state.mkdir(parents=True, exist_ok=True)
         atomic_write_text(paths.state / "harness_hash_baseline", harness_hash(paths) + "\n")
@@ -40,7 +38,7 @@ SESSION_NAME = "metasphere-orchestrator"
 # per-agent restart_pending marker whenever claude exits, so the watchdog
 # can inject a continuation prompt into the fresh instance.
 def _respawn_cmd(agent: str = "@orchestrator") -> str:
-    """Return the bash respawn loop command for a given agent.
+    """Return the respawn loop command for a given agent.
 
     The marker is a JSON file with timestamp + reason + agent. If
     restart_session() already wrote one (programmatic restart), the loop
@@ -85,8 +83,8 @@ def _tmux(*args: str) -> subprocess.CompletedProcess:
 
 
 def session_alive(name: str = SESSION_NAME) -> bool:
-    # Delegate to the canonical metasphere.agents.session_alive so a future
-    # fix to one path doesn't silently desync the other (M2, wave-4 review).
+    # Delegate to metasphere.agents.session_alive so a future fix to one
+    # path doesn't silently desync the other.
     return _agents_session_alive(name)
 
 
@@ -94,9 +92,8 @@ def session_health(paths: Paths | None = None) -> Tuple[bool, int]:
     """Return ``(alive, idle_seconds_since_session_activity)``.
 
     ``idle_seconds`` is 0 when the session is dead or activity cannot be
-    parsed (the bash version treats an unparseable activity as "fine" and
-    we mirror that — the watchdog only acts on stuck-prompt patterns,
-    never on idle time alone).
+    parsed (an unparseable activity is treated as "fine" — the watchdog
+    only acts on stuck-prompt patterns, never on idle time alone).
     """
     if not session_alive(SESSION_NAME):
         return (False, 0)
@@ -114,10 +111,9 @@ def start_session(paths: Paths | None = None) -> bool:
     """Create the orchestrator tmux session and start the claude respawn loop.
 
     Returns True on success. Idempotent: if the session already exists,
-    returns True without touching it. Mirrors the bash ``start_session``
-    minus the (no-op) initial-context injection — claude-code auto-loads
-    ``CLAUDE.md`` from the repo root, so we deliberately do not paste any
-    bootstrap text into the pane.
+    returns True without touching it. Does not inject initial context —
+    claude-code auto-loads ``CLAUDE.md`` from the repo root, so we
+    deliberately do not paste any bootstrap text into the pane.
     """
     paths = paths or resolve()
     if session_alive(SESSION_NAME):
@@ -128,9 +124,9 @@ def start_session(paths: Paths | None = None) -> bool:
         scope_str = scope_file.read_text(encoding="utf-8").strip() or str(paths.repo)
     except (OSError, FileNotFoundError):
         scope_str = str(paths.repo)
-    # L1 (wave-4 review): if the configured scope is gone, fall back to
-    # repo root with a log_event so the failure is debuggable instead of
-    # tmux failing silently with `-c <bad-path>`.
+    # If the configured scope is gone, fall back to repo root with a
+    # log_event so the failure is debuggable instead of tmux failing
+    # silently with `-c <bad-path>`.
     if not Path(scope_str).is_dir():
         try:
             log_event(

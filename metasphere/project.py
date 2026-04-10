@@ -1,4 +1,4 @@
-"""Project management (port of scripts/metasphere-project, schema v2).
+"""Project management (schema v2).
 
 Projects are directories marked by ``.metasphere/`` containing
 ``project.json``. Schema v2 adds ``goal``, ``repo``, ``members[]``,

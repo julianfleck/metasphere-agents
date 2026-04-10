@@ -1,4 +1,4 @@
-"""Command output capture (port of scripts/metasphere-trace).
+"""Command output capture.
 
 Captures stdout/stderr/metadata for arbitrary commands into
 ``$METASPHERE_DIR/traces/YYYY-MM-DD/`` and appends each invocation to
@@ -193,10 +193,8 @@ def search_traces(
 ) -> list[Trace]:
     """Stream the trace index line-by-line and short-circuit at ``limit``.
 
-    M1 (wave-4 review): the previous implementation read up to 10 000 rows
-    into memory before filtering, silently truncating long histories. This
-    version reads `index.jsonl` line-at-a-time under a shared lock and
-    stops as soon as ``limit`` matches are collected.
+    Reads ``index.jsonl`` line-at-a-time under a shared lock and stops as
+    soon as ``limit`` matches are collected.
     """
     paths = paths or resolve()
     rx = re.compile(pattern, re.IGNORECASE)

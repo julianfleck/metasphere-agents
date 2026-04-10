@@ -7,7 +7,7 @@ Subcommands:
                                the current ``METASPHERE_AGENT_ID``.
     telegram getme             Print bot info (sanity check).
 
-This CLI talks to the REWRITE bot only — see metasphere.telegram.api.
+See metasphere.telegram.api for bot token resolution order.
 """
 
 from __future__ import annotations
@@ -21,9 +21,8 @@ from typing import List, Optional
 from metasphere.io import atomic_write_text
 from metasphere.telegram import api, archiver, commands, inject, poller
 
-# Path order matters: rewrite-specific file first (parallel-track legacy),
-# then the canonical bash chat-id file. After cutover the python stack IS
-# canonical, so falling back to the canonical chat id keeps
+# Path order matters: rewrite-specific file first, then the canonical
+# chat-id file. Falling back to the canonical chat id keeps
 # `metasphere-telegram send "..."` working without --chat-id and without the
 # user having to /start the bot a second time.
 CHAT_ID_FILE = os.path.expanduser("~/.metasphere/config/telegram_chat_id_rewrite")

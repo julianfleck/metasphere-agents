@@ -1,13 +1,9 @@
 """Atomic file I/O, locking, JSON, and YAML-frontmatter helpers.
 
-Replaces ad-hoc ``cat > tmp && mv`` and ``flock`` patterns sprinkled
-across scripts/messages, scripts/tasks, scripts/metasphere-schedule,
-and scripts/metasphere-telegram-stream. Pure stdlib.
-
-The frontmatter parser is intentionally minimal: it understands the
-flat ``key: value`` blocks the bash scripts emit between ``---`` fences,
-plus simple ``[a, b]`` inline lists. It is *not* a general YAML parser
-— that would require a third-party dep, which is forbidden for now.
+Pure stdlib. The frontmatter parser is intentionally minimal: it
+understands flat ``key: value`` blocks between ``---`` fences, plus
+simple ``[a, b]`` inline lists. It is *not* a general YAML parser —
+that would require a third-party dep, which is forbidden for now.
 """
 
 from __future__ import annotations

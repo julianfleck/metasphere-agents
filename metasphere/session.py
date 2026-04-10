@@ -1,4 +1,4 @@
-"""tmux session lifecycle (port of scripts/metasphere-session).
+"""tmux session lifecycle.
 
 Canonical module for managing agent sessions: list, start, stop,
 restart, send, attach. All agent types use this — the gateway module
@@ -176,7 +176,7 @@ def restart_session(agent: str, reason: str, paths: Paths | None = None) -> bool
 def send_to_session(agent: str, message: str, paths: Paths | None = None) -> bool:
     """Send a message to an agent's tmux session.
 
-    Uses the bash submit helper for reliable delivery.
+    Uses the tmux submit helper for reliable delivery.
     Returns True on success.
     """
     paths = paths or resolve()

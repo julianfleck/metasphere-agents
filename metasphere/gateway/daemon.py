@@ -3,10 +3,8 @@
 This is the loop that ties session lifecycle, telegram polling, and the
 watchdog together. It is intentionally bulletproof: every loop step is
 wrapped in try/except so a single iteration failure cannot exit the
-daemon. The bash version had a known restart-flap bug — ``set -e``
-tripping inside the loop body caused it to exit status=1 every ~6s
-under systemd, which then respawned the script in a tight loop. The
-Python rewrite must NOT replicate this.
+daemon. Every loop step is wrapped in try/except so a single iteration
+failure cannot exit the process.
 """
 
 from __future__ import annotations
@@ -33,8 +31,7 @@ def _poll_once(timeout: int = 1) -> int:
     for u in updates:
         if u.text and u.chat_id is not None:
             if u.text.startswith("/"):
-                # Route slash commands through the command dispatcher (M5,
-                # wave-4 review). Previously these were silently dropped.
+                # Route slash commands through the command dispatcher.
                 # No 👀 reaction here: slash commands bypass the orchestrator
                 # loop, replies are immediate, and the reaction is just noise.
                 try:
@@ -109,8 +106,7 @@ def run_daemon(
     time_fn = time_fn or time.time
 
     # Refresh harness hash baseline at boot so an existing-on-startup
-    # session uses the latest harness as its drift reference. Mirrors the
-    # bash daemon_mode write_harness_hash_baseline call.
+    # session uses the latest harness as its drift reference.
     try:
         write_harness_hash_baseline(paths)
     except Exception:
@@ -149,9 +145,8 @@ def run_daemon(
         except Exception:
             pass
 
-    # so the watchdog fires on the first iteration. L2 (wave-4 review):
-    # this is safe under the rewrite because the daemon no longer
-    # flap-restarts; the 10s rate-limit marker inside
+    # so the watchdog fires on the first iteration. This is safe because
+    # the daemon no longer flap-restarts; the 10s rate-limit marker inside
     # check_safety_hooks_confirmation is the defence-in-depth.
     last_watchdog = -float("inf")
     while True:

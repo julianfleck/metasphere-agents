@@ -1,4 +1,4 @@
-"""Token-overlap FTS strategy — pure stdlib port of scripts/metasphere-fts.
+"""Token-overlap FTS strategy for memory search.
 
 Walks a corpus of markdown files in well-known metasphere locations,
 tokenizes the query (lowercase / alphanumeric / >=3 chars / drops a
@@ -6,12 +6,6 @@ small stopword set), and scores each file by the count of distinct
 query tokens that appear, lightly weighted by hit count. The score is
 normalized to 0..1 by dividing by the total query token count so the
 top result is at most 1.0.
-
-This is the deliberate behavioral twin of the bash version: same
-corpus directories, same tokenization, same stopword list, same
-distinct-token scoring. The bash awk produced ``distinct*10 + h/(h+5)``
-which is monotonic in (distinct, hits); we keep the same ordering but
-project to 0..1.
 """
 
 from __future__ import annotations
@@ -119,10 +113,9 @@ class TokenOverlapStrategy(MemoryStrategy):
             return []
 
         total_tokens = len(tokens)
-        # Word-boundary alternation matches the bash `rg -w` semantics:
-        # `quokka` must NOT match `quokkas` and `cam` must NOT match
-        # `camera`. Plain substring scoring inflates short tokens and
-        # silently reorders results vs the bash version.
+        # Word-boundary alternation: `quokka` must NOT match `quokkas`
+        # and `cam` must NOT match `camera`. Plain substring scoring
+        # inflates short tokens and silently reorders results.
         token_re = re.compile(
             r"\b(" + "|".join(re.escape(t) for t in tokens) + r")\b"
         )

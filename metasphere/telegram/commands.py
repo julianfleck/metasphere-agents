@@ -1,10 +1,8 @@
 """Slash command dispatch for the telegram bot.
 
 Each command returns a string (the body to send back). The dispatcher
-calls into other ``metasphere/*`` modules where they exist; for modules
-that haven't landed yet in the parallel rewrite, we shell out to the
-existing bash scripts so the bot is fully functional during the
-porting period.
+calls into ``metasphere/*`` modules where they exist; for commands not
+yet implemented natively, we shell out to ``scripts/`` equivalents.
 
 Adding a new command:
 1. Define a ``cmd_<name>(args, ctx)`` function returning a string.

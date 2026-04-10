@@ -1,12 +1,12 @@
 """Inject incoming text messages into the orchestrator's tmux session.
 
-Mirrors the bash ``inject_to_orchestrator`` helper. The orchestrator
-runs inside a tmux session named ``metasphere-orchestrator``; without
-direct injection, incoming user messages would only surface on the next
-heartbeat tick (up to 5 min latency).
+The orchestrator runs inside a tmux session named
+``metasphere-orchestrator``; without direct injection, incoming user
+messages would only surface on the next heartbeat tick (up to 5 min
+latency).
 
-We shell out to ``scripts/metasphere-tmux-submit`` so the rewrite uses
-the exact same submission contract as the bash version.
+Shells out to ``scripts/metasphere-tmux-submit`` for the actual tmux
+paste-submission.
 """
 
 from __future__ import annotations
@@ -51,9 +51,8 @@ def submit_to_tmux(
     # REPL when the payload is rendered.
     safe_user = _USERNAME_RE.sub("", from_user) or "unknown"
     payload = f"[telegram from {safe_user}] {text}"
-    # The bash script is sourced for its submit_to_tmux function. Easiest
-    # cross-language path is to invoke a small bash one-liner that sources
-    # it and calls the function.
+    # The script is sourced for its submit_to_tmux function. Invoke a
+    # small bash one-liner that sources it and calls the function.
     cmd = [
         "bash",
         "-c",

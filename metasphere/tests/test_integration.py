@@ -1,4 +1,4 @@
-"""End-to-end integration tests for the metasphere/ Python rewrite.
+"""End-to-end integration tests for metasphere.
 
 NOT mocked. Real file IO + real Telegram API calls (to a configured test
 bot whose token lives in ~/.metasphere/config/telegram-rewrite.env).

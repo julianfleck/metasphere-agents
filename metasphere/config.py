@@ -1,9 +1,7 @@
 """Configuration loading from ~/.metasphere/config/*.env files.
 
-Replaces ad-hoc ``source ~/.metasphere/config/telegram.env`` from
-scripts/metasphere-telegram and friends. Loads the canonical Telegram
-bot token AND the parallel-track ``telegram-rewrite.env`` token so the
-Python rewrite can run side-by-side with the bash without crosstalk.
+Loads Telegram bot tokens and other configuration from
+``~/.metasphere/config/*.env`` files.
 """
 
 from __future__ import annotations

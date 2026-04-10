@@ -1,4 +1,4 @@
-"""Tests for metasphere.schedule (port of scripts/metasphere-schedule)."""
+"""Tests for metasphere.schedule."""
 
 from __future__ import annotations
 

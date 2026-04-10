@@ -33,7 +33,7 @@ def test_changelog_writes_file(tmp_paths, tmp_path):
     proj.mkdir()
     init_project(path=proj, paths=tmp_paths)
     out = project_changelog("proj", paths=tmp_paths)
-    # Bash bug fix: file actually exists with content
+    # File actually exists with content
     assert out.exists()
     text = out.read_text()
     assert "Changelog" in text
@@ -41,7 +41,7 @@ def test_changelog_writes_file(tmp_paths, tmp_path):
 
 
 def test_changelog_walks_completed_tasks(tmp_paths, tmp_path):
-    """M3 (wave-4 review): completed tasks come from .tasks/completed/*.task on disk."""
+    """Completed tasks come from .tasks/completed/*.task on disk."""
     proj = tmp_path / "proj2"
     proj.mkdir()
     init_project(path=proj, paths=tmp_paths)

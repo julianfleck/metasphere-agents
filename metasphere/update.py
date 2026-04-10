@@ -6,14 +6,13 @@ with main without manual intervention. This module owns:
 * parsing ``$METASPHERE_DIR/config/auto-update.env``
 * registering / unregistering the cron job in
   ``$METASPHERE_DIR/schedule/jobs.json``
-* the actual update flow (delegated to ``scripts/metasphere update`` for
-  the bash-side git pull / daemon restart, then re-pip-install + tests +
-  telegram notify on top)
+* the actual update flow (git pull / daemon restart / re-pip-install /
+  tests / telegram notify)
 * status / enable / disable wrappers driven by the CLI
 
-The bash branch in ``scripts/metasphere`` is intentionally kept as the
-authoritative implementation of the git/daemon dance — the python entry
-shells out to it. Edge cases stay in one place.
+The ``scripts/metasphere`` entry is the authoritative implementation of
+the git/daemon dance — this module shells out to it. Edge cases stay in
+one place.
 """
 
 from __future__ import annotations
@@ -377,9 +376,9 @@ def run_update(
     old = _head_hash(repo, runner)
     log(f"auto-update: HEAD before: {old or '(unknown)'}")
 
-    # Hand off to the bash impl for the git pull + script reinstall +
-    # daemon restart. The bash branch already handles all the edge cases
-    # (ff vs reset fallback, install_source discovery, daemon detection).
+    # Hand off to scripts/metasphere for the git pull + script reinstall +
+    # daemon restart (handles ff vs reset fallback, install_source
+    # discovery, daemon detection).
     if bash_update is None:
         def _default_bash_update(_repo: Path) -> int:
             script = _repo / "scripts" / "metasphere"

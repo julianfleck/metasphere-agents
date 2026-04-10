@@ -1,4 +1,4 @@
-"""Fractal task management — Python port of scripts/tasks.
+"""Fractal task management.
 
 Atomic IO, locking, and frontmatter parsing all live in
 ``metasphere.io`` — this module is a thin domain layer on top.
@@ -27,7 +27,7 @@ def _utcnow() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Slug sanitisation (fixes the bash bug: slashes were preserved)
+# Slug sanitisation (strip slashes and special chars from task titles)
 # ---------------------------------------------------------------------------
 
 _SLUG_STRIP = re.compile(r"[^a-z0-9_-]+")

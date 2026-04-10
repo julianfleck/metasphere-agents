@@ -1,13 +1,8 @@
 """Cron-style job scheduler.
 
-Port of ``scripts/metasphere-schedule``. Mirrors the on-disk schema in
-``$METASPHERE_DIR/schedule/jobs.json`` exactly so the bash and Python
-implementations can coexist during the rewrite.
+Uses the on-disk schema in ``$METASPHERE_DIR/schedule/jobs.json``.
 
-Security/correctness deltas vs the bash version:
-
-* **No ``eval``.** The bash ``cmd_run`` ``eval``-s ``full_command`` from
-  disk (PORTING risk #2). Here we never shell out to a string; the only
+* **No ``eval``.** Dispatch never shells out to a string; the only
   dispatch path is :func:`dispatch_to_agent`, which uses ``subprocess.run``
   with an explicit argv.
 * **File locking on every read-modify-write.** ``load_jobs`` /
@@ -16,8 +11,8 @@ Security/correctness deltas vs the bash version:
 * **Shrink-detection guard.** ``save_jobs`` refuses to write zero jobs
   when the input had jobs — protects against the subshell-pipe wipe bug
   that previously truncated ``jobs.json`` to ``[]``.
-* **180s fire window.** Same as the bash patch — protects against tick
-  drift, restarts, briefly-paused daemons.
+* **180s fire window.** Protects against tick drift, restarts,
+  briefly-paused daemons.
 """
 
 from __future__ import annotations
@@ -37,8 +32,7 @@ try:
     from croniter import croniter
 except ImportError as e:  # pragma: no cover
     raise ImportError(
-        "metasphere.schedule requires the 'croniter' package "
-        "(see PORTING.md — stdlib + croniter only)."
+        "metasphere.schedule requires the 'croniter' package."
     ) from e
 
 from .events import log_event
@@ -147,7 +141,7 @@ def save_jobs(jobs: list[Job], paths: Paths | None = None, *, _input_count: int)
     """Write jobs.json. Refuses to wipe if ``_input_count`` > 0 and ``jobs`` is empty.
 
     ``_input_count`` is mandatory: callers compute it under the lock they
-    hold around the load, eliminating the TOCTOU window M1/M2 flagged.
+    hold around the load, eliminating the TOCTOU window.
     Must be called from within a :func:`with_locked_jobs` block (or the
     caller must otherwise hold the schedule_jobs flock).
     """
@@ -157,7 +151,7 @@ def save_jobs(jobs: list[Job], paths: Paths | None = None, *, _input_count: int)
 
 # ---------- cron evaluation ----------
 
-# 180s window — same as the bash patch. Wide enough to survive a missed
+# 180s window. Wide enough to survive a missed
 # tick from a restart/pause, narrow enough to not double-fire on the next
 # minute.
 CRON_WINDOW_SECS = 180
@@ -171,7 +165,7 @@ def cron_should_fire(
 ) -> bool:
     """Return True if the cron expression is due to fire right now.
 
-    Uses croniter (system-wide install — see PORTING). Honors timezone via
+    Uses croniter for cron parsing. Honors timezone via
     zoneinfo so weekday/hour calculations are local-time correct.
 
     Fires when the most recent expected fire time is within the last
@@ -210,10 +204,9 @@ def cron_should_fire(
 def resolve_target_agent(job: Job) -> str:
     """Map a job to its persistent collaborator agent.
 
-    Mirrors the bash ``case "$name"`` block — the openclaw migration left
-    every job's ``agent_id`` as ``main``, but mission-writer split them
-    into named persistent agents (``@briefing``, ``@polymarket``,
-    ``@research-*``, ``@explorer``, ``@rage-changelog``) by name prefix.
+    Map a job to its persistent collaborator agent by name prefix
+    (``@briefing``, ``@polymarket``, ``@research-*``, ``@explorer``,
+    ``@rage-changelog``, etc.).
     """
     name = job.name or ""
     if name.startswith("research-monitor:"):
