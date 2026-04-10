@@ -80,7 +80,7 @@ def cmd_start(args: str, ctx: Context) -> str:
         "Commands:\n"
         "/status /tasks /agents /messages /inbox\n"
         "/send @agent !label msg\n"
-        "/project [sub args...] | /cam query | /groups | /link\n"
+        "/projects [sub args...] | /cam query | /groups | /link\n"
         "/events | /tree | /spot | /ping | /help\n\n"
         "Or just message me directly."
     )
@@ -294,14 +294,27 @@ def _run_project_cli(sub_argv: list[str]) -> str:
     return out or "(no output)"
 
 
-def cmd_project(args: str, ctx: Context) -> str:
+def cmd_project(args: str, ctx: Context) -> "Reply | str":
     """Dispatch to ``metasphere project`` subcommands in-process.
 
-    Bare ``/project`` -> list. ``/project <sub> [args...]`` -> in-process call.
-    Quoted args are honored via shlex so users can pass messages.
+    Bare ``/projects`` -> list with HTML cards. ``/projects <sub> [args...]``
+    -> in-process call. Quoted args are honored via shlex.
     """
     import shlex
     sub_argv = shlex.split(args) if args.strip() else ["list"]
+
+    # For 'list', render with the format module's card layout + HTML.
+    if sub_argv[0] in ("list", "ls"):
+        try:
+            from metasphere.project import list_projects
+            from metasphere.format import format_project_table
+            from metasphere.paths import resolve
+
+            projects = list_projects(paths=resolve())
+            return Reply(format_project_table(projects, html=True), parse_mode="HTML")
+        except Exception:
+            pass  # fall through to CLI
+
     return _run_project_cli(sub_argv)
 
 
@@ -598,7 +611,7 @@ BOT_COMMANDS_MANIFEST: list[tuple[str, str]] = [
     ("team", "Project teams: /team [status|specs|seed|wake]"),
     ("specs", "List available agent specs"),
     ("send", "Send: /send @agent !label message"),
-    ("project", "Projects: /project [list|show|new|wake|chat ...]"),
+    ("projects", "Projects: /projects [list|show|new|wake|chat ...]"),
     ("schedule", "Inspect schedule: /schedule [list|show|run ...]"),
     ("cam", "Search CAM memory: /cam <query>"),
     ("events", "Tail recent events"),

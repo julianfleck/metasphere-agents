@@ -259,3 +259,58 @@ def format_schedule_table(jobs: Sequence, *, html: bool | None = None) -> str:
         parts.append(_job_card(j, html=html))
         parts.append(RULE)
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Project cards
+# ---------------------------------------------------------------------------
+
+PROJECT_STATUS_EMOJI = {
+    "active": "🟢",
+    "archived": "⚪",
+    "missing": "🔴",
+}
+
+
+def _project_card(proj, *, html: bool) -> str:
+    status = getattr(proj, "status", "") or "active"
+    emoji = PROJECT_STATUS_EMOJI.get(status, "🔵")
+    name = ellipsize(proj.name or "", TITLE_MAX)
+    goal = getattr(proj, "goal", None) or ""
+    members = getattr(proj, "members", None) or []
+    path = getattr(proj, "path", "") or ""
+
+    lines = [f"{emoji}  {_b(_esc(name, html), html)}"]
+    lines.append(f"{INDENT}Status: {_esc(status, html)}")
+    if members:
+        member_ids = ", ".join(getattr(m, "id", str(m)) for m in members[:5])
+        if len(members) > 5:
+            member_ids += f" (+{len(members) - 5})"
+        lines.append(f"{INDENT}Members: {_esc(member_ids, html)}")
+    if goal:
+        lines.append(f"{INDENT}Goal: {_esc(ellipsize(goal, 60), html)}")
+    if path:
+        lines.append(f"{INDENT}Path: {_esc(path, html)}")
+    return "\n".join(lines)
+
+
+def format_project_table(projects: Sequence, *, html: bool | None = None) -> str:
+    """Render a list of projects as mobile-first cards."""
+    html = _resolve_html(html)
+    header = _b("Projects", html)
+    if not projects:
+        return f"{header}\n{RULE}\n(no projects)"
+
+    # Separate initialized from uninitialized
+    active = [p for p in projects if getattr(p, "status", "") != "missing"]
+    missing = [p for p in projects if getattr(p, "status", "") == "missing"]
+
+    parts = [header, RULE]
+    for p in active:
+        parts.append(_project_card(p, html=html))
+        parts.append(RULE)
+
+    if missing:
+        parts.append(f"({len(missing)} registered but not initialized)")
+
+    return "\n".join(parts)
