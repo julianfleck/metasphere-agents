@@ -101,30 +101,18 @@ def cmd_status(args: str, ctx: Context) -> str:
 
 
 def cmd_tasks(args: str, ctx: Context) -> "Reply | str":
-    """List tasks + active agents in one view."""
+    """List active tasks with HTML cards."""
     try:
         from metasphere.tasks import list_tasks
-        from metasphere.agents import list_agents, session_alive
         from metasphere.format import format_task_table
         from metasphere.paths import resolve
 
         paths = resolve()
-
-        # Tasks from repo root
         tasks = list_tasks(paths.repo, paths.repo)
         active = [t for t in tasks if t.status in ("pending", "in-progress", "in_progress")]
 
-        # Live agents
-        agents_with_status = []
-        for a in list_agents(paths):
-            try:
-                live = session_alive(a.session_name)
-            except Exception:
-                live = False
-            agents_with_status.append((a, live))
-
         return Reply(
-            format_task_table(active, html=True, agents=agents_with_status),
+            format_task_table(active, html=True),
             parse_mode="HTML",
         )
     except Exception as e:
