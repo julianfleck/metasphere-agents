@@ -517,11 +517,9 @@ def wake_persistent(
     )
     _tmux_run("send-keys", "-t", session, env_export, "Enter")
 
-    respawn = (
-        "exec bash -c 'while true; do claude --dangerously-skip-permissions; "
-        'ec=$?; echo "[wake] claude exited ($ec), respawning in 1s..."; '
-        "sleep 1; done'"
-    )
+    from .gateway.session import _respawn_cmd
+
+    respawn = _respawn_cmd(agent_id)
     _tmux_run("send-keys", "-t", session, respawn, "Enter")
 
     _atomic_meta_write(agent_dir, "status", "active: persistent session")

@@ -1,15 +1,25 @@
-"""CLI: ``python -m metasphere.cli.session``.
+"""CLI: ``metasphere session``.
 
     session list
-    session info <name|@agent>
-    session attach <name|@agent>
+    session info <@agent>
+    session attach <@agent>
+    session stop <@agent>
+    session restart <@agent> [reason]
+    session send <@agent> <message>
 """
 
 from __future__ import annotations
 
 import sys
 
-from metasphere.session import attach_to, list_sessions, session_info
+from metasphere.session import (
+    attach_to,
+    list_sessions,
+    restart_session,
+    send_to_session,
+    session_info,
+    stop_session,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if cmd == "info":
         if not rest:
-            print("usage: session info <name|@agent>", file=sys.stderr)
+            print("usage: session info <@agent>", file=sys.stderr)
             return 2
         s = session_info(rest[0])
         if not s:
@@ -49,9 +59,49 @@ def main(argv: list[str] | None = None) -> int:
 
     if cmd == "attach":
         if not rest:
-            print("usage: session attach <name|@agent>", file=sys.stderr)
+            print("usage: session attach <@agent>", file=sys.stderr)
             return 2
         return attach_to(rest[0])
+
+    if cmd == "stop":
+        if not rest:
+            print("usage: session stop <@agent>", file=sys.stderr)
+            return 2
+        ok = stop_session(rest[0])
+        if ok:
+            print(f"stopped {rest[0]}")
+        else:
+            print(f"no session for {rest[0]}", file=sys.stderr)
+            return 1
+        return 0
+
+    if cmd == "restart":
+        if not rest:
+            print("usage: session restart <@agent> [reason]", file=sys.stderr)
+            return 2
+        agent = rest[0]
+        reason = " ".join(rest[1:]) if len(rest) > 1 else "CLI restart"
+        ok = restart_session(agent, reason)
+        if ok:
+            print(f"restarting {agent}: {reason}")
+        else:
+            print(f"no session for {agent}", file=sys.stderr)
+            return 1
+        return 0
+
+    if cmd == "send":
+        if len(rest) < 2:
+            print("usage: session send <@agent> <message>", file=sys.stderr)
+            return 2
+        agent = rest[0]
+        message = " ".join(rest[1:])
+        ok = send_to_session(agent, message)
+        if ok:
+            print(f"sent to {agent}")
+        else:
+            print(f"no session for {agent}", file=sys.stderr)
+            return 1
+        return 0
 
     print(f"unknown subcommand: {cmd}", file=sys.stderr)
     return 2

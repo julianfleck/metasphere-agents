@@ -689,7 +689,7 @@ case "${1:-}" in
         ;;
     session|sess|s)
         shift
-        exec "$SCRIPT_DIR/metasphere-session" "$@"
+        exec python3 -m metasphere.cli.session "$@"
         ;;
     events|ev|e)
         shift

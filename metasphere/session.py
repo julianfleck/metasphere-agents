@@ -1,20 +1,22 @@
-"""tmux session helpers (port of scripts/metasphere-session).
+"""tmux session lifecycle (port of scripts/metasphere-session).
 
-Lightweight introspection layer over the tmux sessions managed by
-``metasphere.agents``. The bash script also handled "start interactive
-session" and "send keys" — those overlap heavily with
-``agents.spawn_persistent`` and ``gateway`` and are intentionally not
-duplicated here.
+Canonical module for managing agent sessions: list, start, stop,
+restart, send, attach. All agent types use this — the gateway module
+delegates here for the orchestrator, and ``agents.wake_persistent``
+handles the initial bring-up sequence.
 """
 
 from __future__ import annotations
 
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Optional
 
 from .agents import _tmux_bin, session_alive, session_name_for
+from .events import log_event
+from .paths import Paths, resolve
 
 _SESSION_PREFIX = "metasphere-"
 
@@ -88,3 +90,100 @@ def attach_to(name_or_agent: str) -> int:
         return 1
     os.execvp(_tmux_bin(), [_tmux_bin(), "attach-session", "-t", target])
     return 0  # unreachable
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle: stop, restart, send
+# ---------------------------------------------------------------------------
+
+def _tmux_run(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [_tmux_bin(), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+
+def _resolve_session(agent: str) -> str:
+    """Resolve agent name to tmux session name."""
+    if not agent.startswith("@"):
+        agent = "@" + agent
+    # Orchestrator uses the historical name (no @ prefix in session).
+    from .gateway.session import SESSION_NAME
+
+    if agent == "@orchestrator":
+        return SESSION_NAME
+    return session_name_for(agent)
+
+
+def stop_session(agent: str, paths: Paths | None = None) -> bool:
+    """Gracefully stop an agent's session: /exit, then kill tmux session.
+
+    Returns True if a session was stopped.
+    """
+    paths = paths or resolve()
+    target = _resolve_session(agent)
+    if not session_alive(target):
+        return False
+
+    _tmux_run("send-keys", "-t", target, "/exit", "Enter")
+    time.sleep(1)
+    _tmux_run("kill-session", "-t", target)
+
+    # Update agent status
+    if not agent.startswith("@"):
+        agent = "@" + agent
+    try:
+        from .io import atomic_write_text
+
+        agent_dir = paths.agents / agent
+        if agent_dir.is_dir():
+            atomic_write_text(agent_dir / "status", "idle\n")
+    except OSError:
+        pass
+
+    try:
+        log_event(
+            "agent.session",
+            f"{agent} session stopped",
+            agent=agent,
+            paths=paths,
+        )
+    except Exception:
+        pass
+
+    return True
+
+
+def restart_session(agent: str, reason: str, paths: Paths | None = None) -> bool:
+    """Restart claude inside an agent's tmux session.
+
+    Writes a per-agent restart marker and sends /exit. The respawn loop
+    brings Claude back; the watchdog injects a wake-up prompt.
+
+    Returns True if the restart was initiated.
+    """
+    from .gateway.session import restart_agent_session
+
+    target = _resolve_session(agent)
+    if not agent.startswith("@"):
+        agent = "@" + agent
+    return restart_agent_session(agent, reason, target, paths)
+
+
+def send_to_session(agent: str, message: str, paths: Paths | None = None) -> bool:
+    """Send a message to an agent's tmux session.
+
+    Uses the bash submit helper for reliable delivery.
+    Returns True on success.
+    """
+    paths = paths or resolve()
+    target = _resolve_session(agent)
+    if not session_alive(target):
+        return False
+
+    from .telegram.inject import submit_to_tmux as _submit
+
+    return _submit("@cli", message, session=target)

@@ -22,7 +22,7 @@ Dispatcher at `metasphere/cli/main.py`.
 | `metasphere-posthook` | bash | `metasphere hooks posthook` → `cli/posthook.py` | **DONE** | Already wired in `.claude/settings.local.json` Stop hook. Live binary still bash — swap in T4/T6. |
 | `metasphere-project` | bash | `metasphere project` → `cli/project.py` | audit-needed | Projects CLI works for `metasphere project list` per task brief. |
 | `metasphere-schedule` | bash | `metasphere schedule` → `cli/schedule.py` | audit-needed | |
-| `metasphere-session` | bash | `metasphere session` → `cli/session.py` | audit-needed | |
+| `metasphere-session` | bash (deprecated) | `metasphere session` → `cli/session.py` | **DONE** | Full lifecycle: list/info/attach/stop/restart/send. Bash script `scripts/metasphere-session` still exists but `metasphere session` now routes to Python. Watchdog covers all agent sessions. |
 | `metasphere-spawn` | bash | `metasphere agent spawn` → `cli/agents.py` | audit-needed | Surfaced via `metasphere-spawn` script; parity with `agent spawn`? |
 | `metasphere-telegram` | bash | `metasphere telegram` → `cli/telegram.py` | audit-needed | |
 | `metasphere-telegram-groups` | bash | `metasphere telegram groups` → `cli/telegram_groups.py` | audit-needed | |

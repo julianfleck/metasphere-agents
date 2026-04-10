@@ -36,27 +36,38 @@ def write_harness_hash_baseline(paths: Paths) -> None:
 
 SESSION_NAME = "metasphere-orchestrator"
 
-# The respawn loop the bash gateway puts in the pane. When the agent runs
-# /exit, claude returns to bash, the loop sleeps, and a fresh REPL starts —
-# picking up the latest harness automatically.
-# The respawn loop writes a restart_pending marker whenever claude exits,
-# so the watchdog can inject a continuation prompt into the fresh instance.
-# The marker is a JSON file with timestamp + reason. If restart_session()
-# already wrote one (programmatic restart), the loop overwrites it with a
-# fresh timestamp — harmless, and ensures the grace period resets to when
-# the new process actually starts.
-_RESPAWN_CMD = (
-    "exec bash -c '"
-    'STATE_DIR="$HOME/.metasphere/state"; '
-    "mkdir -p \"$STATE_DIR\"; "
-    "while true; do "
-    "claude --dangerously-skip-permissions; "
-    'ec=$?; echo "[gateway] claude exited ($ec), respawning in 1s..."; '
-    'echo "{\\\"timestamp\\\": $(date +%s), \\\"reason\\\": \\\"claude exited (code $ec)\\\"}" '
-    '> "$STATE_DIR/restart_pending.json"; '
-    "sleep 1; "
-    "done'"
-)
+# Build the respawn loop command for a given agent. The loop writes a
+# per-agent restart_pending marker whenever claude exits, so the watchdog
+# can inject a continuation prompt into the fresh instance.
+def _respawn_cmd(agent: str = "@orchestrator") -> str:
+    """Return the bash respawn loop command for a given agent.
+
+    The marker is a JSON file with timestamp + reason + agent. If
+    restart_session() already wrote one (programmatic restart), the loop
+    overwrites it with a fresh timestamp — harmless, and ensures the
+    grace period resets to when the new process actually starts.
+    """
+    safe_agent = agent.replace("'", "")  # paranoia
+    return (
+        "exec bash -c '"
+        'STATE_DIR="$HOME/.metasphere/state"; '
+        "mkdir -p \"$STATE_DIR\"; "
+        "while true; do "
+        "claude --dangerously-skip-permissions; "
+        'ec=$?; echo "[gateway] claude exited ($ec), respawning in 1s..."; '
+        'echo "{\\"timestamp\\": '
+        "$(date +%s)"
+        ', \\"reason\\": \\"claude exited (code $ec)\\"'
+        f', \\"agent\\": \\"{safe_agent}\\"'
+        '}" '
+        f'> "$STATE_DIR/restart_pending.{safe_agent}.json"; '
+        "sleep 1; "
+        "done'"
+    )
+
+
+# Backward-compat alias — the orchestrator's loop.
+_RESPAWN_CMD = _respawn_cmd("@orchestrator")
 
 
 def _tmux_bin() -> str:
@@ -142,7 +153,7 @@ def start_session(paths: Paths | None = None) -> bool:
     # Write restart marker so watchdog injects a wake-up prompt into the
     # fresh instance (same path as restart_session — new sessions need a
     # kick too).
-    _write_restart_pending(paths, "session created")
+    _write_restart_pending(paths, "session created", agent="@orchestrator")
 
     # Snapshot harness hash so drift detection has a reference point.
     write_harness_hash_baseline(paths)
@@ -167,49 +178,64 @@ def start_session(paths: Paths | None = None) -> bool:
     return True
 
 
-def _write_restart_pending(paths: Paths, reason: str) -> None:
+def _restart_marker_path(paths: Paths, agent: str = "@orchestrator") -> Path:
+    """Return the per-agent restart marker path."""
+    # Normalize: ensure @ prefix, use it in filename
+    if not agent.startswith("@"):
+        agent = "@" + agent
+    return paths.state / f"restart_pending.{agent}.json"
+
+
+def _write_restart_pending(paths: Paths, reason: str, agent: str = "@orchestrator") -> None:
     """Write a restart-pending marker so the watchdog knows to inject a
     continuation prompt once the fresh Claude instance is ready."""
     try:
         paths.state.mkdir(parents=True, exist_ok=True)
         atomic_write_text(
-            paths.state / "restart_pending.json",
+            _restart_marker_path(paths, agent),
             json.dumps({
                 "timestamp": int(time.time()),
                 "reason": reason,
+                "agent": agent,
             }) + "\n",
         )
     except OSError:
         pass
 
 
-def restart_session(reason: str, paths: Paths | None = None) -> None:
-    """Restart claude inside the existing orchestrator session.
+def restart_agent_session(
+    agent: str,
+    reason: str,
+    session_name: str | None = None,
+    paths: Paths | None = None,
+) -> bool:
+    """Restart claude inside any agent's tmux session.
 
     Sends C-c twice + ``/exit``, then the respawn loop (already running
-    in the pane's shell) revives Claude automatically. A restart-pending
-    marker is written so the watchdog can inject a continuation prompt
-    once the new instance is ready. Leaves the tmux session itself
-    intact so external attachers (mosh, spot-chat) don't drop.
+    in the pane's shell) revives Claude automatically. A per-agent
+    restart-pending marker is written so the watchdog can inject a
+    continuation prompt once the new instance is ready.
+
+    Returns True if the restart was initiated.
     """
     paths = paths or resolve()
-    if not session_alive(SESSION_NAME):
-        # Nothing to restart — let the caller decide whether to start_session.
+    target = session_name or SESSION_NAME
+    if not session_alive(target):
         try:
             log_event(
                 "supervisor.restart_claude",
-                f"session not alive, skipped: {reason}",
+                f"session {target} not alive, skipped: {reason}",
                 agent="@daemon-supervisor",
                 paths=paths,
             )
         except Exception:
             pass
-        return
+        return False
 
     try:
         log_event(
             "supervisor.restart_claude",
-            reason,
+            f"{agent} restart: {reason}",
             agent="@daemon-supervisor",
             paths=paths,
         )
@@ -218,16 +244,22 @@ def restart_session(reason: str, paths: Paths | None = None) -> None:
 
     # Write marker BEFORE killing the process so the watchdog can
     # detect the restart even if this function is interrupted.
-    _write_restart_pending(paths, reason)
+    _write_restart_pending(paths, reason, agent=agent)
 
-    _tmux("send-keys", "-t", SESSION_NAME, "C-c")
+    _tmux("send-keys", "-t", target, "C-c")
     time.sleep(0.3)
-    _tmux("send-keys", "-t", SESSION_NAME, "C-c")
+    _tmux("send-keys", "-t", target, "C-c")
     time.sleep(0.3)
-    _tmux("send-keys", "-t", SESSION_NAME, "/exit", "Enter")
+    _tmux("send-keys", "-t", target, "/exit", "Enter")
     # The respawn loop (already running in the pane shell) handles
-    # restarting Claude. We do NOT re-send _RESPAWN_CMD — that would
-    # nest a second loop inside the first.
+    # restarting Claude. We do NOT re-send the respawn command — that
+    # would nest a second loop inside the first.
+    return True
+
+
+def restart_session(reason: str, paths: Paths | None = None) -> None:
+    """Restart the orchestrator session. Backward-compat wrapper."""
+    restart_agent_session("@orchestrator", reason, SESSION_NAME, paths)
 
 
 def ensure_session(paths: Paths | None = None) -> None:

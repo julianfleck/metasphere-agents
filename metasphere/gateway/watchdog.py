@@ -25,6 +25,7 @@ from typing import Optional
 
 from ..events import log_event
 from ..paths import Paths, resolve
+from ..session import list_sessions
 from .session import SESSION_NAME, session_alive
 
 _PASTE_RE = re.compile(r"\[Pasted text #\d+")
@@ -175,32 +176,20 @@ _RESTART_GRACE_S = 8
 _RESTART_STALE_S = 120
 
 
-def check_restart_pending(
-    session_name: str = SESSION_NAME,
-    paths: Optional[Paths] = None,
+def _check_restart_marker(
+    marker: "Path",
+    paths: Paths,
     *,
     now: Optional[int] = None,
 ) -> bool:
-    """Detect a restart-pending marker and inject a continuation prompt
-    into the fresh Claude instance once the grace period has elapsed.
+    """Process a single restart-pending marker file. Injects a wake-up
+    message into the agent's session if the grace period has elapsed.
 
-    The marker is written by ``restart_session()`` before it sends
-    ``/exit``. After ``_RESTART_GRACE_S`` seconds (enough for the
-    respawn loop to start a new Claude process), we inject a wake-up
-    message. The context hook fires on that message, giving the new
-    instance its full persona/tasks/messages context.
-
-    Returns True if a wake-up message was injected.
+    Returns True if a wake-up was injected.
     """
-    paths = paths or resolve()
-    marker = paths.state / "restart_pending.json"
-    if not marker.exists():
-        return False
-
     try:
         data = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        # Corrupt marker — clean up.
         try:
             marker.unlink()
         except OSError:
@@ -209,11 +198,11 @@ def check_restart_pending(
 
     ts = data.get("timestamp", 0)
     reason = data.get("reason", "unknown")
+    agent = data.get("agent", "@orchestrator")
     now = now if now is not None else int(time.time())
     age = now - ts
 
     if age > _RESTART_STALE_S:
-        # Stale marker — session has been running long past the restart.
         try:
             marker.unlink()
         except OSError:
@@ -221,10 +210,19 @@ def check_restart_pending(
         return False
 
     if age < _RESTART_GRACE_S:
-        # Too soon — Claude may not be ready yet.
         return False
 
-    if not session_alive(session_name):
+    # Resolve the session name for this agent.
+    from ..agents import session_name_for
+    from .session import _restart_marker_path
+
+    # For orchestrator, use the canonical SESSION_NAME (historical naming).
+    if agent == "@orchestrator":
+        target_session = SESSION_NAME
+    else:
+        target_session = session_name_for(agent)
+
+    if not session_alive(target_session):
         return False
 
     # Grace period elapsed, session is alive — inject the wake-up.
@@ -236,15 +234,15 @@ def check_restart_pending(
     from ..telegram.inject import submit_to_tmux as _submit
 
     wake_msg = (
-        f"[session restarted] reason: {reason}. "
+        f"[session restarted] agent: {agent}, reason: {reason}. "
         "Check messages and tasks, resume where you left off."
     )
-    success = _submit("system", wake_msg, session=session_name)
+    success = _submit("system", wake_msg, session=target_session)
 
     try:
         log_event(
             "supervisor.restart_wake",
-            f"Injected continuation prompt after restart ({reason})",
+            f"Injected continuation prompt for {agent} ({reason})",
             agent="@daemon-supervisor",
             paths=paths,
         )
@@ -254,21 +252,76 @@ def check_restart_pending(
     return success
 
 
-def run_watchdog(paths: Optional[Paths] = None) -> None:
-    """Run all stuck-prompt checks. Failures of one check do not abort
-    the others. This is the only watchdog entry point the daemon calls.
+def check_all_restart_pending(paths: Optional[Paths] = None) -> int:
+    """Scan for all per-agent restart markers and process them.
+
+    Returns the number of wake-up messages injected.
     """
     paths = paths or resolve()
-    for fn in (check_stuck_paste, check_safety_hooks_confirmation, check_restart_pending):
+    if not paths.state.is_dir():
+        return 0
+    count = 0
+    for marker in paths.state.glob("restart_pending.@*.json"):
         try:
-            fn(SESSION_NAME, paths)
-        except Exception as e:  # pragma: no cover - defensive
+            if _check_restart_marker(marker, paths):
+                count += 1
+        except Exception as e:
             try:
                 log_event(
                     "supervisor.watchdog_error",
-                    f"{fn.__name__}: {e}",
+                    f"check_restart_marker({marker.name}): {e}",
                     agent="@daemon-supervisor",
                     paths=paths,
                 )
             except Exception:
                 pass
+    return count
+
+
+def _all_session_names() -> list[str]:
+    """Return names of all live metasphere-* tmux sessions."""
+    return [s.name for s in list_sessions()]
+
+
+def run_watchdog(paths: Optional[Paths] = None) -> None:
+    """Run all stuck-prompt checks across ALL active agent sessions.
+
+    Enumerates all ``metasphere-*`` tmux sessions and runs per-session
+    checks (stuck paste, safety hooks). Then scans for per-agent restart
+    markers independently.
+
+    Failures of one check do not abort the others. This is the only
+    watchdog entry point the daemon calls.
+    """
+    paths = paths or resolve()
+
+    # Per-session checks: run against every live metasphere-* session.
+    sessions = _all_session_names()
+    for session_name in sessions:
+        for fn in (check_stuck_paste, check_safety_hooks_confirmation):
+            try:
+                fn(session_name, paths)
+            except Exception as e:  # pragma: no cover - defensive
+                try:
+                    log_event(
+                        "supervisor.watchdog_error",
+                        f"{fn.__name__}({session_name}): {e}",
+                        agent="@daemon-supervisor",
+                        paths=paths,
+                    )
+                except Exception:
+                    pass
+
+    # Restart-pending: scan markers (independent of session enumeration).
+    try:
+        check_all_restart_pending(paths)
+    except Exception as e:  # pragma: no cover - defensive
+        try:
+            log_event(
+                "supervisor.watchdog_error",
+                f"check_all_restart_pending: {e}",
+                agent="@daemon-supervisor",
+                paths=paths,
+            )
+        except Exception:
+            pass
