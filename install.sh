@@ -886,6 +886,18 @@ EOF
     systemctl --user daemon-reload
     ok "Created systemd service"
 
+    # Disable the standalone telegram poller if present — the gateway
+    # daemon handles telegram polling. Running both causes a getUpdates
+    # race where each poller kicks the other off the long-poll, leading
+    # to lost messages and "terminated by other getUpdates request" spam.
+    for stale_unit in metasphere-telegram.service metasphere-telegram-stream.service; do
+        if systemctl --user is-enabled "$stale_unit" &>/dev/null; then
+            systemctl --user stop "$stale_unit" 2>/dev/null || true
+            systemctl --user disable "$stale_unit" 2>/dev/null || true
+            ok "Disabled $stale_unit (gateway owns telegram polling)"
+        fi
+    done
+
     if $INTERACTIVE; then
         read -p "Start metasphere daemon now? [Y/n] " -n 1 -r
         echo

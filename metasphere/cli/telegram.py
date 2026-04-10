@@ -29,6 +29,9 @@ CHAT_ID_FILE = os.path.expanduser("~/.metasphere/config/telegram_chat_id_rewrite
 CHAT_ID_FILE_CANONICAL = os.path.expanduser("~/.metasphere/config/telegram_chat_id")
 
 
+CONTACTS_FILE = os.path.expanduser("~/.metasphere/config/telegram_contacts.json")
+
+
 def _load_chat_id() -> Optional[int]:
     for path in (CHAT_ID_FILE, CHAT_ID_FILE_CANONICAL):
         if not os.path.exists(path):
@@ -41,6 +44,22 @@ def _load_chat_id() -> Optional[int]:
         except (OSError, ValueError):
             continue
     return None
+
+
+def _resolve_contact(name: str) -> Optional[int]:
+    """Look up a named contact from telegram_contacts.json.
+
+    File format: ``{"ella": 5418799462, "julian": 228838013, ...}``
+    Names are case-insensitive.
+    """
+    if not os.path.exists(CONTACTS_FILE):
+        return None
+    try:
+        with open(CONTACTS_FILE) as f:
+            contacts = json.load(f)
+        return contacts.get(name.lower())
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
 
 
 def _save_chat_id(chat_id: int) -> None:
@@ -106,9 +125,16 @@ def cmd_once(args: argparse.Namespace) -> int:
 
 
 def cmd_send(args: argparse.Namespace) -> int:
-    chat_id = args.chat_id or _load_chat_id()
+    chat_id = args.chat_id
+    if chat_id is None and getattr(args, "to", None):
+        chat_id = _resolve_contact(args.to)
+        if chat_id is None:
+            print(f"Error: unknown contact '{args.to}'. Add to {CONTACTS_FILE}", file=sys.stderr)
+            return 2
     if chat_id is None:
-        print("Error: no chat id. Pass --chat-id or have the user /start the bot first.", file=sys.stderr)
+        chat_id = _load_chat_id()
+    if chat_id is None:
+        print("Error: no chat id. Pass --chat-id, --to, or have the user /start the bot first.", file=sys.stderr)
         return 2
     agent = os.environ.get("METASPHERE_AGENT_ID", "@orchestrator")
     text = args.text
@@ -187,7 +213,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_send = sub.add_parser("send", help="send a message")
     p_send.add_argument("text")
-    p_send.add_argument("--chat-id", type=int, default=None)
+    p_send.add_argument("--chat-id", type=int, default=None,
+                        help="numeric Telegram chat ID")
+    p_send.add_argument("--to", default=None,
+                        help="named contact from ~/.metasphere/config/telegram_contacts.json")
     p_send.set_defaults(func=cmd_send)
 
     p_me = sub.add_parser("getme", help="print bot info")

@@ -799,11 +799,21 @@ case "${1:-}" in
                 if git diff --name-only "$_pre_update_hash..$_post_update_hash" 2>/dev/null \
                     | grep -qE '^(pyproject\.toml|metasphere/)'; then
                     info "Python package changed, re-installing..."
-                    if command -v python3 &>/dev/null; then
-                        (cd "$install_source" && python3 -m pip install -e . --quiet 2>/dev/null) \
-                            && ok "Python package reinstalled" \
-                            || warn "pip install -e . failed (run manually if needed)"
+                    # Prefer the repo-local venv (Debian blocks system-wide
+                    # pip via PEP 668). Fall back to system python with
+                    # --break-system-packages as last resort.
+                    _pip_ok=false
+                    if [[ -x "$install_source/.venv/bin/pip" ]]; then
+                        (cd "$install_source" && .venv/bin/pip install -e . --quiet 2>/dev/null) \
+                            && { ok "Python package reinstalled (venv)"; _pip_ok=true; }
                     fi
+                    if ! $_pip_ok && command -v python3 &>/dev/null; then
+                        (cd "$install_source" && python3 -m pip install -e . --quiet 2>/dev/null) \
+                            && { ok "Python package reinstalled"; _pip_ok=true; } \
+                            || (cd "$install_source" && python3 -m pip install -e . --quiet --break-system-packages 2>/dev/null) \
+                            && { ok "Python package reinstalled (break-system-packages)"; _pip_ok=true; }
+                    fi
+                    $_pip_ok || warn "pip install -e . failed (run manually if needed)"
                 fi
             fi
         fi
@@ -830,6 +840,14 @@ case "${1:-}" in
                 ok "Daemon restarted"
             fi
         else
+            # Kill standalone telegram poller to prevent dual-poll race
+            for _stale in metasphere-telegram.service metasphere-telegram-stream.service; do
+                if systemctl --user is-enabled "$_stale" &>/dev/null; then
+                    systemctl --user stop "$_stale" 2>/dev/null || true
+                    systemctl --user disable "$_stale" 2>/dev/null || true
+                    ok "Disabled $_stale (gateway owns polling)"
+                fi
+            done
             if systemctl --user is-active metasphere-gateway &>/dev/null; then
                 systemctl --user restart metasphere-gateway
                 ok "Gateway restarted (metasphere-gateway.service)"
