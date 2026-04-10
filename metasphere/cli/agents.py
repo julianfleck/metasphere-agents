@@ -115,6 +115,93 @@ def wake_main(argv: list[str] | None = None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# seed from spec
+# ---------------------------------------------------------------------------
+
+def _list_specs() -> int:
+    from metasphere import specs as _specs
+    items = _specs.list_specs()
+    if not items:
+        print("No specs found. Place YAML files in specs/ or ~/.metasphere/specs/")
+        return 0
+    print("Available agent specs:")
+    for s in items:
+        print(f"  {s.name:16s} {s.role:16s} {s.description}")
+    return 0
+
+
+def _seed(argv: list[str]) -> int:
+    """Seed an agent's persona files from a spec.
+
+    Usage: metasphere agent seed --spec <spec-name> @agent-id [--project <name>]
+    """
+    from metasphere import specs as _specs
+
+    spec_name = ""
+    agent_id = ""
+    project_name = ""
+    force = False
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--spec" and i + 1 < len(argv):
+            spec_name = argv[i + 1]
+            i += 2
+        elif arg == "--project" and i + 1 < len(argv):
+            project_name = argv[i + 1]
+            i += 2
+        elif arg == "--force":
+            force = True
+            i += 1
+        elif arg.startswith("@"):
+            agent_id = arg
+            i += 1
+        else:
+            i += 1
+
+    if not spec_name or not agent_id:
+        print(
+            "Usage: metasphere agent seed --spec <spec-name> @agent-id [--project <name>] [--force]",
+            file=sys.stderr,
+        )
+        return 1
+
+    spec = _specs.get_spec(spec_name)
+    if not spec:
+        print(f"Spec '{spec_name}' not found.", file=sys.stderr)
+        print("Available specs:")
+        for s in _specs.list_specs():
+            print(f"  {s.name}")
+        return 1
+
+    # Load project context if specified
+    project_goal = ""
+    project_scope = ""
+    if project_name:
+        from metasphere import project as _proj
+        try:
+            proj = _proj.load_project(project_name)
+            project_goal = proj.goal or ""
+            project_scope = proj.path
+        except Exception:
+            pass
+
+    agent_dir = _specs.seed_agent(
+        agent_id,
+        spec,
+        project_name=project_name,
+        project_goal=project_goal,
+        scope=project_scope,
+        force=force,
+    )
+    print(f"Seeded {agent_id} from spec '{spec_name}'")
+    print(f"  Directory: {agent_dir}")
+    print(f"  Files: SOUL.md, MISSION.md, persona-index.md, LEARNINGS.md")
+    print(f"  Wake with: metasphere agent wake {agent_id}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # `agents` umbrella entrypoint
 # ---------------------------------------------------------------------------
 
@@ -131,7 +218,11 @@ def main(argv: list[str] | None = None) -> int:
         return spawn_main(argv[1:])
     if argv[0] == "wake":
         return wake_main(argv[1:])
-    print("Usage: agents [list|status|spawn ...|wake ...]", file=sys.stderr)
+    if argv[0] == "seed":
+        return _seed(argv[1:])
+    if argv[0] == "specs":
+        return _list_specs()
+    print("Usage: agents [list|status|spawn|wake|seed|specs]", file=sys.stderr)
     return 1
 
 

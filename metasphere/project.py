@@ -32,9 +32,13 @@ class Member:
     id: str
     role: str = "contributor"
     persistent: bool = False
+    spec: str = ""
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "role": self.role, "persistent": self.persistent}
+        d = {"id": self.id, "role": self.role, "persistent": self.persistent}
+        if self.spec:
+            d["spec"] = self.spec
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Member":
@@ -42,6 +46,7 @@ class Member:
             id=str(d.get("id", "")),
             role=str(d.get("role", "contributor")),
             persistent=bool(d.get("persistent", False)),
+            spec=str(d.get("spec", "")),
         )
 
 
@@ -379,16 +384,39 @@ def _ensure_stub_mission(agent_id: str, project: Project,
                          *, paths: Paths) -> None:
     if not agent_id.startswith("@"):
         agent_id = "@" + agent_id
+
+    # Find the member to check for a spec
+    member = None
+    for m in project.members:
+        if m.id == agent_id:
+            member = m
+            break
+
+    # If the member has a spec, use full persona seeding
+    if member and member.spec:
+        from .specs import get_spec, seed_agent
+        spec = get_spec(member.spec, paths=paths)
+        if spec:
+            seed_agent(
+                agent_id, spec,
+                project_name=project.name,
+                project_goal=project.goal or "",
+                scope=project.path,
+                paths=paths,
+            )
+            return
+        logger.warning(
+            "Spec '%s' not found for %s; falling back to stub MISSION.md",
+            member.spec, agent_id,
+        )
+
+    # Fallback: stub MISSION.md only (legacy behavior)
     agent_dir = paths.agent_dir(agent_id)
     agent_dir.mkdir(parents=True, exist_ok=True)
     mission = agent_dir / "MISSION.md"
     if mission.is_file():
         return
-    role = "contributor"
-    for m in project.members:
-        if m.id == agent_id:
-            role = m.role
-            break
+    role = member.role if member else "contributor"
     body = (
         f"# Mission: {agent_id}\n\n"
         f"Project: **{project.name}**\n"
