@@ -1059,6 +1059,44 @@ register_consolidate_job() {
 # Main
 # =============================================================================
 
+install_skills() {
+    info "Installing Claude Code skills + commands..."
+
+    local skills_src="$SCRIPT_DIR/skills"
+    local skills_dst="$HOME/.claude/skills"
+    local commands_src="$SCRIPT_DIR/.claude/commands"
+    local commands_dst="$HOME/.claude/commands"
+    local installed=0
+
+    # Skills: copy each skill directory from repo to ~/.claude/skills/
+    if [[ -d "$skills_src" ]]; then
+        mkdir -p "$skills_dst"
+        for skill_dir in "$skills_src"/*/; do
+            [[ -f "$skill_dir/SKILL.md" ]] || continue
+            local name=$(basename "$skill_dir")
+            # Don't overwrite user-customized skills
+            if [[ -d "$skills_dst/$name" && -f "$skills_dst/$name/.user-customized" ]]; then
+                continue
+            fi
+            rm -rf "$skills_dst/$name"
+            cp -r "$skill_dir" "$skills_dst/$name"
+            ((installed++))
+        done
+    fi
+
+    # Commands: copy slash command .md files to ~/.claude/commands/
+    if [[ -d "$commands_src" ]]; then
+        mkdir -p "$commands_dst"
+        for cmd_file in "$commands_src"/*.md; do
+            [[ -f "$cmd_file" ]] || continue
+            cp "$cmd_file" "$commands_dst/"
+            ((installed++))
+        done
+    fi
+
+    [[ $installed -gt 0 ]] && ok "Installed $installed skills/commands to ~/.claude/"
+}
+
 main() {
     detect_openclaw
     check_dependencies
@@ -1070,6 +1108,7 @@ main() {
     setup_telegram
     setup_orchestrator
     seed_claude_permissions
+    install_skills        # Skills + slash commands to ~/.claude/
     setup_daemon
     register_auto_update_job
     register_consolidate_job

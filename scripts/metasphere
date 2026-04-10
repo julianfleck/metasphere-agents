@@ -789,6 +789,22 @@ case "${1:-}" in
             ok "Scripts updated"
         fi
 
+        # Update skills + commands in ~/.claude/
+        if [[ -d "$install_source/skills" ]]; then
+            mkdir -p "$HOME/.claude/skills"
+            for _sd in "$install_source/skills"/*/; do
+                [[ -f "$_sd/SKILL.md" ]] || continue
+                _sn=$(basename "$_sd")
+                [[ -f "$HOME/.claude/skills/$_sn/.user-customized" ]] && continue
+                rm -rf "$HOME/.claude/skills/$_sn"
+                cp -r "$_sd" "$HOME/.claude/skills/$_sn"
+            done
+        fi
+        if [[ -d "$install_source/.claude/commands" ]]; then
+            mkdir -p "$HOME/.claude/commands"
+            cp "$install_source/.claude/commands"/*.md "$HOME/.claude/commands/" 2>/dev/null || true
+        fi
+
         # Re-pip-install the python package if pyproject.toml or any
         # metasphere/*.py file changed since the previous HEAD. Without
         # this, console scripts go stale and the cli dispatcher doesn't
