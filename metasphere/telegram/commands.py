@@ -364,6 +364,101 @@ def cmd_session(args: str, ctx: Context) -> str:
     return f"Unknown /session subcommand: {sub}\nUsage: /session [restart|status]"
 
 
+def cmd_specs(args: str, ctx: Context) -> str:
+    """List available agent specs."""
+    try:
+        from metasphere.specs import list_specs
+        specs = list_specs()
+        if not specs:
+            return "No specs found."
+        lines = ["Available agent specs:"]
+        for s in specs:
+            lines.append(f"  {s.name} ({s.role}) - {s.description}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error listing specs: {e}"
+
+
+def cmd_team(args: str, ctx: Context) -> str:
+    """Team operations: seed, wake, status.
+
+    /team specs          - list available specs
+    /team seed <spec> @name  - seed agent from spec
+    /team status         - show team member status
+    /team wake @name     - wake a seeded agent
+    """
+    import shlex as _shlex
+    sub_argv = _shlex.split(args) if args.strip() else ["status"]
+    sub = sub_argv[0] if sub_argv else "status"
+
+    if sub == "specs":
+        return cmd_specs("", ctx)
+
+    if sub == "seed":
+        if len(sub_argv) < 3:
+            return "Usage: /team seed <spec-name> @agent-name [--project name]"
+        spec_name = sub_argv[1]
+        agent_id = sub_argv[2]
+        project_name = ""
+        if "--project" in sub_argv:
+            idx = sub_argv.index("--project")
+            if idx + 1 < len(sub_argv):
+                project_name = sub_argv[idx + 1]
+        try:
+            from metasphere.specs import get_spec, seed_agent
+            spec = get_spec(spec_name)
+            if not spec:
+                return f"Spec '{spec_name}' not found. Try /team specs"
+            d = seed_agent(agent_id, spec, project_name=project_name)
+            return (
+                f"Seeded {agent_id} from spec '{spec_name}'\n"
+                f"Dir: {d}\n"
+                f"Wake with: /team wake {agent_id}"
+            )
+        except Exception as e:
+            return f"Seed failed: {e}"
+
+    if sub == "wake":
+        if len(sub_argv) < 2:
+            return "Usage: /team wake @agent-name"
+        agent_id = sub_argv[1]
+        try:
+            from metasphere import agents as _agents
+            rec = _agents.wake_persistent(agent_id)
+            return f"{rec.name} awake (session: {rec.session_name})"
+        except Exception as e:
+            return f"Wake failed: {e}"
+
+    if sub == "status":
+        try:
+            from metasphere import agents as _agents
+            from metasphere.paths import resolve
+            items = _agents.list_agents(resolve())
+            persistent = [a for a in items if a.is_persistent]
+            if not persistent:
+                return "No persistent agents."
+            lines = ["Team status:"]
+            for a in persistent:
+                spec_file = a.agent_dir / "spec" if a.agent_dir else None
+                spec_name = ""
+                if spec_file and spec_file.is_file():
+                    spec_name = f" [{spec_file.read_text().strip()}]"
+                alive = _agents.session_alive(a.session_name)
+                marker = "ALIVE" if alive else "dormant"
+                lines.append(f"  {a.name}{spec_name}: {marker} - {a.status}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Status failed: {e}"
+
+    return (
+        "Usage: /team <subcommand>\n"
+        "  specs   - list available agent specs\n"
+        "  seed    - seed agent from spec\n"
+        "  wake    - wake a seeded agent\n"
+        "  status  - show team member status"
+    )
+
+
 COMMANDS: Dict[str, Callable[[str, Context], str]] = {
     "start": cmd_start,
     "help": cmd_help,
@@ -401,6 +496,8 @@ COMMANDS: Dict[str, Callable[[str, Context], str]] = {
     "schedule": cmd_schedule,
     "sched": cmd_schedule,
     "session": cmd_session,
+    "team": cmd_team,
+    "specs": cmd_specs,
 }
 
 
@@ -412,15 +509,15 @@ BOT_COMMANDS_MANIFEST: list[tuple[str, str]] = [
     ("tasks", "List active tasks"),
     ("messages", "Show inbox messages"),
     ("agents", "List registered agents"),
+    ("team", "Agent teams: /team [specs|seed|wake|status]"),
+    ("specs", "List available agent specs"),
     ("send", "Send: /send @agent !label message"),
     ("project", "Projects: /project [list|show|new|wake|chat ...]"),
     ("schedule", "Inspect schedule: /schedule [list|show|run ...]"),
     ("cam", "Search CAM memory: /cam <query>"),
-    ("groups", "Telegram groups admin"),
-    ("link", "Copy current topic link"),
     ("events", "Tail recent events"),
     ("tree", "Show agent tree"),
-    ("spot", "Show spot container status"),
+    ("spot", "Show remote host status"),
     ("session", "Restart orchestrator REPL"),
     ("help", "Show help"),
     ("ping", "Ping the bot"),
