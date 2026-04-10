@@ -844,9 +844,14 @@ def _gc_ephemeral_agents(
                 except (OSError, UnicodeDecodeError):
                     pass
 
-        # Preserve output under logs/agents/<agent-name>.log
+        # Preserve output under logs/agents/<project>/<agent-name>.log
         if preserved and not dry_run:
-            agent_log_dir = paths.logs / "agents"
+            project_name = ""
+            try:
+                project_name = (entry / "project").read_text(encoding="utf-8").strip()
+            except (OSError, FileNotFoundError):
+                pass
+            agent_log_dir = paths.logs / "agents" / (project_name or "_global")
             agent_log_dir.mkdir(parents=True, exist_ok=True)
             agent_log = agent_log_dir / f"{agent_name}.log"
             with open(agent_log, "a", encoding="utf-8") as f:
