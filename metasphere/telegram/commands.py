@@ -364,22 +364,30 @@ def cmd_session(args: str, ctx: Context) -> str:
     return f"Unknown /session subcommand: {sub}\nUsage: /session [restart|status]"
 
 
-def cmd_specs(args: str, ctx: Context) -> str:
+_DIVIDER = "\u2014" * 25
+
+
+def cmd_specs(args: str, ctx: Context) -> "Reply | str":
     """List available agent specs."""
     try:
         from metasphere.specs import list_specs
         specs = list_specs()
         if not specs:
             return "No specs found."
-        lines = ["Available agent specs:"]
+        lines = [f"<b>Agent Specs</b> ({len(specs)})\n"]
         for s in specs:
-            lines.append(f"  {s.name} ({s.role}) - {s.description}")
-        return "\n".join(lines)
+            lines.append(_DIVIDER)
+            lines.append(f"\U0001f4e6  <b>{s.name}</b>")
+            lines.append(f"       Role: <b>{s.role}</b>")
+            lines.append(f"       {s.description}")
+            lines.append(f"       Sandbox: {s.sandbox}")
+        lines.append(_DIVIDER)
+        return Reply("\n".join(lines), parse_mode="HTML")
     except Exception as e:
         return f"Error listing specs: {e}"
 
 
-def cmd_team(args: str, ctx: Context) -> str:
+def cmd_team(args: str, ctx: Context) -> "Reply | str":
     """Team operations: seed, wake, status.
 
     /team specs          - list available specs
@@ -396,7 +404,7 @@ def cmd_team(args: str, ctx: Context) -> str:
 
     if sub == "seed":
         if len(sub_argv) < 3:
-            return "Usage: /team seed <spec-name> @agent-name [--project name]"
+            return "Usage: /team seed &lt;spec-name&gt; @agent-name [--project name]"
         spec_name = sub_argv[1]
         agent_id = sub_argv[2]
         project_name = ""
@@ -410,11 +418,14 @@ def cmd_team(args: str, ctx: Context) -> str:
             if not spec:
                 return f"Spec '{spec_name}' not found. Try /team specs"
             d = seed_agent(agent_id, spec, project_name=project_name)
-            return (
-                f"Seeded {agent_id} from spec '{spec_name}'\n"
-                f"Dir: {d}\n"
-                f"Wake with: /team wake {agent_id}"
-            )
+            lines = [
+                f"\u2705 Seeded <b>{agent_id}</b> from spec <b>{spec_name}</b>",
+                "",
+                f"       Dir: {d}",
+                f"       Files: SOUL.md, MISSION.md, persona-index.md",
+                f"       Wake: /team wake {agent_id}",
+            ]
+            return Reply("\n".join(lines), parse_mode="HTML")
         except Exception as e:
             return f"Seed failed: {e}"
 
@@ -425,7 +436,12 @@ def cmd_team(args: str, ctx: Context) -> str:
         try:
             from metasphere import agents as _agents
             rec = _agents.wake_persistent(agent_id)
-            return f"{rec.name} awake (session: {rec.session_name})"
+            return Reply(
+                f"\u2705 <b>{rec.name}</b> awake\n"
+                f"       Session: {rec.session_name}\n"
+                f"       Attach: tmux attach -t {rec.session_name}",
+                parse_mode="HTML",
+            )
         except Exception as e:
             return f"Wake failed: {e}"
 
@@ -437,21 +453,28 @@ def cmd_team(args: str, ctx: Context) -> str:
             persistent = [a for a in items if a.is_persistent]
             if not persistent:
                 return "No persistent agents."
-            lines = ["Team status:"]
+            alive_count = sum(1 for a in persistent if _agents.session_alive(a.session_name))
+            lines = [f"<b>Team Status</b> ({alive_count}/{len(persistent)} alive)\n"]
             for a in persistent:
                 spec_file = a.agent_dir / "spec" if a.agent_dir else None
-                spec_name = ""
+                spec_label = ""
                 if spec_file and spec_file.is_file():
-                    spec_name = f" [{spec_file.read_text().strip()}]"
+                    spec_label = spec_file.read_text().strip()
                 alive = _agents.session_alive(a.session_name)
-                marker = "ALIVE" if alive else "dormant"
-                lines.append(f"  {a.name}{spec_name}: {marker} - {a.status}")
-            return "\n".join(lines)
+                icon = "\U0001f7e2" if alive else "\u26aa"
+                status = a.status or "-"
+                lines.append(_DIVIDER)
+                lines.append(f"{icon}  <b>{a.name}</b>")
+                if spec_label:
+                    lines.append(f"       Spec: <b>{spec_label}</b>")
+                lines.append(f"       Status: {status}")
+            lines.append(_DIVIDER)
+            return Reply("\n".join(lines), parse_mode="HTML")
         except Exception as e:
             return f"Status failed: {e}"
 
     return (
-        "Usage: /team <subcommand>\n"
+        "Usage: /team &lt;subcommand&gt;\n"
         "  specs   - list available agent specs\n"
         "  seed    - seed agent from spec\n"
         "  wake    - wake a seeded agent\n"
