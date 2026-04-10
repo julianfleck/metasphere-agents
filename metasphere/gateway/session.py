@@ -51,6 +51,9 @@ def _respawn_cmd(agent: str = "@orchestrator") -> str:
         'STATE_DIR="$HOME/.metasphere/state"; '
         "mkdir -p \"$STATE_DIR\"; "
         "while true; do "
+        # Refresh METASPHERE_REPO_ROOT from git on each restart so
+        # stale env vars from a previous session don't persist.
+        'export METASPHERE_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$METASPHERE_REPO_ROOT")"; '
         "claude --dangerously-skip-permissions; "
         'ec=$?; echo "[gateway] claude exited ($ec), respawning in 1s..."; '
         'echo "{\\"timestamp\\": '
@@ -144,6 +147,10 @@ def start_session(paths: Paths | None = None) -> bool:
         return False
     _tmux("set-option", "-t", SESSION_NAME, "mouse", "on")
     _tmux("set-option", "-t", SESSION_NAME, "history-limit", "100000")
+    # Set METASPHERE_REPO_ROOT explicitly so it matches the repo we're in,
+    # regardless of what the parent process had in its env.
+    _tmux("send-keys", "-t", SESSION_NAME,
+          f"export METASPHERE_REPO_ROOT={scope_str}", "Enter")
     _tmux("send-keys", "-t", SESSION_NAME, _RESPAWN_CMD, "Enter")
 
     # Write restart marker so watchdog injects a wake-up prompt into the
