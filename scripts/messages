@@ -22,7 +22,7 @@
 
 set -e
 
-REPO_ROOT="${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+REPO_ROOT="${METASPHERE_PROJECT_ROOT:-${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
 METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
 source "$(dirname "$0")/metasphere-identity"
 AGENT="$(resolve_agent_id)"

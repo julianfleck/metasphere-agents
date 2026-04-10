@@ -39,7 +39,7 @@ def test_mirror_message_when_in_project(tmp_paths, tmp_path):
     _setup_forum(tmp_paths)
     fake_create = {"ok": True, "result": {"message_thread_id": 42, "name": "p"}}
     with patch("metasphere.telegram.groups.tg_api.call", return_value=fake_create):
-        new_project("p", path=tmp_paths.repo / "p", paths=tmp_paths)
+        new_project("p", path=tmp_paths.project_root / "p", paths=tmp_paths)
     calls = []
     fake_send = {"ok": True, "result": {}}
     def record(method, **kwargs):
@@ -47,7 +47,7 @@ def test_mirror_message_when_in_project(tmp_paths, tmp_path):
         return fake_send
     with patch("metasphere.telegram.groups.tg_api.call", side_effect=record):
         topic_id = mirror_message_to_project_topic(
-            tmp_paths.repo / "p" / "sub", "!info", "hello",
+            tmp_paths.project_root / "p" / "sub", "!info", "hello",
             "@me", paths=tmp_paths,
         )
     assert topic_id == 42
@@ -61,7 +61,7 @@ def test_mirror_message_noop_outside_project(tmp_paths, tmp_path):
     _setup_forum(tmp_paths)
     with patch("metasphere.telegram.groups.tg_api.call") as m:
         topic_id = mirror_message_to_project_topic(
-            tmp_paths.repo, "!info", "hi", "@me", paths=tmp_paths,
+            tmp_paths.project_root, "!info", "hi", "@me", paths=tmp_paths,
         )
     assert topic_id is None
     m.assert_not_called()
@@ -69,11 +69,11 @@ def test_mirror_message_noop_outside_project(tmp_paths, tmp_path):
 
 def test_mirror_message_noop_without_topic(tmp_paths, tmp_path):
     # Project exists but no topic (no forum configured at creation time).
-    new_project("notopic", path=tmp_paths.repo / "notopic", paths=tmp_paths)
+    new_project("notopic", path=tmp_paths.project_root / "notopic", paths=tmp_paths)
     _setup_forum(tmp_paths)  # forum configured AFTER creation
     with patch("metasphere.telegram.groups.tg_api.call") as m:
         topic_id = mirror_message_to_project_topic(
-            tmp_paths.repo / "notopic", "!info", "hi", "@me", paths=tmp_paths,
+            tmp_paths.project_root / "notopic", "!info", "hi", "@me", paths=tmp_paths,
         )
     assert topic_id is None
     m.assert_not_called()
@@ -83,7 +83,7 @@ def test_send_message_mirrors_additively(tmp_paths, tmp_path):
     _setup_forum(tmp_paths)
     fake_create = {"ok": True, "result": {"message_thread_id": 7, "name": "mp"}}
     with patch("metasphere.telegram.groups.tg_api.call", return_value=fake_create):
-        new_project("mp", path=tmp_paths.repo / "mp", paths=tmp_paths)
+        new_project("mp", path=tmp_paths.project_root / "mp", paths=tmp_paths)
 
     from metasphere import messages as _m
     calls = []

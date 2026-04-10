@@ -36,7 +36,7 @@ def test_render_project_empty_outside(tmp_paths, monkeypatch):
 
 
 def test_render_project_header_inside(tmp_paths, tmp_path, monkeypatch):
-    proj_dir = tmp_paths.repo / "inner"
+    proj_dir = tmp_paths.project_root / "inner"
     proj_dir.mkdir()
     new_project("inner", path=proj_dir, goal="do a thing",
                 paths=tmp_paths)
@@ -53,7 +53,7 @@ def test_render_project_header_inside(tmp_paths, tmp_path, monkeypatch):
 
 
 def test_render_project_empty_members(tmp_paths, tmp_path):
-    proj_dir = tmp_paths.repo / "bare"
+    proj_dir = tmp_paths.project_root / "bare"
     proj_dir.mkdir()
     new_project("bare", path=proj_dir, paths=tmp_paths)
     from dataclasses import replace

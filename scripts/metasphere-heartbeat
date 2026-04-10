@@ -16,7 +16,7 @@ set -e
 
 METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+REPO_ROOT="${METASPHERE_PROJECT_ROOT:-${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
 
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/metasphere-tmux-submit"

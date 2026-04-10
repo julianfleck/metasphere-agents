@@ -36,7 +36,7 @@ def _now_iso() -> str:
 
 def _scope_rel(paths: Paths) -> str:
     try:
-        rel = paths.scope.resolve().relative_to(paths.repo.resolve())
+        rel = paths.scope.resolve().relative_to(paths.project_root.resolve())
         s = "/" + str(rel)
     except ValueError:
         return str(paths.scope)

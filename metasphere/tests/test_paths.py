@@ -4,7 +4,7 @@ from metasphere import paths as P
 def test_resolve_uses_env(tmp_paths):
     r = P.resolve()
     assert r.root == tmp_paths.root
-    assert r.repo == tmp_paths.repo
+    assert r.project_root == tmp_paths.project_root
     assert r.scope == tmp_paths.scope
 
 

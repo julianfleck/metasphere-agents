@@ -225,12 +225,12 @@ When done:
 # Spawn (ephemeral)
 # ---------------------------------------------------------------------------
 
-def _resolve_scope(scope_path: str, repo_root: Path) -> Path:
+def _resolve_scope(scope_path: str, project_root: Path) -> Path:
     if scope_path.startswith("/"):
-        # Repo-relative absolute path.
-        s = repo_root / scope_path.lstrip("/")
+        # Project-relative absolute path.
+        s = project_root / scope_path.lstrip("/")
     else:
-        s = repo_root / scope_path
+        s = project_root / scope_path
     return Path(str(s).rstrip("/"))
 
 
@@ -258,7 +258,7 @@ def spawn_ephemeral(
     agent_id = _normalize_name(agent_name)
     timestamp = _utcnow()
 
-    scope_abs = _resolve_scope(scope_path, paths.repo)
+    scope_abs = _resolve_scope(scope_path, paths.project_root)
 
     # Scope dirs (so messages/tasks have somewhere to land).
     (scope_abs / ".tasks" / "active").mkdir(parents=True, exist_ok=True)
@@ -289,7 +289,7 @@ def spawn_ephemeral(
             title=task,
             priority="!normal",
             scope=scope_abs,
-            repo_root=paths.repo,
+            project_root=paths.project_root,
             created_by=parent,
             assigned_to=agent_id,
         )
@@ -360,12 +360,12 @@ def spawn_ephemeral(
         {
             "METASPHERE_AGENT_ID": agent_id,
             "METASPHERE_SCOPE": str(scope_abs),
-            "METASPHERE_REPO_ROOT": str(paths.repo),
+            "METASPHERE_PROJECT_ROOT": str(paths.project_root),
             "METASPHERE_DIR": str(paths.root),
         }
     )
 
-    cwd = scope_abs if scope_abs.is_dir() else paths.repo
+    cwd = scope_abs if scope_abs.is_dir() else paths.project_root
     log_fh = None
     try:
         log_fh = open(log_file, "ab")
@@ -480,7 +480,7 @@ def wake_persistent(
         )
 
     project = _read_text(agent_dir / "project")
-    scope_str = _read_text(agent_dir / "scope") or str(paths.repo)
+    scope_str = _read_text(agent_dir / "scope") or str(paths.project_root)
     rec = _agent_record_from_dir(agent_dir, project=project)
     session = rec.session_name  # uses project-aware naming
 
@@ -498,7 +498,7 @@ def wake_persistent(
     env_export = (
         f"export METASPHERE_AGENT_ID={shlex.quote(agent_id)} "
         f"METASPHERE_SCOPE={shlex.quote(scope_str)} "
-        f"METASPHERE_REPO_ROOT={shlex.quote(str(paths.repo))} "
+        f"METASPHERE_PROJECT_ROOT={shlex.quote(str(paths.project_root))} "
         f"METASPHERE_DIR={shlex.quote(str(paths.root))}"
     )
     _tmux_run("send-keys", "-t", session, env_export, "Enter")

@@ -159,11 +159,11 @@ def unregister_job(paths: Paths | None = None) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def scan_active_tasks(repo_root: Path) -> list[_tasks.Task]:
+def scan_active_tasks(project_root: Path) -> list[_tasks.Task]:
     """Return every task currently in any ``.tasks/active/`` under the repo."""
-    repo_root = Path(repo_root).resolve()
+    project_root = Path(project_root).resolve()
     out: list[_tasks.Task] = []
-    for tasks_dir in repo_root.rglob(".tasks"):
+    for tasks_dir in project_root.rglob(".tasks"):
         active = tasks_dir / "active"
         if not active.is_dir():
             continue
@@ -202,13 +202,13 @@ def _normalize_since(since: str) -> str:
     return f"{n} {word} ago"
 
 
-def _git_log(repo_root: Path, since: str) -> list[tuple[str, str, str, str]]:
+def _git_log(project_root: Path, since: str) -> list[tuple[str, str, str, str]]:
     """Return ``[(sha, iso_date, subject, body)]`` for commits in the window."""
     sep = "\x1e"
     fmt = f"%H%x09%cI%x09%s%x09%b{sep}"
     try:
         out = subprocess.check_output(
-            ["git", "-C", str(repo_root), "log",
+            ["git", "-C", str(project_root), "log",
              f"--since={_normalize_since(since)}", f"--pretty=format:{fmt}"],
             text=True,
             stderr=subprocess.DEVNULL,
@@ -314,12 +314,12 @@ def _is_persistent_agent(agent_id: str, paths: Paths) -> bool:
     return (agent_dir / "MISSION.md").exists()
 
 
-def _bump_ping(task: _tasks.Task, repo_root: Path) -> _tasks.Task:
+def _bump_ping(task: _tasks.Task, project_root: Path) -> _tasks.Task:
     """Write ``last_pinged_at`` (now) and increment ``ping_count``."""
     now_iso = _utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     return _tasks.update_task(
         task.id,
-        repo_root,
+        project_root,
         last_pinged_at=now_iso,
         ping_count=task.ping_count + 1,
     )
@@ -336,7 +336,7 @@ def _last_update_line(body: str) -> str:
 
 def ping_persistent_agent(
     task: _tasks.Task,
-    repo_root: Path,
+    project_root: Path,
     paths: Paths,
     *,
     sender: Callable[..., object] | None = None,
@@ -354,14 +354,14 @@ def ping_persistent_agent(
     except Exception as e:  # pragma: no cover - defensive
         delivered = False
         body = f"error: {e}"
-    _bump_ping(task, repo_root)
+    _bump_ping(task, project_root)
     return {"action": "pinged", "target": task.assignee, "delivered": delivered}
 
 
 def escalate_to_orchestrator(
     task: _tasks.Task,
     reason: str,
-    repo_root: Path,
+    project_root: Path,
     paths: Paths,
     *,
     sender: Callable[..., object] | None = None,
@@ -379,14 +379,14 @@ def escalate_to_orchestrator(
     except Exception as e:  # pragma: no cover - defensive
         delivered = False
         body = f"error: {e}"
-    _bump_ping(task, repo_root)
+    _bump_ping(task, project_root)
     return {"action": "escalated-orchestrator", "target": "@orchestrator", "delivered": delivered}
 
 
 def escalate_to_user(
     task: _tasks.Task,
     reason: str,
-    repo_root: Path,
+    project_root: Path,
     paths: Paths,
     *,
     telegram_sender: Callable[[str], bool] | None = None,
@@ -406,12 +406,12 @@ def escalate_to_user(
 
 def archive_done_task(
     task: _tasks.Task,
-    repo_root: Path,
+    project_root: Path,
     *,
     reason: str = "consolidation cleanup",
 ) -> dict:
     try:
-        _tasks.complete_task(task.id, reason, repo_root)
+        _tasks.complete_task(task.id, reason, project_root)
         return {"action": "archived", "target": "", "delivered": True}
     except Exception as e:  # pragma: no cover - defensive
         return {"action": f"error:{e}", "target": "", "delivered": False}
@@ -452,7 +452,7 @@ def _default_telegram_sender() -> Callable[[str], bool]:
 def apply_verdict(
     task: _tasks.Task,
     verdict: str,
-    repo_root: Path,
+    project_root: Path,
     paths: Paths,
     *,
     dry_run: bool = False,
@@ -477,14 +477,14 @@ def apply_verdict(
         if dry_run:
             result["action"] = "would-archive"
         else:
-            result.update(archive_done_task(task, repo_root))
+            result.update(archive_done_task(task, project_root))
     elif verdict == VERDICT_UNOWNED:
         reason = "unowned"
         if dry_run:
             result["action"] = "would-escalate-orchestrator"
             result["target"] = "@orchestrator"
         else:
-            result.update(escalate_to_orchestrator(task, reason, repo_root, paths, sender=sender))
+            result.update(escalate_to_orchestrator(task, reason, project_root, paths, sender=sender))
     elif verdict == VERDICT_STALE:
         # If we already pinged enough times, go up one level. Otherwise
         # either ping the assignee (if persistent) or escalate right away.
@@ -495,23 +495,23 @@ def apply_verdict(
                 result["target"] = "@user"
             else:
                 result.update(escalate_to_user(
-                    task, reason, repo_root, paths, telegram_sender=telegram_sender
+                    task, reason, project_root, paths, telegram_sender=telegram_sender
                 ))
                 # Also bump ping count via orchestrator path so we don't
                 # re-fire at the user next cycle either.
-                _bump_ping(task, repo_root)
+                _bump_ping(task, project_root)
         elif _is_persistent_agent(task.assignee, paths):
             if dry_run:
                 result["action"] = "would-ping"
                 result["target"] = task.assignee
             else:
-                result.update(ping_persistent_agent(task, repo_root, paths, sender=sender))
+                result.update(ping_persistent_agent(task, project_root, paths, sender=sender))
         else:
             if dry_run:
                 result["action"] = "would-escalate-orchestrator"
                 result["target"] = "@orchestrator"
             else:
-                result.update(escalate_to_orchestrator(task, reason, repo_root, paths, sender=sender))
+                result.update(escalate_to_orchestrator(task, reason, project_root, paths, sender=sender))
 
     # Always emit an event for the audit trail.
     try:
@@ -891,7 +891,7 @@ def _gc_ephemeral_agents(
 
 def run_pass(
     *,
-    repo_root: Path | None = None,
+    project_root: Path | None = None,
     since: str = DEFAULT_SINCE,
     stale_window_minutes: int = STALE_WINDOW_MINUTES_DEFAULT,
     ping_escalate_threshold: int = PING_ESCALATE_THRESHOLD_DEFAULT,
@@ -902,10 +902,10 @@ def run_pass(
 ) -> ConsolidateReport:
     """One full lifecycle consolidation pass over the repo."""
     paths = paths or resolve()
-    repo_root = Path(repo_root) if repo_root else paths.repo
+    project_root = Path(project_root) if project_root else paths.project_root
 
-    tasks_found = scan_active_tasks(repo_root)
-    commits = _git_log(repo_root, since)
+    tasks_found = scan_active_tasks(project_root)
+    commits = _git_log(project_root, since)
 
     now = _utcnow()
     report = ConsolidateReport(
@@ -927,7 +927,7 @@ def run_pass(
             t, now=now, stale_window_minutes=stale_window_minutes
         )
         result = apply_verdict(
-            t, verdict, repo_root, paths,
+            t, verdict, project_root, paths,
             dry_run=dry_run,
             ping_escalate_threshold=ping_escalate_threshold,
             sender=sender,
@@ -938,7 +938,7 @@ def run_pass(
         report.results.append(result)
 
     # Message lifecycle pass — same engine, parallel verdict path.
-    msgs_found = _messages.scan_inbox_messages(repo_root)
+    msgs_found = _messages.scan_inbox_messages(project_root)
     for mm in msgs_found:
         mverdict = classify_message(
             mm, now=now, stale_window_minutes=stale_window_minutes

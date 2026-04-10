@@ -170,7 +170,7 @@ def test_run_update_happy_path(tmp_paths, monkeypatch):
     assert result.pip_reinstalled is True
     assert result.tests_passed is True
     assert result.daemons_restarted is True
-    assert bash_calls == [tmp_paths.repo]
+    assert bash_calls == [tmp_paths.project_root]
     assert pip_calls and pip_calls[0][:3] == ["-m", "pip", "install"]
     assert sent and "auto-update" in sent[0]
     assert "bbbb2222"[:10] in sent[0]

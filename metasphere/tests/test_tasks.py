@@ -43,7 +43,7 @@ def test_slugify_empty_falls_back():
 
 def test_create_and_read(tmp_paths, monkeypatch):
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@creator")
-    task = t.create_task("Hello world", "!high", tmp_paths.scope, tmp_paths.repo)
+    task = t.create_task("Hello world", "!high", tmp_paths.scope, tmp_paths.project_root)
     assert task.title == "Hello world"
     assert task.priority == "!high"
     assert task.status == t.STATUS_PENDING
@@ -67,12 +67,12 @@ def test_create_and_read(tmp_paths, monkeypatch):
 
 def test_create_invalid_priority(tmp_paths):
     with pytest.raises(ValueError):
-        t.create_task("x", "!whatever", tmp_paths.scope, tmp_paths.repo)
+        t.create_task("x", "!whatever", tmp_paths.scope, tmp_paths.project_root)
 
 
 def test_create_unique_slug_collision(tmp_paths):
-    a = t.create_task("Same title", "!normal", tmp_paths.scope, tmp_paths.repo)
-    b = t.create_task("Same title", "!normal", tmp_paths.scope, tmp_paths.repo)
+    a = t.create_task("Same title", "!normal", tmp_paths.scope, tmp_paths.project_root)
+    b = t.create_task("Same title", "!normal", tmp_paths.scope, tmp_paths.project_root)
     assert a.id != b.id
 
 
@@ -82,8 +82,8 @@ def test_create_unique_slug_collision(tmp_paths):
 
 
 def test_update_preserves_frontmatter(tmp_paths):
-    task = t.create_task("update me", "!normal", tmp_paths.scope, tmp_paths.repo)
-    t.update_task(task.id, tmp_paths.repo, status="blocked", note="hit a wall")
+    task = t.create_task("update me", "!normal", tmp_paths.scope, tmp_paths.project_root)
+    t.update_task(task.id, tmp_paths.project_root, status="blocked", note="hit a wall")
     reloaded = t.Task.from_text(task.path.read_text())
     assert reloaded.status == "blocked"
     assert reloaded.title == "update me"
@@ -93,8 +93,8 @@ def test_update_preserves_frontmatter(tmp_paths):
 
 
 def test_start_task(tmp_paths):
-    task = t.create_task("startable", "!normal", tmp_paths.scope, tmp_paths.repo)
-    started = t.start_task(task.id, "@worker", tmp_paths.repo)
+    task = t.create_task("startable", "!normal", tmp_paths.scope, tmp_paths.project_root)
+    started = t.start_task(task.id, "@worker", tmp_paths.project_root)
     assert started.status == t.STATUS_IN_PROGRESS
     assert started.assignee == "@worker"
     assert started.started
@@ -106,9 +106,9 @@ def test_start_task(tmp_paths):
 
 
 def test_complete_task_archives_to_dated_dir(tmp_paths):
-    task = t.create_task("ship it", "!normal", tmp_paths.scope, tmp_paths.repo)
+    task = t.create_task("ship it", "!normal", tmp_paths.scope, tmp_paths.project_root)
     active_path = task.path
-    done = t.complete_task(task.id, "shipped", tmp_paths.repo)
+    done = t.complete_task(task.id, "shipped", tmp_paths.project_root)
     assert done.status == t.STATUS_COMPLETED
     assert done.completed
     assert done.updated == done.completed
@@ -123,40 +123,40 @@ def test_complete_task_archives_to_dated_dir(tmp_paths):
 
 def test_find_task_includes_archive_and_legacy_completed(tmp_paths):
     # fresh completion goes to archive/ and is findable
-    a = t.create_task("archived one", "!normal", tmp_paths.scope, tmp_paths.repo)
-    t.complete_task(a.id, "done", tmp_paths.repo)
-    assert t._find_task_file(a.id, tmp_paths.repo) is not None
+    a = t.create_task("archived one", "!normal", tmp_paths.scope, tmp_paths.project_root)
+    t.complete_task(a.id, "done", tmp_paths.project_root)
+    assert t._find_task_file(a.id, tmp_paths.project_root) is not None
 
     # legacy completed/ is still findable
-    b = t.create_task("legacy one", "!normal", tmp_paths.scope, tmp_paths.repo)
+    b = t.create_task("legacy one", "!normal", tmp_paths.scope, tmp_paths.project_root)
     legacy_dir = b.path.parent.parent / "completed"
     legacy_dir.mkdir(parents=True, exist_ok=True)
     import shutil as _sh
     dest = legacy_dir / b.path.name
     _sh.move(str(b.path), str(dest))
-    assert t._find_task_file(b.id, tmp_paths.repo) == dest
+    assert t._find_task_file(b.id, tmp_paths.project_root) == dest
 
 
 def test_list_includes_archive_when_completed_requested(tmp_paths):
-    a = t.create_task("a", "!normal", tmp_paths.scope, tmp_paths.repo)
-    t.create_task("b", "!normal", tmp_paths.scope, tmp_paths.repo)
-    t.complete_task(a.id, "done", tmp_paths.repo)
-    active = t.list_tasks(tmp_paths.scope, tmp_paths.repo)
+    a = t.create_task("a", "!normal", tmp_paths.scope, tmp_paths.project_root)
+    t.create_task("b", "!normal", tmp_paths.scope, tmp_paths.project_root)
+    t.complete_task(a.id, "done", tmp_paths.project_root)
+    active = t.list_tasks(tmp_paths.scope, tmp_paths.project_root)
     assert {x.title for x in active} == {"b"}
-    everything = t.list_tasks(tmp_paths.scope, tmp_paths.repo, include_completed=True)
+    everything = t.list_tasks(tmp_paths.scope, tmp_paths.project_root, include_completed=True)
     assert {x.title for x in everything} == {"a", "b"}
 
 
 def test_create_sets_updated_at(tmp_paths):
-    task = t.create_task("u", "!normal", tmp_paths.scope, tmp_paths.repo)
+    task = t.create_task("u", "!normal", tmp_paths.scope, tmp_paths.project_root)
     raw = task.path.read_text()
     assert "updated_at:" in raw
     assert task.updated == task.created
 
 
 def test_start_bumps_updated(tmp_paths):
-    task = t.create_task("u2", "!normal", tmp_paths.scope, tmp_paths.repo)
-    started = t.start_task(task.id, "@w", tmp_paths.repo)
+    task = t.create_task("u2", "!normal", tmp_paths.scope, tmp_paths.project_root)
+    started = t.start_task(task.id, "@w", tmp_paths.project_root)
     assert started.updated == started.started
 
 
@@ -166,34 +166,34 @@ def test_start_bumps_updated(tmp_paths):
 
 
 def test_list_tasks_nested_scopes(tmp_paths):
-    root_scope = tmp_paths.repo
-    child_scope = tmp_paths.repo / "subsystem"
+    root_scope = tmp_paths.project_root
+    child_scope = tmp_paths.project_root / "subsystem"
     child_scope.mkdir(parents=True)
 
-    root_task = t.create_task("root task", "!normal", root_scope, tmp_paths.repo)
-    child_task = t.create_task("child task", "!high", child_scope, tmp_paths.repo)
+    root_task = t.create_task("root task", "!normal", root_scope, tmp_paths.project_root)
+    child_task = t.create_task("child task", "!high", child_scope, tmp_paths.project_root)
 
     # From child scope: see both (upward visibility)
-    visible = t.list_tasks(child_scope, tmp_paths.repo)
+    visible = t.list_tasks(child_scope, tmp_paths.project_root)
     titles = {x.title for x in visible}
     assert {"root task", "child task"} <= titles
 
     # From root scope: only root task
-    visible_root = t.list_tasks(root_scope, tmp_paths.repo)
+    visible_root = t.list_tasks(root_scope, tmp_paths.project_root)
     titles_root = {x.title for x in visible_root}
     assert "root task" in titles_root
     assert "child task" not in titles_root
 
 
 def test_list_tasks_excludes_completed_by_default(tmp_paths):
-    a = t.create_task("a", "!normal", tmp_paths.scope, tmp_paths.repo)
-    b = t.create_task("b", "!normal", tmp_paths.scope, tmp_paths.repo)
-    t.complete_task(a.id, "done", tmp_paths.repo)
+    a = t.create_task("a", "!normal", tmp_paths.scope, tmp_paths.project_root)
+    b = t.create_task("b", "!normal", tmp_paths.scope, tmp_paths.project_root)
+    t.complete_task(a.id, "done", tmp_paths.project_root)
 
-    active = t.list_tasks(tmp_paths.scope, tmp_paths.repo)
+    active = t.list_tasks(tmp_paths.scope, tmp_paths.project_root)
     assert {x.title for x in active} == {"b"}
 
-    everything = t.list_tasks(tmp_paths.scope, tmp_paths.repo, include_completed=True)
+    everything = t.list_tasks(tmp_paths.scope, tmp_paths.project_root, include_completed=True)
     assert {x.title for x in everything} == {"a", "b"}
 
 
@@ -204,7 +204,7 @@ def test_list_tasks_excludes_completed_by_default(tmp_paths):
 
 def test_create_autofills_assignee_from_env(tmp_paths, monkeypatch):
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@alice")
-    task = t.create_task("owned", "!normal", tmp_paths.scope, tmp_paths.repo)
+    task = t.create_task("owned", "!normal", tmp_paths.scope, tmp_paths.project_root)
     assert task.assignee == "@alice"
     assert task.project == "default"
     raw = task.path.read_text()
@@ -215,7 +215,7 @@ def test_create_autofills_assignee_from_env(tmp_paths, monkeypatch):
 def test_create_explicit_project_and_assignee(tmp_paths, monkeypatch):
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@alice")
     task = t.create_task(
-        "explicit", "!normal", tmp_paths.scope, tmp_paths.repo,
+        "explicit", "!normal", tmp_paths.scope, tmp_paths.project_root,
         project="recurse", assigned_to="@bob",
     )
     assert task.project == "recurse"
@@ -231,25 +231,25 @@ def test_create_autofills_project_from_scope(tmp_paths, monkeypatch):
         '{"schema": 2, "name": "demoproj", "path": "'
         + str(tmp_paths.scope) + '", "created": "", "status": "active"}'
     )
-    task = t.create_task("inproj", "!normal", tmp_paths.scope, tmp_paths.repo)
+    task = t.create_task("inproj", "!normal", tmp_paths.scope, tmp_paths.project_root)
     assert task.project == "demoproj"
 
 
 def test_assign_task_updates_assignee(tmp_paths, monkeypatch):
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@owner")
-    task = t.create_task("a", "!normal", tmp_paths.scope, tmp_paths.repo)
-    updated = t.assign_task(task.id, "@dave", tmp_paths.repo)
+    task = t.create_task("a", "!normal", tmp_paths.scope, tmp_paths.project_root)
+    updated = t.assign_task(task.id, "@dave", tmp_paths.project_root)
     assert updated.assignee == "@dave"
     # idempotent-ish: normalizes missing @
-    updated2 = t.assign_task(task.id, "eve", tmp_paths.repo)
+    updated2 = t.assign_task(task.id, "eve", tmp_paths.project_root)
     assert updated2.assignee == "@eve"
 
 
 def test_move_task_project(tmp_paths, monkeypatch):
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@owner")
-    task = t.create_task("a", "!normal", tmp_paths.scope, tmp_paths.repo)
+    task = t.create_task("a", "!normal", tmp_paths.scope, tmp_paths.project_root)
     assert task.project == "default"
-    moved = t.move_task_project(task.id, "recurse", tmp_paths.repo)
+    moved = t.move_task_project(task.id, "recurse", tmp_paths.project_root)
     assert moved.project == "recurse"
 
 
@@ -280,11 +280,11 @@ def test_cli_new_warns_and_defaults(tmp_paths, monkeypatch, capsys):
 def test_cli_list_filters(tmp_paths, monkeypatch, capsys):
     from metasphere.cli import tasks as cli_tasks
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@alice")
-    t.create_task("alpha", "!normal", tmp_paths.scope, tmp_paths.repo,
+    t.create_task("alpha", "!normal", tmp_paths.scope, tmp_paths.project_root,
                   project="recurse", assigned_to="@alice")
-    t.create_task("beta", "!normal", tmp_paths.scope, tmp_paths.repo,
+    t.create_task("beta", "!normal", tmp_paths.scope, tmp_paths.project_root,
                   project="default", assigned_to="@bob")
-    t.create_task("gamma", "!normal", tmp_paths.scope, tmp_paths.repo,
+    t.create_task("gamma", "!normal", tmp_paths.scope, tmp_paths.project_root,
                   project="default", assigned_to="@unassigned")
     capsys.readouterr()
     cli_tasks._cmd_list(["--project", "recurse"])

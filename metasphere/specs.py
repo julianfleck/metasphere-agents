@@ -85,7 +85,7 @@ def _spec_dirs(paths: Paths | None = None) -> list[Path]:
 
     for candidate in [
         paths.root / "specs",             # ~/.metasphere/specs/
-        paths.repo / "specs",             # $METASPHERE_REPO_ROOT/specs/
+        paths.project_root / "specs",             # $METASPHERE_PROJECT_ROOT/specs/
         Path(__file__).resolve().parent.parent / "specs",  # package-relative
     ]:
         resolved = str(candidate.resolve())

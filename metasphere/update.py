@@ -361,7 +361,7 @@ def run_update(
     """
     paths = paths or resolve()
     cfg = cfg or load_config(paths)
-    repo = paths.repo
+    repo = paths.project_root
     runner = git_runner or _git(repo)
 
     def log(line: str) -> None:

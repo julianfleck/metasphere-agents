@@ -47,7 +47,7 @@ def test_send_and_read_roundtrip(tmp_paths):
 
 
 def test_collect_inbox_walks_parent_scopes(tmp_paths, monkeypatch):
-    repo = tmp_paths.repo
+    repo = tmp_paths.project_root
     child_scope = repo / "sub" / "deep"
     child_scope.mkdir(parents=True)
 
@@ -100,7 +100,7 @@ def test_send_to_absolute_path_target(tmp_paths, tmp_path):
     expected_inbox = abs_target / ".messages" / "inbox" / f"{msg.id}.msg"
     assert expected_inbox.exists(), f"message not in abs inbox: {expected_inbox}"
     # Must NOT have been written under repo_root.
-    doubled = tmp_paths.repo / str(abs_target).lstrip("/")
+    doubled = tmp_paths.project_root / str(abs_target).lstrip("/")
     assert not (doubled / ".messages" / "inbox" / f"{msg.id}.msg").exists()
 
 
@@ -272,7 +272,7 @@ def test_collect_inbox_view_marks_nonsacred_read(tmp_paths):
     m.send_message("@.", "!info", "a", "@c", paths=tmp_paths, wake=False)
     m.send_message("@.", "!task", "b", "@c", paths=tmp_paths, wake=False)
     m.send_message("@.", "!done", "c", "@c", paths=tmp_paths, wake=False)
-    msgs = m.collect_inbox(tmp_paths.scope, tmp_paths.repo, view=True)
+    msgs = m.collect_inbox(tmp_paths.scope, tmp_paths.project_root, view=True)
     by_label = {mm.label: mm for mm in msgs}
     assert by_label["!info"].status == m.STATUS_READ
     assert by_label["!done"].status == m.STATUS_READ

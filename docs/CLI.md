@@ -144,7 +144,7 @@ metasphere help | -h | --help | (empty)
 
 ### Env vars consumed
 
-- `METASPHERE_REPO_ROOT` (optional; repo root override)
+- `METASPHERE_PROJECT_ROOT` (optional; repo root override)
 - `METASPHERE_DIR` (optional; runtime dir override)
 - `HOME`
 
@@ -209,7 +209,7 @@ reply_to: <orig-msg-id-or-empty>
 
 ### Env vars consumed
 
-- `METASPHERE_REPO_ROOT`, `METASPHERE_DIR`, `METASPHERE_SCOPE`, `METASPHERE_AGENT_ID`
+- `METASPHERE_PROJECT_ROOT`, `METASPHERE_DIR`, `METASPHERE_SCOPE`, `METASPHERE_AGENT_ID`
 
 ### Dependencies
 
@@ -260,7 +260,7 @@ completed_at:
 
 ### Env vars consumed
 
-- `METASPHERE_REPO_ROOT`, `METASPHERE_DIR`, `METASPHERE_SCOPE`, `METASPHERE_AGENT_ID` (via identity)
+- `METASPHERE_PROJECT_ROOT`, `METASPHERE_DIR`, `METASPHERE_SCOPE`, `METASPHERE_AGENT_ID` (via identity)
 
 ### Dependencies
 
@@ -318,7 +318,7 @@ Invoked by the harness. Also exposed via `metasphere context`.
 
 ### Env vars
 
-- `METASPHERE_REPO_ROOT`, `METASPHERE_DIR`, `METASPHERE_AGENT_ID`, `METASPHERE_SCOPE` (exported for children)
+- `METASPHERE_PROJECT_ROOT`, `METASPHERE_DIR`, `METASPHERE_AGENT_ID`, `METASPHERE_SCOPE` (exported for children)
 
 ### Dependencies
 
@@ -432,7 +432,7 @@ metasphere-spawn @agent-name /scope/path/ "task description" [@parent]
 
 ### Env vars
 
-- `METASPHERE_REPO_ROOT`, `METASPHERE_DIR`
+- `METASPHERE_PROJECT_ROOT`, `METASPHERE_DIR`
 - `METASPHERE_SPAWN_NO_EXEC=1` to skip auto-exec (print manual command instead)
 
 ### Dependencies
@@ -558,7 +558,7 @@ Scans ALL `metasphere-*` tmux sessions (not just orchestrator):
 
 ### Env vars
 
-- `METASPHERE_REPO_ROOT`, `METASPHERE_DIR`, `METASPHERE_SESSION_MODE`, `METASPHERE_TIMEZONE`
+- `METASPHERE_PROJECT_ROOT`, `METASPHERE_DIR`, `METASPHERE_SESSION_MODE`, `METASPHERE_TIMEZONE`
 
 ### Dependencies
 

@@ -490,7 +490,7 @@ Memory rules:
 ```bash
 METASPHERE_AGENT_ID   # Current agent (default: @user)
 METASPHERE_SCOPE      # Current scope directory
-METASPHERE_REPO_ROOT  # Repository root
+METASPHERE_PROJECT_ROOT  # Project root (fractal scoping anchor)
 METASPHERE_DIR        # Runtime directory (~/.metasphere)
 ```
 

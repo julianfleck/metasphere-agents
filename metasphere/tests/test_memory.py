@@ -19,7 +19,7 @@ from metasphere.paths import Paths
 
 
 def _seed_doc(paths: Paths, rel: str, body: str) -> Path:
-    p = paths.repo / rel
+    p = paths.project_root / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(body, encoding="utf-8")
     return p

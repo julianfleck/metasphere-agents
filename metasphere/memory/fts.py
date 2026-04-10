@@ -43,11 +43,11 @@ def _corpus_dirs(paths: Paths) -> list[Path]:
     if override:
         return [Path(p).expanduser() for p in override.split() if p]
     return [
-        paths.repo / "docs",
-        paths.repo / "scripts",
-        paths.repo / ".messages",
-        paths.repo / ".tasks",
-        paths.repo / "templates",
+        paths.project_root / "docs",
+        paths.project_root / "scripts",
+        paths.project_root / ".messages",
+        paths.project_root / ".tasks",
+        paths.project_root / "templates",
         paths.root / "agents",
     ]
 
@@ -145,7 +145,7 @@ class TokenOverlapStrategy(MemoryStrategy):
             if score > 1.0:
                 score = 1.0
             try:
-                rel = str(fp.relative_to(paths.repo))
+                rel = str(fp.relative_to(paths.project_root))
             except ValueError:
                 rel = str(fp)
             results.append(

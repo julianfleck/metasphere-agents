@@ -44,9 +44,9 @@ def test_sched_status_emoji():
 
 def test_format_task_cards_contains_fields(tmp_paths, monkeypatch):
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@alice")
-    a = _tasks.create_task("alpha", "!high", tmp_paths.scope, tmp_paths.repo,
+    a = _tasks.create_task("alpha", "!high", tmp_paths.scope, tmp_paths.project_root,
                            project="recurse", assigned_to="@alice")
-    b = _tasks.create_task("beta", "!normal", tmp_paths.scope, tmp_paths.repo,
+    b = _tasks.create_task("beta", "!normal", tmp_paths.scope, tmp_paths.project_root,
                            project="default", assigned_to="@bob")
     out = fmt.format_task_table([a, b])
     # Header
@@ -67,7 +67,7 @@ def test_format_task_cards_contains_fields(tmp_paths, monkeypatch):
 
 def test_format_task_cards_html_mode(tmp_paths, monkeypatch):
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@alice")
-    a = _tasks.create_task("alpha & beta", "!high", tmp_paths.scope, tmp_paths.repo,
+    a = _tasks.create_task("alpha & beta", "!high", tmp_paths.scope, tmp_paths.project_root,
                            project="recurse", assigned_to="@alice")
     out = fmt.format_task_table([a], html=True)
     assert "<b>Tasks</b>" in out
@@ -79,7 +79,7 @@ def test_format_task_cards_html_mode(tmp_paths, monkeypatch):
 def test_format_task_cards_title_truncation(tmp_paths, monkeypatch):
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@a")
     long_title = "x" * 80
-    t = _tasks.create_task(long_title, "!normal", tmp_paths.scope, tmp_paths.repo,
+    t = _tasks.create_task(long_title, "!normal", tmp_paths.scope, tmp_paths.project_root,
                            project="p", assigned_to="@a")
     out = fmt.format_task_table([t])
     assert "…" in out

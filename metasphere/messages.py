@@ -210,19 +210,19 @@ def update_status(msg_path: Path, field: str, value: str) -> Message:
 # ---------------------------------------------------------------------------
 
 
-def collect_inbox(scope: Path, repo_root: Path, *, view: bool = False) -> list[Message]:
-    """Walk ``scope`` and every parent up to ``repo_root``, returning all
+def collect_inbox(scope: Path, project_root: Path, *, view: bool = False) -> list[Message]:
+    """Walk ``scope`` and every parent up to ``project_root``, returning all
     messages found in their ``.messages/inbox`` directories. Newest first
     (sorted by filename descending)."""
     scope = Path(scope).resolve()
-    repo_root = Path(repo_root).resolve()
+    project_root = Path(project_root).resolve()
     paths: list[Path] = []
     current = scope
     while True:
         inbox = current / ".messages" / "inbox"
         if inbox.is_dir():
             paths.extend(p for p in inbox.glob("*.msg") if p.is_file())
-        if current == repo_root or repo_root not in current.parents:
+        if current == project_root or project_root not in current.parents:
             break
         current = current.parent
     paths.sort(key=lambda p: p.name, reverse=True)
@@ -299,7 +299,7 @@ def extract_mentions(text: str, *, paths: Paths | None = None) -> list[Mention]:
 # ---------------------------------------------------------------------------
 
 
-def resolve_target(target: str, scope: Path, repo_root: Path, paths: Paths | None = None) -> Path:
+def resolve_target(target: str, scope: Path, project_root: Path, paths: Paths | None = None) -> Path:
     """Resolve an ``@target`` string to an absolute scope directory.
 
     Resolution rules:
@@ -307,13 +307,13 @@ def resolve_target(target: str, scope: Path, repo_root: Path, paths: Paths | Non
       * ``@.``     -> current scope
       * ``@..``    -> parent of scope
       * ``@/p/``   -> absolute filesystem path ``/p`` if that directory
-                      exists; otherwise ``<repo_root>/p`` (legacy
+                      exists; otherwise ``<project_root>/p`` (legacy
                       repo-relative form).
       * ``@name``  -> ``<metasphere>/agents/@name/scope`` if registered,
                       else repo root.
     """
     scope = Path(scope)
-    repo_root = Path(repo_root)
+    project_root = Path(project_root)
     if not target:
         return scope
     if target == "@.":
@@ -326,7 +326,7 @@ def resolve_target(target: str, scope: Path, repo_root: Path, paths: Paths | Non
             abs_candidate = Path("/" + rest)
             if abs_candidate != Path("/") and abs_candidate.is_dir():
                 return abs_candidate
-        return repo_root / rest.lstrip("/")
+        return project_root / rest.lstrip("/")
     if target.startswith("@"):
         paths = paths or resolve()
         scope_file = paths.agents / target / "scope"
@@ -337,7 +337,7 @@ def resolve_target(target: str, scope: Path, repo_root: Path, paths: Paths | Non
                     return Path(v)
             except OSError:
                 pass
-        return repo_root
+        return project_root
     return scope
 
 
@@ -419,7 +419,7 @@ def send_message(
 ) -> Message:
     """Write a new message to ``target``'s inbox + sender's outbox."""
     paths = paths or resolve()
-    target_path = resolve_target(target, paths.scope, paths.repo, paths=paths)
+    target_path = resolve_target(target, paths.scope, paths.project_root, paths=paths)
     target_inbox = target_path / ".messages" / "inbox"
     my_outbox = paths.scope / ".messages" / "outbox"
     _ensure_dirs(target_inbox, my_outbox)
@@ -431,7 +431,7 @@ def send_message(
         to=target,
         label=label,
         status=STATUS_UNREAD,
-        scope=_rel_path(target_path, paths.repo),
+        scope=_rel_path(target_path, paths.project_root),
         created=_utcnow(),
         reply_to=reply_to,
         body="\n" + body.rstrip() + "\n",
@@ -476,7 +476,7 @@ def send_message(
 
 
 def _find_inbox_msg(
-    msg_id: str, repo_root: Path, paths: Paths | None = None
+    msg_id: str, project_root: Path, paths: Paths | None = None
 ) -> Path | None:
     # Fast path: write-through index in ~/.metasphere/state/msg_index.json.
     if paths is not None:
@@ -484,8 +484,8 @@ def _find_inbox_msg(
         if hit is not None:
             return hit
     # Slow path: walk the repo for messages not present in the index.
-    repo_root = Path(repo_root)
-    for inbox in repo_root.rglob(".messages/inbox"):
+    project_root = Path(project_root)
+    for inbox in project_root.rglob(".messages/inbox"):
         cand = inbox / f"{msg_id}.msg"
         if cand.exists():
             if paths is not None:
@@ -501,7 +501,7 @@ def reply_to_message(
     paths: Paths | None = None,
 ) -> Message:
     paths = paths or resolve()
-    orig_path = _find_inbox_msg(orig_id, paths.repo, paths=paths)
+    orig_path = _find_inbox_msg(orig_id, paths.project_root, paths=paths)
     if orig_path is None:
         raise FileNotFoundError(f"message {orig_id} not found")
 
@@ -524,7 +524,7 @@ def mark_done(
 ) -> Message | None:
     """Mark a message completed; if ``note`` is given, send a !done back."""
     paths = paths or resolve()
-    orig_path = _find_inbox_msg(orig_id, paths.repo, paths=paths)
+    orig_path = _find_inbox_msg(orig_id, paths.project_root, paths=paths)
     if orig_path is None:
         raise FileNotFoundError(f"message {orig_id} not found")
 
@@ -541,15 +541,15 @@ def mark_done(
     return None
 
 
-def scan_inbox_messages(repo_root: Path) -> list[Message]:
+def scan_inbox_messages(project_root: Path) -> list[Message]:
     """Return every message currently in any ``.messages/inbox/`` under the repo.
 
     Mirrors :func:`metasphere.consolidate.scan_active_tasks`: used by
     the lifecycle consolidator to drive verdict classification.
     """
-    repo_root = Path(repo_root).resolve()
+    project_root = Path(project_root).resolve()
     out: list[Message] = []
-    for msg_dir in repo_root.rglob(".messages"):
+    for msg_dir in project_root.rglob(".messages"):
         inbox = msg_dir / "inbox"
         if not inbox.is_dir():
             continue
@@ -601,7 +601,7 @@ def archive_message(msg_path: Path) -> Path:
 
 def mark_read(msg_id: str, paths: Paths | None = None) -> Message:
     paths = paths or resolve()
-    p = _find_inbox_msg(msg_id, paths.repo, paths=paths)
+    p = _find_inbox_msg(msg_id, paths.project_root, paths=paths)
     if p is None:
         raise FileNotFoundError(f"message {msg_id} not found")
     with file_lock(_lock_path(p)):
@@ -631,11 +631,11 @@ def wake_recipient_if_live(
     paths = paths or resolve()
     agent_name: str | None = None
     if target == "@..":
-        if paths.scope.resolve() == paths.repo.resolve():
+        if paths.scope.resolve() == paths.project_root.resolve():
             agent_name = "orchestrator"
     elif target.startswith("@/") or target == "@.":
-        resolved = resolve_target(target, paths.scope, paths.repo, paths=paths)
-        if resolved.resolve() == paths.repo.resolve():
+        resolved = resolve_target(target, paths.scope, paths.project_root, paths=paths)
+        if resolved.resolve() == paths.project_root.resolve():
             agent_name = "orchestrator"
     elif target.startswith("@"):
         agent_name = target[1:]

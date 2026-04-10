@@ -29,17 +29,17 @@ def _write(p: Path, body: str) -> None:
 
 def test_harness_hash_matches_bash_recipe(tmp_paths: Paths):
     # Populate the four harness files with distinct contents.
-    _write(tmp_paths.repo / "CLAUDE.md", "claude\n")
-    _write(tmp_paths.repo / ".claude" / "settings.json", "{settings}\n")
-    _write(tmp_paths.repo / ".claude" / "settings.local.json", "{local}\n")
-    _write(tmp_paths.repo / "scripts" / "metasphere-context", "#!/bin/bash\n")
+    _write(tmp_paths.project_root / "CLAUDE.md", "claude\n")
+    _write(tmp_paths.project_root / ".claude" / "settings.json", "{settings}\n")
+    _write(tmp_paths.project_root / ".claude" / "settings.local.json", "{local}\n")
+    _write(tmp_paths.project_root / "scripts" / "metasphere-context", "#!/bin/bash\n")
 
     py_hash = ctx.harness_hash(tmp_paths)
 
     # Reproduce the hash recipe: sort filenames, cat in order,
     # sha256sum the concatenated bytes.
     files = sorted(
-        str(tmp_paths.repo / rel)
+        str(tmp_paths.project_root / rel)
         for rel in (
             "CLAUDE.md",
             ".claude/settings.json",
@@ -80,7 +80,7 @@ def test_truncate_section_passthrough_short_text():
 
 
 def test_drift_warning_emitted_when_baseline_differs(tmp_paths: Paths):
-    _write(tmp_paths.repo / "CLAUDE.md", "claude v1\n")
+    _write(tmp_paths.project_root / "CLAUDE.md", "claude v1\n")
     (tmp_paths.state).mkdir(parents=True, exist_ok=True)
     (tmp_paths.state / "harness_hash_baseline").write_text("deadbeef\n")
 
@@ -89,7 +89,7 @@ def test_drift_warning_emitted_when_baseline_differs(tmp_paths: Paths):
 
 
 def test_drift_warning_silent_when_baseline_matches(tmp_paths: Paths):
-    _write(tmp_paths.repo / "CLAUDE.md", "claude v1\n")
+    _write(tmp_paths.project_root / "CLAUDE.md", "claude v1\n")
     live = ctx.harness_hash(tmp_paths)
     (tmp_paths.state).mkdir(parents=True, exist_ok=True)
     (tmp_paths.state / "harness_hash_baseline").write_text(live + "\n")
@@ -111,7 +111,7 @@ def test_build_context_emits_all_sections_in_order(tmp_paths: Paths):
     (agent_dir / "status").write_text("working: porting context.py\n")
 
     # 2. Drift (force a warning)
-    _write(tmp_paths.repo / "CLAUDE.md", "claude\n")
+    _write(tmp_paths.project_root / "CLAUDE.md", "claude\n")
     tmp_paths.state.mkdir(parents=True, exist_ok=True)
     (tmp_paths.state / "harness_hash_baseline").write_text("deadbeef\n")
 
@@ -133,7 +133,7 @@ def test_build_context_emits_all_sections_in_order(tmp_paths: Paths):
 
     # 5. Tasks
     _tasks.create_task(
-        "ship the port", _tasks.PRIORITY_DEFAULT, tmp_paths.scope, tmp_paths.repo
+        "ship the port", _tasks.PRIORITY_DEFAULT, tmp_paths.scope, tmp_paths.project_root
     )
 
     # 6. Events

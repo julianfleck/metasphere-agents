@@ -18,6 +18,10 @@ VERSION="0.1.0"
 
 # Resolve REPO_ROOT carefully - avoid home directory if it has .git
 resolve_repo_root() {
+    if [[ -n "$METASPHERE_PROJECT_ROOT" ]]; then
+        echo "$METASPHERE_PROJECT_ROOT"
+        return
+    fi
     if [[ -n "$METASPHERE_REPO_ROOT" ]]; then
         echo "$METASPHERE_REPO_ROOT"
         return
@@ -725,7 +729,7 @@ case "${1:-}" in
         _pre_update_hash=""
 
         # Find the installation source. Order:
-        # 1. METASPHERE_REPO_ROOT env var (explicit)
+        # 1. METASPHERE_PROJECT_ROOT / METASPHERE_REPO_ROOT env var (explicit)
         # 2. PWD if it looks like the repo
         # 3. Common install locations under $HOME
         # 4. Walk up from the script's resolved path (handles symlinks
@@ -734,7 +738,9 @@ case "${1:-}" in
         # top-level dispatch, not inside a function. Bash on Linux
         # rejects `local` outside functions; macOS bash silently allows.
         install_source=""
-        if [[ -n "$METASPHERE_REPO_ROOT" && -d "$METASPHERE_REPO_ROOT/.git" ]]; then
+        if [[ -n "$METASPHERE_PROJECT_ROOT" && -d "$METASPHERE_PROJECT_ROOT/.git" ]]; then
+            install_source="$METASPHERE_PROJECT_ROOT"
+        elif [[ -n "$METASPHERE_REPO_ROOT" && -d "$METASPHERE_REPO_ROOT/.git" ]]; then
             install_source="$METASPHERE_REPO_ROOT"
         elif [[ -d "$PWD/.git" && -d "$PWD/scripts" && -f "$PWD/scripts/metasphere" ]]; then
             install_source="$PWD"

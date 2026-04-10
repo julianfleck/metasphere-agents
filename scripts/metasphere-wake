@@ -23,7 +23,7 @@ set -e
 
 METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+REPO_ROOT="${METASPHERE_PROJECT_ROOT:-${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
 
 # Resolve tmux
 TMUX_CMD=$(command -v tmux 2>/dev/null)
@@ -118,7 +118,7 @@ wake_agent() {
 
     # Set env vars in the new session so identity propagates to claude.
     "$TMUX_CMD" send-keys -t "$session" \
-        "export METASPHERE_AGENT_ID='$agent' METASPHERE_SCOPE='$scope' METASPHERE_REPO_ROOT='$REPO_ROOT' METASPHERE_DIR='$METASPHERE_DIR'" Enter
+        "export METASPHERE_AGENT_ID='$agent' METASPHERE_SCOPE='$scope' METASPHERE_PROJECT_ROOT='$REPO_ROOT' METASPHERE_DIR='$METASPHERE_DIR'" Enter
 
     # Respawn loop: when claude exits (e.g. /exit to reload harness), bash
     # restarts it after a 1s delay. Same as the orchestrator's loop.

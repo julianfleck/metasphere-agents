@@ -131,7 +131,7 @@ def clear_notified(paths: Paths, key: str) -> None:
 
 def check_urgent_messages(paths: Paths) -> list[Message]:
     """Return all unread !urgent messages visible from ``paths.scope``."""
-    msgs = collect_inbox(paths.scope, paths.repo)
+    msgs = collect_inbox(paths.scope, paths.project_root)
     return [m for m in msgs if m.label == "!urgent" and m.status == STATUS_UNREAD]
 
 
@@ -147,7 +147,7 @@ def check_blocked_agents(paths: Paths) -> list[AgentRecord]:
 
 def check_urgent_tasks(paths: Paths) -> tuple[int, int]:
     """Return ``(urgent_count, total_count)`` of active tasks in scope."""
-    items = list_tasks(paths.scope, paths.repo, include_completed=False)
+    items = list_tasks(paths.scope, paths.project_root, include_completed=False)
     urgent = sum(1 for t in items if t.priority == "!urgent")
     return urgent, len(items)
 
@@ -272,13 +272,13 @@ def heartbeat_once(paths: Paths | None = None, invoke_agent: bool = False) -> No
 
     The heartbeat daemon always scans the *whole repo* regardless of the
     cwd it was started from. ``paths.scope`` is normalised to
-    ``paths.repo`` so a daemon launched from a nested cwd (or with
+    ``paths.project_root`` so a daemon launched from a nested cwd (or with
     ``METASPHERE_SCOPE`` set) doesn't under-report urgent items in
     sibling scopes.
     """
     paths = paths or resolve()
-    if paths.scope != paths.repo:
-        paths = dataclasses.replace(paths, scope=paths.repo)
+    if paths.scope != paths.project_root:
+        paths = dataclasses.replace(paths, scope=paths.project_root)
 
     new_urgent: list[Message] = []
     for m in check_urgent_messages(paths):

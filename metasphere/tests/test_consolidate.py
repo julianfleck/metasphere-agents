@@ -305,7 +305,7 @@ def test_run_pass_cooldown_prevents_reping(repo, tmp_paths):
     t = _set_updated(t, _iso(60), repo)
 
     sender = _FakeSender()
-    r1 = _con.run_pass(repo_root=repo, paths=tmp_paths, sender=sender)
+    r1 = _con.run_pass(project_root=repo, paths=tmp_paths, sender=sender)
     assert r1.results[0]["action"] == "pinged"
     assert len(sender.calls) == 1
 
@@ -313,7 +313,7 @@ def test_run_pass_cooldown_prevents_reping(repo, tmp_paths):
     t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
     t = _set_updated(t, _iso(60), repo)
 
-    r2 = _con.run_pass(repo_root=repo, paths=tmp_paths, sender=sender)
+    r2 = _con.run_pass(project_root=repo, paths=tmp_paths, sender=sender)
     # Cooldown: still only one send in total.
     assert r2.results[0]["action"] == "noop"
     assert len(sender.calls) == 1
@@ -327,7 +327,7 @@ def test_run_pass_git_commit_bumps_updated(repo, tmp_paths):
     _commit(repo, "f.txt", f"feat: {t.id} landed")
 
     sender = _FakeSender()
-    r = _con.run_pass(repo_root=repo, paths=tmp_paths, sender=sender, since="7d")
+    r = _con.run_pass(project_root=repo, paths=tmp_paths, sender=sender, since="7d")
     # Commit references the slug → updated_at bumped → ACTIVE
     assert r.results[0]["verdict"] == _con.VERDICT_ACTIVE
     assert r.results[0]["action"] == "noop"
@@ -338,7 +338,7 @@ def test_run_pass_emits_event(repo, tmp_paths):
     t = _create_task(repo, "orphan")
     _set_updated(t, _iso(60), repo)
 
-    _con.run_pass(repo_root=repo, paths=tmp_paths, sender=_FakeSender())
+    _con.run_pass(project_root=repo, paths=tmp_paths, sender=_FakeSender())
     log = tmp_paths.events_log
     assert log.exists()
     lines = [json.loads(l) for l in log.read_text().splitlines() if l.strip()]
@@ -517,7 +517,7 @@ def test_msg_run_pass_archives_old_info(repo, tmp_paths):
     m1 = _age_msg(m1, read_min_ago=120)
     m2 = _send_msg(tmp_paths, "!task")  # sacred, leave alone
     sender = _FakeSender()
-    r = _con.run_pass(repo_root=repo, paths=tmp_paths, sender=sender)
+    r = _con.run_pass(project_root=repo, paths=tmp_paths, sender=sender)
     assert any(res["action"] == "archived" for res in r.message_results)
     assert not m1.path.exists()
     assert m2.path.exists()

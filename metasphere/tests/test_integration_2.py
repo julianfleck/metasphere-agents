@@ -49,7 +49,7 @@ def _make_paths(tmp: Path) -> Paths:
     (repo / ".tasks" / "active").mkdir(parents=True)
     (repo / ".tasks" / "completed").mkdir(parents=True)
     (tmp / "ms").mkdir()
-    return Paths(root=tmp / "ms", repo=repo, scope=repo)
+    return Paths(root=tmp / "ms", project_root=repo, scope=repo)
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ def test_spawn_message_reply_chain(tmp_path, monkeypatch):
     paths = _make_paths(tmp_path)
     monkeypatch.setenv("METASPHERE_SPAWN_NO_EXEC", "1")
     monkeypatch.setenv("METASPHERE_DIR", str(paths.root))
-    monkeypatch.setenv("METASPHERE_REPO_ROOT", str(paths.repo))
+    monkeypatch.setenv("METASPHERE_PROJECT_ROOT", str(paths.project_root))
     monkeypatch.setenv("METASPHERE_SCOPE", str(paths.scope))
 
     # Orchestrator inbox lives at repo root scope.
@@ -74,7 +74,7 @@ def test_spawn_message_reply_chain(tmp_path, monkeypatch):
     assert rec.name == "@chain-child"
 
     # Child sends a message addressed back to the orchestrator at root scope.
-    child_paths = Paths(root=paths.root, repo=paths.repo, scope=Path(rec.scope))
+    child_paths = Paths(root=paths.root, project_root=paths.project_root, scope=Path(rec.scope))
     sent = M.send_message(
         target="@/",
         label="!info",
@@ -85,7 +85,7 @@ def test_spawn_message_reply_chain(tmp_path, monkeypatch):
     )
 
     # Orchestrator collects its inbox at the root scope.
-    inbox = M.collect_inbox(paths.repo, paths.repo)
+    inbox = M.collect_inbox(paths.project_root, paths.project_root)
     found = next(m for m in inbox if m.id == sent.id)
     assert found.from_ == "@chain-child"
 

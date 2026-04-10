@@ -10,7 +10,7 @@
 
 set -e
 
-REPO_ROOT="${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+REPO_ROOT="${METASPHERE_PROJECT_ROOT:-${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
 METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -203,7 +203,7 @@ PID_FILE="$AGENT_DIR/pid"
     cd "$SCOPE" 2>/dev/null || cd "$REPO_ROOT"
     METASPHERE_AGENT_ID="$AGENT_ID" \
     METASPHERE_SCOPE="$SCOPE" \
-    METASPHERE_REPO_ROOT="$REPO_ROOT" \
+    METASPHERE_PROJECT_ROOT="$REPO_ROOT" \
     METASPHERE_DIR="$METASPHERE_DIR" \
     nohup claude -p "$(cat "$HARNESS")" \
         --dangerously-skip-permissions \

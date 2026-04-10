@@ -5,9 +5,9 @@ scattered across scripts/ (messages, tasks, metasphere-spawn,
 metasphere-context, metasphere-schedule, metasphere-telegram, ...).
 
 Resolution rules:
-    METASPHERE_DIR        -> ~/.metasphere
-    METASPHERE_REPO_ROOT  -> git toplevel of CWD, else CWD
-    METASPHERE_SCOPE      -> CWD
+    METASPHERE_DIR          -> ~/.metasphere
+    METASPHERE_PROJECT_ROOT -> git toplevel of CWD, else METASPHERE_DIR
+    METASPHERE_SCOPE        -> CWD
 """
 
 from __future__ import annotations
@@ -28,17 +28,24 @@ def home() -> Path:
     return _env_path("METASPHERE_DIR", Path.home() / ".metasphere")
 
 
-_repo_root_cache: dict[tuple[str, str], Path] = {}
+_project_root_cache: dict[tuple[str, str], Path] = {}
 
 
-def repo_root() -> Path:
-    """Resolve the repo root, caching the git shell-out per (env, cwd) pair."""
-    v = os.environ.get("METASPHERE_REPO_ROOT")
+def project_root() -> Path:
+    """Resolve the project root, caching the git shell-out per (env, cwd) pair.
+
+    Resolution order:
+    1. ``METASPHERE_PROJECT_ROOT`` env var (canonical)
+    2. ``METASPHERE_REPO_ROOT`` env var (backward compat, no warning)
+    3. ``git rev-parse --show-toplevel`` (CLI users in a project dir)
+    4. Fall back to ``~/.metasphere`` (METASPHERE_DIR)
+    """
+    v = os.environ.get("METASPHERE_PROJECT_ROOT") or os.environ.get("METASPHERE_REPO_ROOT")
     if v:
         return Path(v).expanduser()
     cwd = os.getcwd()
     key = ("", cwd)
-    cached = _repo_root_cache.get(key)
+    cached = _project_root_cache.get(key)
     if cached is not None:
         return cached
     try:
@@ -49,13 +56,17 @@ def repo_root() -> Path:
         ).strip()
         if out:
             result = Path(out)
-            _repo_root_cache[key] = result
+            _project_root_cache[key] = result
             return result
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass
-    result = Path(cwd)
-    _repo_root_cache[key] = result
+    result = home()
+    _project_root_cache[key] = result
     return result
+
+
+# Backward-compat alias — old callers import ``repo_root`` directly.
+repo_root = project_root
 
 
 def scope() -> Path:
@@ -67,8 +78,13 @@ class Paths:
     """Resolved metasphere paths. Construct fresh if env may have changed."""
 
     root: Path
-    repo: Path
+    project_root: Path
     scope: Path
+
+    @property
+    def repo(self) -> Path:
+        """Backward-compat alias for ``project_root``."""
+        return self.project_root
 
     @property
     def agents(self) -> Path:
@@ -151,16 +167,16 @@ class Paths:
 
 def resolve() -> Paths:
     """Build a Paths bundle from current env / cwd."""
-    return Paths(root=home(), repo=repo_root(), scope=scope())
+    return Paths(root=home(), project_root=project_root(), scope=scope())
 
 
-def rel_path(path: Path, repo_root: Path) -> str:
+def rel_path(path: Path, project_root: Path) -> str:
     """Render ``path`` as a ``/``-prefixed scope string relative to
-    ``repo_root``. Falls back to the absolute path string if ``path`` is
-    outside ``repo_root``. Used everywhere a scope label is printed.
+    ``project_root``. Falls back to the absolute path string if ``path`` is
+    outside ``project_root``. Used everywhere a scope label is printed.
     """
     try:
-        rel = Path(path).resolve().relative_to(Path(repo_root).resolve())
+        rel = Path(path).resolve().relative_to(Path(project_root).resolve())
         s = "/" + str(rel)
     except ValueError:
         s = str(path)

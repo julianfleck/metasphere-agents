@@ -147,9 +147,9 @@ def _completed_dir(scope_dir: Path) -> Path:
     return _tasks_dir(scope_dir) / "completed"
 
 
-def _rel_to_repo(path: Path, repo_root: Path) -> str:
+def _rel_to_repo(path: Path, project_root: Path) -> str:
     try:
-        rel = path.resolve().relative_to(repo_root.resolve())
+        rel = path.resolve().relative_to(project_root.resolve())
         s = "/" + str(rel)
     except ValueError:
         s = str(path)
@@ -191,7 +191,7 @@ def create_task(
     title: str,
     priority: str,
     scope: Path,
-    repo_root: Path,
+    project_root: Path,
     *,
     created_by: str | None = None,
     project: str | None = None,
@@ -209,7 +209,7 @@ def create_task(
         raise ValueError(f"invalid priority {priority!r}; want one of {VALID_PRIORITIES}")
 
     scope = Path(scope)
-    repo_root = Path(repo_root)
+    project_root = Path(project_root)
     active = _active_dir(scope)
     active.mkdir(parents=True, exist_ok=True)
 
@@ -230,7 +230,7 @@ def create_task(
         title=title,
         priority=priority,
         status=STATUS_PENDING,
-        scope=_rel_to_repo(scope, repo_root),
+        scope=_rel_to_repo(scope, project_root),
         project=resolved_project,
         created=_utcnow(),
         updated=_utcnow(),
@@ -243,17 +243,17 @@ def create_task(
     return task
 
 
-def assign_task(task_id: str, agent: str, repo_root: Path) -> Task:
+def assign_task(task_id: str, agent: str, project_root: Path) -> Task:
     """Retroactively set ``assigned_to`` on a task without changing status."""
     if not agent.startswith("@"):
         agent = "@" + agent
-    return update_task(task_id, repo_root, assigned_to=agent,
+    return update_task(task_id, project_root, assigned_to=agent,
                        note=f"Assigned to {agent}")
 
 
-def move_task_project(task_id: str, project: str, repo_root: Path) -> Task:
+def move_task_project(task_id: str, project: str, project_root: Path) -> Task:
     """Retroactively set the ``project`` field on a task."""
-    return update_task(task_id, repo_root, project=project,
+    return update_task(task_id, project_root, project=project,
                        note=f"Moved to project {project}")
 
 
@@ -292,23 +292,23 @@ def dispatch_task(
                 proj = _proj.load_project(project, paths=paths)
                 scope = Path(proj.path)
             except Exception:
-                scope = paths.repo
+                scope = paths.project_root
         else:
-            scope = paths.repo
+            scope = paths.project_root
 
     # 1. Create the task
     task = create_task(
         title=title,
         priority=priority,
         scope=scope,
-        repo_root=paths.repo,
+        project_root=paths.project_root,
         assigned_to=agent_id,
         project=project or None,
     )
 
     # Append description to task body if provided
     if description:
-        update_task(task.id, paths.repo, note=f"Brief: {description}")
+        update_task(task.id, paths.project_root, note=f"Brief: {description}")
 
     # 2. Wake the agent if dormant
     agent_record = None
@@ -350,13 +350,13 @@ def dispatch_task(
     }
 
 
-def _find_task_file(task_id: str, repo_root: Path, *, include_completed: bool = True) -> Path | None:
-    """Walk every ``.tasks/`` under ``repo_root`` looking for ``<task_id>.md``.
+def _find_task_file(task_id: str, project_root: Path, *, include_completed: bool = True) -> Path | None:
+    """Walk every ``.tasks/`` under ``project_root`` looking for ``<task_id>.md``.
 
     Searches ``active/``, legacy ``completed/``, and dated ``archive/YYYY-MM-DD/``.
     """
-    repo_root = Path(repo_root)
-    for tasks_dir in repo_root.rglob(".tasks"):
+    project_root = Path(project_root)
+    for tasks_dir in project_root.rglob(".tasks"):
         if not tasks_dir.is_dir():
             continue
         # active/ always
@@ -387,13 +387,13 @@ def _load(path: Path) -> Task:
 
 def update_task(
     task_id: str,
-    repo_root: Path,
+    project_root: Path,
     **fields: str,
 ) -> Task:
     """Atomically rewrite frontmatter fields on a task file."""
-    path = _find_task_file(task_id, repo_root)
+    path = _find_task_file(task_id, project_root)
     if path is None:
-        raise FileNotFoundError(f"task {task_id} not found under {repo_root}")
+        raise FileNotFoundError(f"task {task_id} not found under {project_root}")
 
     with file_lock(_lock_path(path)):
         task = _load(path)
@@ -427,8 +427,8 @@ def _append_update(body: str, note: str) -> str:
     return body.rstrip() + f"\n\n## Updates\n\n{line}\n"
 
 
-def add_update(task_id: str, note: str, repo_root: Path) -> Task:
-    path = _find_task_file(task_id, repo_root)
+def add_update(task_id: str, note: str, project_root: Path) -> Task:
+    path = _find_task_file(task_id, project_root)
     if path is None:
         raise FileNotFoundError(f"task {task_id} not found")
     with file_lock(_lock_path(path)):
@@ -466,9 +466,9 @@ def _replace_description(body: str, text: str) -> str:
     return f"## Description\n\n{text.strip()}\n\n" + body
 
 
-def set_description(task_id: str, text: str, repo_root: Path) -> Task:
+def set_description(task_id: str, text: str, project_root: Path) -> Task:
     """Replace the ``## Description`` section of a task with ``text``."""
-    path = _find_task_file(task_id, repo_root)
+    path = _find_task_file(task_id, project_root)
     if path is None:
         raise FileNotFoundError(f"task {task_id} not found")
     with file_lock(_lock_path(path)):
@@ -479,8 +479,8 @@ def set_description(task_id: str, text: str, repo_root: Path) -> Task:
         return task
 
 
-def start_task(task_id: str, agent: str, repo_root: Path) -> Task:
-    path = _find_task_file(task_id, repo_root)
+def start_task(task_id: str, agent: str, project_root: Path) -> Task:
+    path = _find_task_file(task_id, project_root)
     if path is None:
         raise FileNotFoundError(f"task {task_id} not found")
     with file_lock(_lock_path(path)):
@@ -495,9 +495,9 @@ def start_task(task_id: str, agent: str, repo_root: Path) -> Task:
         return task
 
 
-def complete_task(task_id: str, summary: str, repo_root: Path) -> Task:
+def complete_task(task_id: str, summary: str, project_root: Path) -> Task:
     """Mark task complete and move file from ``active/`` → ``completed/``."""
-    path = _find_task_file(task_id, repo_root)
+    path = _find_task_file(task_id, project_root)
     if path is None:
         raise FileNotFoundError(f"task {task_id} not found")
 
@@ -535,12 +535,12 @@ def complete_task(task_id: str, summary: str, repo_root: Path) -> Task:
 
 def list_tasks(
     scope: Path,
-    repo_root: Path,
+    project_root: Path,
     include_completed: bool = False,
 ) -> list[Task]:
     """Collect tasks visible from ``scope`` (scope + parents up to repo root)."""
     scope = Path(scope).resolve()
-    repo_root = Path(repo_root).resolve()
+    project_root = Path(project_root).resolve()
     seen: list[Task] = []
 
     current = scope
@@ -560,7 +560,7 @@ def list_tasks(
                             seen.append(_load(f))
                         except Exception:
                             continue
-        if current == repo_root or repo_root not in current.parents:
+        if current == project_root or project_root not in current.parents:
             break
         current = current.parent
 

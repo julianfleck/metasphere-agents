@@ -11,7 +11,7 @@
 #   6. Recent events (situational awareness)
 #   7. CAM (relevant memory - keyed to current task)
 
-REPO_ROOT="${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+REPO_ROOT="${METASPHERE_PROJECT_ROOT:-${METASPHERE_REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
 METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
 AGENT="${METASPHERE_AGENT_ID:-@orchestrator}"
 SCOPE="${METASPHERE_SCOPE:-$REPO_ROOT}"
@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGENT_DIR="$METASPHERE_DIR/agents/$AGENT"
 
 # Export for child scripts
-export METASPHERE_REPO_ROOT="$REPO_ROOT"
+export METASPHERE_PROJECT_ROOT="$REPO_ROOT"
 export METASPHERE_SCOPE="$SCOPE"
 export METASPHERE_AGENT_ID="$AGENT"
 

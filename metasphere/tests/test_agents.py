@@ -26,7 +26,7 @@ def test_list_agents_finds_created_agents(tmp_paths: Paths):
     a2 = tmp_paths.agents / "@beta"
     for d in (a1, a2):
         d.mkdir(parents=True)
-        (d / "scope").write_text(str(tmp_paths.repo))
+        (d / "scope").write_text(str(tmp_paths.project_root))
         (d / "parent").write_text("@orchestrator")
         (d / "status").write_text("spawned")
         (d / "spawned_at").write_text("2026-04-07T00:00:00Z")
@@ -92,7 +92,7 @@ def _make_persistent(tmp_paths: Paths, name: str = "@waker") -> Path:
     d = tmp_paths.agents / name
     d.mkdir(parents=True)
     (d / "MISSION.md").write_text("mission")
-    (d / "scope").write_text(str(tmp_paths.repo))
+    (d / "scope").write_text(str(tmp_paths.project_root))
     return d
 
 

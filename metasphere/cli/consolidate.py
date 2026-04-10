@@ -64,7 +64,7 @@ def _cmd_run(argv: list[str]) -> int:
         _con.INFO_AUTO_ARCHIVE_AFTER_MINUTES = info_archive_after
     try:
         report = _con.run_pass(
-            repo_root=paths.repo,
+            project_root=paths.project_root,
             since=since,
             stale_window_minutes=stale_window,
             dry_run=dry_run,

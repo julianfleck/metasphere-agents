@@ -226,7 +226,7 @@ def resolve_target_agent(job: Job) -> str:
 # ---------- dispatch ----------
 
 def _wake_script(paths: Paths) -> Path:
-    return paths.repo / "scripts" / "metasphere-wake"
+    return paths.project_root / "scripts" / "metasphere-wake"
 
 
 def dispatch_command(payload: str, *, timeout: int = 600) -> bool:

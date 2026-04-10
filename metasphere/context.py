@@ -54,10 +54,10 @@ def truncate_section(text: str, budget: int = DEFAULT_SECTION_BUDGET) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _existing_harness_files(repo_root: Path) -> list[Path]:
+def _existing_harness_files(project_root: Path) -> list[Path]:
     out: list[Path] = []
     for rel in _HARNESS_FILES:
-        p = repo_root / rel
+        p = project_root / rel
         if p.is_file():
             out.append(p)
     return out
@@ -72,7 +72,7 @@ def harness_hash(paths: Paths) -> str:
 
     Returns "" if no files exist.
     """
-    files = _existing_harness_files(paths.repo)
+    files = _existing_harness_files(paths.project_root)
     if not files:
         return ""
     files_sorted = sorted(str(p) for p in files)
@@ -167,14 +167,14 @@ def _render_telegram(paths: Paths, history: int = 3) -> str:
 
 
 def _render_messages(paths: Paths) -> str:
-    msgs = _msgs.collect_inbox(paths.scope, paths.repo, view=True)
+    msgs = _msgs.collect_inbox(paths.scope, paths.project_root, view=True)
     unread = sum(1 for m in msgs if m.status == _msgs.STATUS_UNREAD)
     total = len(msgs)
     if total == 0:
         return "## Messages: No messages in scope\n"
     out = [
         f"## Messages ({unread} unread, {total} total)",
-        f"## Scope: {rel_path(paths.scope, paths.repo)}",
+        f"## Scope: {rel_path(paths.scope, paths.project_root)}",
         "",
     ]
     for m in msgs:
@@ -191,7 +191,7 @@ def _render_messages(paths: Paths) -> str:
 
 
 def _render_tasks(paths: Paths) -> str:
-    items = _tasks.list_tasks(paths.scope, paths.repo, include_completed=False)
+    items = _tasks.list_tasks(paths.scope, paths.project_root, include_completed=False)
     if not items:
         return "## Tasks: No active tasks in scope\n"
     out = [f"## Tasks ({len(items)} active)", ""]
@@ -254,7 +254,7 @@ def _render_memory_fts(paths: Paths, agent: str) -> str:
             query_parts.append(task_file.read_text(encoding="utf-8").strip())
         except OSError:
             pass
-    query_parts.append(paths.repo.name)
+    query_parts.append(paths.project_root.name)
     query = " ".join(p for p in query_parts if p).replace("\n", " ")
     query = " ".join(query.split())[:200] or agent
 
@@ -313,7 +313,7 @@ def _render_project(paths: Paths) -> str:
     # Recent activity: count of active tasks + last commit subject.
     from . import tasks as _tasks
     try:
-        active = _tasks.list_tasks(Path(proj.path), paths.repo,
+        active = _tasks.list_tasks(Path(proj.path), paths.project_root,
                                    include_completed=False)
         task_n = len(active)
     except Exception:

@@ -101,7 +101,7 @@ def test_dispatch_prefers_metasphere_wake_when_mission_exists(tmp_paths):
     agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "MISSION.md").write_text("mission\n")
 
-    wake_path = tmp_paths.repo / "scripts" / "metasphere-wake"
+    wake_path = tmp_paths.project_root / "scripts" / "metasphere-wake"
     wake_path.parent.mkdir(parents=True, exist_ok=True)
     wake_path.write_text("#!/bin/sh\nexit 0\n")
     wake_path.chmod(0o755)

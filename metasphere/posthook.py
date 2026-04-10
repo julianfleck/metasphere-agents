@@ -367,7 +367,7 @@ def auto_close_finished_task(agent: str, paths: Paths) -> str | None:
     # and dodge any potential cycle through the cli shims.
     from . import tasks as _tasks
 
-    active_path = _tasks._find_task_file(task_id, paths.repo, include_completed=False)
+    active_path = _tasks._find_task_file(task_id, paths.project_root, include_completed=False)
     if active_path is None:
         return None
     if active_path.parent.name != "active":
@@ -377,7 +377,7 @@ def auto_close_finished_task(agent: str, paths: Paths) -> str | None:
 
     summary = status.split(":", 1)[1].strip() if ":" in status else status
     try:
-        _tasks.complete_task(task_id, f"auto-closed by posthook: {summary}", paths.repo)
+        _tasks.complete_task(task_id, f"auto-closed by posthook: {summary}", paths.project_root)
     except Exception:  # noqa: BLE001
         return None
     return task_id

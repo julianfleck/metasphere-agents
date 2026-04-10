@@ -108,7 +108,7 @@ def cmd_tasks(args: str, ctx: Context) -> "Reply | str":
         from metasphere.paths import resolve
 
         paths = resolve()
-        tasks = list_tasks(paths.repo, paths.repo)
+        tasks = list_tasks(paths.project_root, paths.project_root)
         active = [t for t in tasks if t.status in ("pending", "in-progress", "in_progress")]
 
         return Reply(

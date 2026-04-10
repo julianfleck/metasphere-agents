@@ -51,9 +51,9 @@ def _respawn_cmd(agent: str = "@orchestrator") -> str:
         'STATE_DIR="$HOME/.metasphere/state"; '
         "mkdir -p \"$STATE_DIR\"; "
         "while true; do "
-        # Refresh METASPHERE_REPO_ROOT from git on each restart so
+        # Refresh METASPHERE_PROJECT_ROOT from git on each restart so
         # stale env vars from a previous session don't persist.
-        'export METASPHERE_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$METASPHERE_REPO_ROOT")"; '
+        'export METASPHERE_PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$METASPHERE_PROJECT_ROOT")"; '
         "claude --dangerously-skip-permissions; "
         'ec=$?; echo "[gateway] claude exited ($ec), respawning in 1s..."; '
         'echo "{\\"timestamp\\": '
@@ -124,9 +124,9 @@ def start_session(paths: Paths | None = None) -> bool:
 
     scope_file = paths.agents / "@orchestrator" / "scope"
     try:
-        scope_str = scope_file.read_text(encoding="utf-8").strip() or str(paths.repo)
+        scope_str = scope_file.read_text(encoding="utf-8").strip() or str(paths.project_root)
     except (OSError, FileNotFoundError):
-        scope_str = str(paths.repo)
+        scope_str = str(paths.project_root)
     # If the configured scope is gone, fall back to repo root with a
     # log_event so the failure is debuggable instead of tmux failing
     # silently with `-c <bad-path>`.
@@ -140,17 +140,17 @@ def start_session(paths: Paths | None = None) -> bool:
             )
         except Exception:
             pass
-        scope_str = str(paths.repo)
+        scope_str = str(paths.project_root)
 
     r = _tmux("new-session", "-d", "-s", SESSION_NAME, "-c", scope_str)
     if r.returncode != 0:
         return False
     _tmux("set-option", "-t", SESSION_NAME, "mouse", "on")
     _tmux("set-option", "-t", SESSION_NAME, "history-limit", "100000")
-    # Set METASPHERE_REPO_ROOT explicitly so it matches the repo we're in,
+    # Set METASPHERE_PROJECT_ROOT explicitly so it matches the repo we're in,
     # regardless of what the parent process had in its env.
     _tmux("send-keys", "-t", SESSION_NAME,
-          f"export METASPHERE_REPO_ROOT={scope_str}", "Enter")
+          f"export METASPHERE_PROJECT_ROOT={scope_str}", "Enter")
     _tmux("send-keys", "-t", SESSION_NAME, _RESPAWN_CMD, "Enter")
 
     # Write restart marker so watchdog injects a wake-up prompt into the

@@ -17,7 +17,7 @@ def _agent(paths: Paths, name: str, status: str) -> Path:
     d = paths.agents / name
     d.mkdir(parents=True, exist_ok=True)
     (d / "status").write_text(status, encoding="utf-8")
-    (d / "scope").write_text(str(paths.repo), encoding="utf-8")
+    (d / "scope").write_text(str(paths.project_root), encoding="utf-8")
     return d
 
 
@@ -54,9 +54,9 @@ def test_check_blocked_agents_finds_waiting_and_blocked(tmp_paths: Paths):
 
 
 def test_check_urgent_tasks_counts_correctly(tmp_paths: Paths):
-    create_task("urgent one", "!urgent", tmp_paths.scope, tmp_paths.repo)
-    create_task("normal one", "!normal", tmp_paths.scope, tmp_paths.repo)
-    create_task("urgent two", "!urgent", tmp_paths.scope, tmp_paths.repo)
+    create_task("urgent one", "!urgent", tmp_paths.scope, tmp_paths.project_root)
+    create_task("normal one", "!normal", tmp_paths.scope, tmp_paths.project_root)
+    create_task("urgent two", "!urgent", tmp_paths.scope, tmp_paths.project_root)
     urgent, total = hb.check_urgent_tasks(tmp_paths)
     assert urgent == 2
     assert total == 3
@@ -144,13 +144,13 @@ def test_log_status_to_disk_writes_marker(tmp_paths: Paths):
 
 
 def test_heartbeat_daemon_normalizes_scope_to_repo(tmp_paths: Paths, monkeypatch):
-    """Daemon must use paths.repo (env-resolved) not the cwd subdir.
+    """Daemon must use paths.project_root (env-resolved) not the cwd subdir.
 
     Simulates running the daemon from a deeply nested ``a/b/c`` subdir
     of the repo and asserts the per-tick :class:`Paths` carries the
     repo root, not the cwd.
     """
-    nested = tmp_paths.repo / "a" / "b" / "c"
+    nested = tmp_paths.project_root / "a" / "b" / "c"
     nested.mkdir(parents=True)
     monkeypatch.chdir(nested)
 
@@ -170,5 +170,5 @@ def test_heartbeat_daemon_normalizes_scope_to_repo(tmp_paths: Paths, monkeypatch
 
     assert len(captured) == 1
     p = captured[0]
-    assert p.repo == tmp_paths.repo
-    assert p.repo != nested
+    assert p.project_root == tmp_paths.project_root
+    assert p.project_root != nested

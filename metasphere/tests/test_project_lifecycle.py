@@ -28,7 +28,7 @@ from metasphere.project import (
 
 
 def test_full_lifecycle(tmp_paths, tmp_path, capsys):
-    proj_dir = tmp_paths.repo / "recurse"
+    proj_dir = tmp_paths.project_root / "recurse"
     proj = new_project(
         "recurse",
         path=proj_dir,
@@ -68,7 +68,7 @@ def test_full_lifecycle(tmp_paths, tmp_path, capsys):
     # ---- add a task in the project scope ----
     t = _tasks.create_task(
         "ship v0", priority="!high",
-        scope=proj_dir, repo_root=tmp_paths.repo,
+        scope=proj_dir, project_root=tmp_paths.project_root,
     )
     assert (proj_dir / ".tasks" / "active").glob("*.task")
     assert t.title == "ship v0"

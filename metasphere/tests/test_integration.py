@@ -41,7 +41,7 @@ def _make_paths(tmp: Path) -> Paths:
     (repo / ".messages" / "inbox").mkdir(parents=True)
     (repo / ".messages" / "outbox").mkdir(parents=True)
     (tmp / "ms").mkdir()
-    return Paths(root=tmp / "ms", repo=repo, scope=repo)
+    return Paths(root=tmp / "ms", project_root=repo, scope=repo)
 
 
 # ---------------------------------------------------------------------------
@@ -52,13 +52,13 @@ def test_message_roundtrip_two_agents(tmp_path):
     paths = _make_paths(tmp_path)
 
     # Two simulated agents = two scope dirs under repo
-    agent_a = paths.repo / "a"
-    agent_b = paths.repo / "b"
+    agent_a = paths.project_root / "a"
+    agent_b = paths.project_root / "b"
     (agent_a / ".messages" / "outbox").mkdir(parents=True)
     (agent_b / ".messages" / "inbox").mkdir(parents=True)
 
     # A sends to B by absolute scope path
-    a_paths = Paths(root=paths.root, repo=paths.repo, scope=agent_a)
+    a_paths = Paths(root=paths.root, project_root=paths.project_root, scope=agent_a)
     msg = M.send_message(
         target="@/b/",
         label="!info",
@@ -81,7 +81,7 @@ def test_message_roundtrip_two_agents(tmp_path):
     assert "hello from A" in raw
 
     # collect_inbox on B sees the message
-    b_inbox = M.collect_inbox(agent_b, paths.repo)
+    b_inbox = M.collect_inbox(agent_b, paths.project_root)
     ids = [m.id for m in b_inbox]
     assert msg.id in ids
     found = next(m for m in b_inbox if m.id == msg.id)
@@ -101,17 +101,17 @@ def test_task_lifecycle_with_slash_title(tmp_path):
     paths = _make_paths(tmp_path)
 
     title = "Fix scripts/messages slug bug / urgent"
-    task = T.create_task(title, "!high", paths.repo, paths.repo)
+    task = T.create_task(title, "!high", paths.project_root, paths.project_root)
 
     # Slug must not contain slashes
     assert "/" not in task.slug
     assert task.slug.startswith("fix-scripts-messages")
-    active_file = paths.repo / ".tasks" / "active" / f"{task.slug}.md"
+    active_file = paths.project_root / ".tasks" / "active" / f"{task.slug}.md"
     assert active_file.exists()
 
-    T.start_task(task.id, "@tester-integration", paths.repo)
-    T.update_task(task.id, paths.repo, note="midway progress")
-    completed = T.complete_task(task.id, "all done", paths.repo)
+    T.start_task(task.id, "@tester-integration", paths.project_root)
+    T.update_task(task.id, paths.project_root, note="midway progress")
+    completed = T.complete_task(task.id, "all done", paths.project_root)
 
     # File moved active/ → archive/YYYY-MM-DD/
     assert not active_file.exists()
@@ -216,10 +216,10 @@ def test_cross_module_task_message_event(tmp_path, monkeypatch):
     # events.log_event uses paths kwarg directly when supplied; messages.send_message
     # passes paths down. Force METASPHERE_DIR so any fallback also stays in tmp.
     monkeypatch.setenv("METASPHERE_DIR", str(paths.root))
-    monkeypatch.setenv("METASPHERE_REPO_ROOT", str(paths.repo))
+    monkeypatch.setenv("METASPHERE_PROJECT_ROOT", str(paths.project_root))
     monkeypatch.setenv("METASPHERE_SCOPE", str(paths.scope))
 
-    task = T.create_task("Cross module test task", "!normal", paths.repo, paths.repo)
+    task = T.create_task("Cross module test task", "!normal", paths.project_root, paths.project_root)
     E.log_event("task.create", f"created {task.id}", agent="@a",
                 meta={"task_id": task.id}, paths=paths)
 
