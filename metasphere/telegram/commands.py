@@ -101,55 +101,32 @@ def cmd_status(args: str, ctx: Context) -> str:
 
 
 def cmd_tasks(args: str, ctx: Context) -> "Reply | str":
-    """Dispatch to ``metasphere.cli.tasks`` and render with HTML cards.
-
-    Sets ``METASPHERE_HTML=1`` so the format module wraps titles/owners
-    in ``<b>`` tags, and returns a :class:`Reply` carrying
-    ``parse_mode='HTML'`` so the dispatcher sends with the right mode.
-    Telegram cards on a phone need bold for skimming; HTML is the only
-    parse_mode where escaping is sane (3 chars, not 15).
-    """
-    import shlex
-    import contextlib
-    import io as _io
-    sub_argv = shlex.split(args) if args.strip() else []
+    """List tasks + active agents in one view."""
     try:
-        from metasphere.cli import tasks as cli_tasks  # type: ignore
-        prev_plain = os.environ.get("METASPHERE_PLAIN")
-        prev_html = os.environ.get("METASPHERE_HTML")
-        prev_scope = os.environ.get("METASPHERE_SCOPE")
-        os.environ["METASPHERE_PLAIN"] = "1"
-        os.environ["METASPHERE_HTML"] = "1"
-        # Pin scope to the repo root so the gateway daemon's cwd
-        # (typically the user's home, NOT inside the repo) doesn't
-        # cause an empty scope and "no tasks" output.
-        repo_root = os.environ.get("METASPHERE_REPO_ROOT")
-        if repo_root:
-            os.environ["METASPHERE_SCOPE"] = repo_root
-        try:
-            buf = _io.StringIO()
-            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                try:
-                    rc = cli_tasks.main(sub_argv)
-                except SystemExit as e:
-                    rc = int(e.code) if isinstance(e.code, int) else 2
-            out = buf.getvalue().strip()
-            if rc != 0 and not out:
-                out = f"(exit {rc})"
-            return Reply(out or "(no output)", parse_mode="HTML")
-        finally:
-            if prev_plain is None:
-                os.environ.pop("METASPHERE_PLAIN", None)
-            else:
-                os.environ["METASPHERE_PLAIN"] = prev_plain
-            if prev_html is None:
-                os.environ.pop("METASPHERE_HTML", None)
-            else:
-                os.environ["METASPHERE_HTML"] = prev_html
-            if prev_scope is None:
-                os.environ.pop("METASPHERE_SCOPE", None)
-            else:
-                os.environ["METASPHERE_SCOPE"] = prev_scope
+        from metasphere.tasks import list_tasks
+        from metasphere.agents import list_agents, session_alive
+        from metasphere.format import format_task_table
+        from metasphere.paths import resolve
+
+        paths = resolve()
+
+        # Tasks from repo root
+        tasks = list_tasks(paths.repo, paths.repo)
+        active = [t for t in tasks if t.status in ("pending", "in-progress", "in_progress")]
+
+        # Live agents
+        agents_with_status = []
+        for a in list_agents(paths):
+            try:
+                live = session_alive(a.session_name)
+            except Exception:
+                live = False
+            agents_with_status.append((a, live))
+
+        return Reply(
+            format_task_table(active, html=True, agents=agents_with_status),
+            parse_mode="HTML",
+        )
     except Exception as e:
         return f"(tasks error: {e})"
 

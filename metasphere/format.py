@@ -207,24 +207,77 @@ def _resolve_html(html):
     return bool(html)
 
 
-def format_task_table(tasks: Sequence, *, html: bool | None = None) -> str:
-    """Render a list of tasks as mobile-first cards.
+AGENT_STATUS_EMOJI = {
+    "active": "🟢",
+    "idle": "⚪",
+    "spawned": "🔵",
+    "working": "🟡",
+    "waiting": "🟠",
+    "complete": "🟢",
+}
 
-    Name kept (not ``format_task_cards``) so existing call sites don't churn.
-    The shape it returns is a card stack, not a table.
+
+def _agent_status_emoji(status: str) -> str:
+    s = (status or "").strip().lower()
+    for prefix, emoji in AGENT_STATUS_EMOJI.items():
+        if s.startswith(prefix):
+            return emoji
+    return "🔵"
+
+
+def _agent_card(agent, *, html: bool, live: bool = False) -> str:
+    name = agent.name or "unknown"
+    status = agent.status or "unknown"
+    project = getattr(agent, "project", "") or ""
+    live_mark = " [live]" if live else ""
+
+    lines = [f"{_agent_status_emoji(status)}  {_b(_esc(name + live_mark, html), html)}"]
+    # Show just the status text (e.g. "active: persistent session")
+    lines.append(f"{INDENT}{_esc(ellipsize(status, 60), html)}")
+    if project:
+        lines.append(f"{INDENT}Project: {_esc(project, html)}")
+    return "\n".join(lines)
+
+
+def format_task_table(
+    tasks: Sequence,
+    *,
+    html: bool | None = None,
+    agents: Sequence | None = None,
+) -> str:
+    """Render tasks as mobile-first cards, optionally with active agents.
 
     ``html``: if ``None`` (default), inferred from ``METASPHERE_HTML`` env
     var; the telegram dispatch path sets that so the captured stdout of the
     CLI carries HTML markup. CLI users get plain text.
+
+    ``agents``: optional list of ``(agent_record, is_live)`` tuples. If
+    provided, live agents are shown as an "Active Agents" section after
+    the tasks.
     """
     html = _resolve_html(html)
     header = _b("Tasks", html)
-    if not tasks:
+    if not tasks and not agents:
         return f"{header}\n{RULE}\n(no tasks)"
     parts = [header, RULE]
     for t in tasks:
         parts.append(_task_card(t, html=html))
         parts.append(RULE)
+    if not tasks:
+        parts.append("(no task files)")
+        parts.append(RULE)
+
+    # Active agents section
+    if agents:
+        live_agents = [(a, live) for a, live in agents if live]
+        if live_agents:
+            parts.append("")
+            parts.append(_b(f"Active Agents ({len(live_agents)})", html))
+            parts.append(RULE)
+            for a, live in live_agents:
+                parts.append(_agent_card(a, html=html, live=True))
+                parts.append(RULE)
+
     return "\n".join(parts)
 
 
