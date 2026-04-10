@@ -169,38 +169,40 @@ def cmd_messages(args: str, ctx: Context) -> str:
     return _run([os.path.join(SCRIPTS_DIR, "messages")])
 
 
-def cmd_agents(args: str, ctx: Context) -> str:
+def cmd_agents(args: str, ctx: Context) -> "Reply | str":
     """List all agents across global + all projects."""
     try:
+        from collections import defaultdict
         from metasphere import agents as _agents
         from metasphere.paths import resolve
         items = _agents.list_agents(resolve())
         persistent = [a for a in items if a.is_persistent]
         if not persistent:
             return "No agents registered."
-        lines = ["Agents:"]
+        alive_count = sum(1 for a in persistent if _agents.session_alive(a.session_name))
+        lines = [f"Agents ({alive_count}/{len(persistent)} alive)\n"]
+        by_project: dict[str, list] = defaultdict(list)
         for a in persistent:
-            alive = _agents.session_alive(a.session_name)
-            marker = "\U0001f7e2" if alive else "\u26aa"
-            proj = f" [{a.project}]" if a.project else ""
-            lines.append(f"{marker} {a.name}{proj}: {a.status or '-'}")
-        return "\n".join(lines)
-    except Exception:
-        # Fallback to simple dir listing
-        agents_dir = os.path.join(METASPHERE_DIR, "agents")
-        if not os.path.isdir(agents_dir):
-            return "No agents registered."
-        lines = ["Agents:"]
-        for entry in sorted(os.listdir(agents_dir)):
-            if not entry.startswith("@"):
-                continue
-            sf = os.path.join(agents_dir, entry, "status")
-            status = ""
-            if os.path.exists(sf):
-                with open(sf) as f:
-                    status = f.read().strip()
-            lines.append(f"• {entry}: {status}")
-        return "\n".join(lines)
+            by_project[a.project or "(global)"].append(a)
+        for proj_name in sorted(by_project.keys()):
+            agents = by_project[proj_name]
+            if len(by_project) > 1:
+                lines.append(f"\n<b>{proj_name}</b>")
+            for a in agents:
+                alive = _agents.session_alive(a.session_name)
+                icon = "\U0001f7e2" if alive else "\u26aa"
+                spec_file = a.agent_dir / "spec" if a.agent_dir else None
+                spec_label = ""
+                if spec_file and spec_file.is_file():
+                    spec_label = f" ({spec_file.read_text().strip()})"
+                display_name = a.name.lstrip("@")
+                lines.append(_DIVIDER)
+                lines.append(f"{icon}  {display_name}{spec_label}")
+                lines.append(f"       Status: {a.status or '-'}")
+        lines.append(_DIVIDER)
+        return Reply("\n".join(lines), parse_mode="HTML")
+    except Exception as e:
+        return f"Error: {e}"
 
 
 def cmd_inbox(args: str, ctx: Context) -> str:
@@ -394,8 +396,7 @@ def cmd_specs(args: str, ctx: Context) -> "Reply | str":
         lines = [f"<b>Agent Specs</b> ({len(specs)})\n"]
         for s in specs:
             lines.append(_DIVIDER)
-            lines.append(f"\U0001f4e6  <b>{s.name}</b>")
-            lines.append(f"       Role: <b>{s.role}</b>")
+            lines.append(f"{s.name} ({s.role})")
             lines.append(f"       {s.description}")
             lines.append(f"       Sandbox: {s.sandbox}")
         lines.append(_DIVIDER)
@@ -436,7 +437,7 @@ def cmd_team(args: str, ctx: Context) -> "Reply | str":
                 return f"Spec '{spec_name}' not found. Try /team specs"
             d = seed_agent(agent_id, spec, project_name=project_name)
             lines = [
-                f"\u2705 Seeded <b>{agent_id}</b> from spec <b>{spec_name}</b>",
+                f"\u2705 Seeded {agent_id.lstrip('@')} from spec {spec_name}",
                 "",
                 f"       Dir: {d}",
                 f"       Files: SOUL.md, MISSION.md, persona-index.md",
@@ -453,12 +454,7 @@ def cmd_team(args: str, ctx: Context) -> "Reply | str":
         try:
             from metasphere import agents as _agents
             rec = _agents.wake_persistent(agent_id)
-            return Reply(
-                f"\u2705 <b>{rec.name}</b> awake\n"
-                f"       Session: {rec.session_name}\n"
-                f"       Attach: tmux attach -t {rec.session_name}",
-                parse_mode="HTML",
-            )
+            return f"\u2705 {rec.name.lstrip('@')} awake (session: {rec.session_name})"
         except Exception as e:
             return f"Wake failed: {e}"
 
@@ -487,19 +483,18 @@ def cmd_team(args: str, ctx: Context) -> "Reply | str":
             for proj_name in sorted(by_project.keys()):
                 agents = by_project[proj_name]
                 if len(by_project) > 1:
-                    lines.append(f"\n\U0001f4c1 <b>{proj_name}</b>")
+                    lines.append(f"\n<b>{proj_name}</b>")
                 for a in agents:
                     spec_file = a.agent_dir / "spec" if a.agent_dir else None
                     spec_label = ""
                     if spec_file and spec_file.is_file():
-                        spec_label = spec_file.read_text().strip()
+                        spec_label = f" ({spec_file.read_text().strip()})"
                     alive = _agents.session_alive(a.session_name)
                     icon = "\U0001f7e2" if alive else "\u26aa"
                     status = a.status or "-"
+                    display_name = a.name.lstrip("@")
                     lines.append(_DIVIDER)
-                    lines.append(f"{icon}  <b>{a.name}</b>")
-                    if spec_label:
-                        lines.append(f"       Spec: <b>{spec_label}</b>")
+                    lines.append(f"{icon}  {display_name}{spec_label}")
                     lines.append(f"       Status: {status}")
             lines.append(_DIVIDER)
             return Reply("\n".join(lines), parse_mode="HTML")
