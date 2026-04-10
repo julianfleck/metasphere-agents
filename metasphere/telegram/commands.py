@@ -170,20 +170,37 @@ def cmd_messages(args: str, ctx: Context) -> str:
 
 
 def cmd_agents(args: str, ctx: Context) -> str:
-    agents_dir = os.path.join(METASPHERE_DIR, "agents")
-    if not os.path.isdir(agents_dir):
-        return "No agents registered."
-    lines = ["Agents:"]
-    for entry in sorted(os.listdir(agents_dir)):
-        if not entry.startswith("@"):
-            continue
-        sf = os.path.join(agents_dir, entry, "status")
-        status = ""
-        if os.path.exists(sf):
-            with open(sf) as f:
-                status = f.read().strip()
-        lines.append(f"• {entry}: {status}")
-    return "\n".join(lines)
+    """List all agents across global + all projects."""
+    try:
+        from metasphere import agents as _agents
+        from metasphere.paths import resolve
+        items = _agents.list_agents(resolve())
+        persistent = [a for a in items if a.is_persistent]
+        if not persistent:
+            return "No agents registered."
+        lines = ["Agents:"]
+        for a in persistent:
+            alive = _agents.session_alive(a.session_name)
+            marker = "\U0001f7e2" if alive else "\u26aa"
+            proj = f" [{a.project}]" if a.project else ""
+            lines.append(f"{marker} {a.name}{proj}: {a.status or '-'}")
+        return "\n".join(lines)
+    except Exception:
+        # Fallback to simple dir listing
+        agents_dir = os.path.join(METASPHERE_DIR, "agents")
+        if not os.path.isdir(agents_dir):
+            return "No agents registered."
+        lines = ["Agents:"]
+        for entry in sorted(os.listdir(agents_dir)):
+            if not entry.startswith("@"):
+                continue
+            sf = os.path.join(agents_dir, entry, "status")
+            status = ""
+            if os.path.exists(sf):
+                with open(sf) as f:
+                    status = f.read().strip()
+            lines.append(f"• {entry}: {status}")
+        return "\n".join(lines)
 
 
 def cmd_inbox(args: str, ctx: Context) -> str:
@@ -517,7 +534,7 @@ COMMANDS: Dict[str, Callable[[str, Context], str]] = {
     "groups": cmd_groups,
     "link": cmd_link,
     "events": cmd_events,
-    "tree": cmd_tree,
+    "tree": lambda args, ctx: cmd_team("status", ctx),  # legacy alias
     "spot": cmd_spot,
     "project": cmd_project,
     "projects": cmd_project,  # plural alias — /projects list etc.
@@ -547,15 +564,14 @@ BOT_COMMANDS_MANIFEST: list[tuple[str, str]] = [
     ("status", "Show orchestrator status"),
     ("tasks", "List active tasks"),
     ("messages", "Show inbox messages"),
-    ("agents", "List registered agents"),
-    ("team", "Agent teams: /team [specs|seed|wake|status]"),
+    ("agents", "List all agents across projects"),
+    ("team", "Project teams: /team [status|specs|seed|wake]"),
     ("specs", "List available agent specs"),
     ("send", "Send: /send @agent !label message"),
     ("project", "Projects: /project [list|show|new|wake|chat ...]"),
     ("schedule", "Inspect schedule: /schedule [list|show|run ...]"),
     ("cam", "Search CAM memory: /cam <query>"),
     ("events", "Tail recent events"),
-    ("tree", "Show agent tree"),
     ("spot", "Show remote host status"),
     ("session", "Restart orchestrator REPL"),
     ("help", "Show help"),
