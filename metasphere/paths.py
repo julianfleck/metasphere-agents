@@ -118,8 +118,29 @@ class Paths:
     def current_agent_file(self) -> Path:
         return self.root / "current_agent"
 
+    @property
+    def projects(self) -> Path:
+        return self.root / "projects"
+
     def agent_dir(self, agent_id: str) -> Path:
+        """Global agent directory (system-level agents like @orchestrator)."""
         return self.agents / agent_id
+
+    def project_agents_dir(self, project_name: str) -> Path:
+        """Agent directory root for a specific project."""
+        return self.projects / project_name / "agents"
+
+    def project_agent_dir(self, project_name: str, agent_id: str) -> Path:
+        """Agent identity directory scoped to a project."""
+        if not agent_id.startswith("@"):
+            agent_id = "@" + agent_id
+        return self.project_agents_dir(project_name) / agent_id
+
+    def resolve_agent_dir(self, agent_id: str, project_name: str = "") -> Path:
+        """Resolve agent directory: project-scoped if project given, else global."""
+        if project_name:
+            return self.project_agent_dir(project_name, agent_id)
+        return self.agent_dir(agent_id)
 
     def messages_dir(self, scope_dir: Path | None = None) -> Path:
         return (scope_dir or self.scope) / ".messages"

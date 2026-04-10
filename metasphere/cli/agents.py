@@ -191,7 +191,7 @@ def _seed(argv: list[str]) -> int:
         spec,
         project_name=project_name,
         project_goal=project_goal,
-        scope=project_scope,
+        scope=project_scope or "",
         force=force,
     )
     print(f"Seeded {agent_id} from spec '{spec_name}'")

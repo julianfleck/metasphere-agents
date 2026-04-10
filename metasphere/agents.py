@@ -67,9 +67,13 @@ class AgentRecord:
     mission_path: Optional[Path] = None
     pid_file: Optional[Path] = None
     agent_dir: Optional[Path] = None
+    project: str = ""  # project name if project-scoped, empty if global
 
     @property
     def session_name(self) -> str:
+        # Project-scoped agents include project in session name to avoid collisions
+        if self.project:
+            return _SESSION_PREFIX + self.project + "-" + _normalize_name(self.name)[1:]
         return session_name_for(self.name)
 
     @property
@@ -110,10 +114,13 @@ def _read_text(p: Path, default: str = "") -> str:
         return default
 
 
-def _agent_record_from_dir(agent_dir: Path) -> AgentRecord:
+def _agent_record_from_dir(agent_dir: Path, project: str = "") -> AgentRecord:
     name = agent_dir.name  # already starts with @
     mission = agent_dir / "MISSION.md"
     pid_file = agent_dir / "pid"
+    # Read project pointer if not provided
+    if not project:
+        project = _read_text(agent_dir / "project")
     return AgentRecord(
         name=name,
         scope=_read_text(agent_dir / "scope"),
@@ -123,19 +130,46 @@ def _agent_record_from_dir(agent_dir: Path) -> AgentRecord:
         mission_path=mission if mission.is_file() else None,
         pid_file=pid_file if pid_file.is_file() else None,
         agent_dir=agent_dir,
+        project=project,
     )
 
 
-def list_agents(paths: Paths | None = None) -> list[AgentRecord]:
-    """Enumerate ``~/.metasphere/agents/@*/`` as :class:`AgentRecord`s."""
-    paths = paths or resolve()
-    if not paths.agents.is_dir():
+def _list_agents_in_dir(agents_dir: Path, project: str = "") -> list[AgentRecord]:
+    """List agents from a single agents/ directory."""
+    if not agents_dir.is_dir():
         return []
     out: list[AgentRecord] = []
-    for entry in sorted(paths.agents.iterdir()):
+    for entry in sorted(agents_dir.iterdir()):
         if not entry.is_dir() or not entry.name.startswith("@"):
             continue
-        out.append(_agent_record_from_dir(entry))
+        out.append(_agent_record_from_dir(entry, project=project))
+    return out
+
+
+def list_agents(paths: Paths | None = None, project: str = "") -> list[AgentRecord]:
+    """Enumerate agents. Walks global + all project agent dirs.
+
+    If ``project`` is specified, returns only agents for that project.
+    """
+    paths = paths or resolve()
+    out: list[AgentRecord] = []
+
+    if project:
+        # Only look in the specified project
+        project_agents = paths.project_agents_dir(project)
+        out.extend(_list_agents_in_dir(project_agents, project=project))
+    else:
+        # Global agents
+        out.extend(_list_agents_in_dir(paths.agents))
+        # Walk all project agent dirs
+        if paths.projects.is_dir():
+            for proj_dir in sorted(paths.projects.iterdir()):
+                if not proj_dir.is_dir():
+                    continue
+                proj_agents = proj_dir / "agents"
+                if proj_agents.is_dir():
+                    proj_name = proj_dir.name
+                    out.extend(_list_agents_in_dir(proj_agents, project=proj_name))
     return out
 
 
@@ -390,6 +424,26 @@ def _capture_pane(session: str) -> str:
     return r.stdout if r.returncode == 0 else ""
 
 
+def _find_agent_dir(agent_id: str, paths: Paths) -> Optional[Path]:
+    """Search for an agent directory across global + all project dirs.
+
+    Returns the first match, preferring project-scoped agents.
+    """
+    # Check project agent dirs first
+    if paths.projects.is_dir():
+        for proj_dir in sorted(paths.projects.iterdir()):
+            if not proj_dir.is_dir():
+                continue
+            candidate = proj_dir / "agents" / agent_id
+            if candidate.is_dir():
+                return candidate
+    # Fall back to global
+    candidate = paths.agents / agent_id
+    if candidate.is_dir():
+        return candidate
+    return None
+
+
 def _wait_for_ready(session: str, timeout_s: int = _READY_TIMEOUT_S) -> bool:
     for _ in range(timeout_s):
         if _READY_MARKER in _capture_pane(session):
@@ -428,20 +482,26 @@ def wake_persistent(
     """
     paths = paths or resolve()
     agent_id = _normalize_name(agent_name)
-    agent_dir = paths.agent_dir(agent_id)
+
+    # Resolve agent directory: check project dirs first, then global
+    agent_dir = _find_agent_dir(agent_id, paths)
+    if agent_dir is None:
+        agent_dir = paths.agent_dir(agent_id)
     mission = agent_dir / "MISSION.md"
     if not mission.is_file():
         raise ValueError(
             f"{agent_id} is not a persistent agent (no MISSION.md at {mission})"
         )
 
+    project = _read_text(agent_dir / "project")
     scope_str = _read_text(agent_dir / "scope") or str(paths.repo)
-    session = session_name_for(agent_id)
+    rec = _agent_record_from_dir(agent_dir, project=project)
+    session = rec.session_name  # uses project-aware naming
 
     if session_alive(session):
         if first_task:
             _submit_via_bash(session, f"[task] {first_task}", paths)
-        return _agent_record_from_dir(agent_dir)
+        return rec
 
     # Cold start.
     _tmux_run("new-session", "-d", "-s", session, "-c", scope_str, check=False)
@@ -484,7 +544,7 @@ def wake_persistent(
     if first_task:
         _submit_via_bash(session, f"[task] {first_task}", paths)
 
-    return _agent_record_from_dir(agent_dir)
+    return _agent_record_from_dir(agent_dir, project=project)
 
 
 # ---------------------------------------------------------------------------

@@ -160,8 +160,12 @@ def seed_agent(
     if not agent_id.startswith("@"):
         agent_id = "@" + agent_id
 
-    agent_dir = paths.agent_dir(agent_id)
+    agent_dir = paths.resolve_agent_dir(agent_id, project_name)
     agent_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write project pointer so we can discover which project this agent belongs to
+    if project_name:
+        atomic_write_text(agent_dir / "project", project_name)
 
     variables = {
         "agent_id": agent_id,

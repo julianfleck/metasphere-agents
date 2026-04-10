@@ -449,25 +449,41 @@ def cmd_team(args: str, ctx: Context) -> "Reply | str":
         try:
             from metasphere import agents as _agents
             from metasphere.paths import resolve
-            items = _agents.list_agents(resolve())
+            # Optional project filter: /team status <project-name>
+            project_filter = sub_argv[1] if len(sub_argv) > 1 else ""
+            items = _agents.list_agents(resolve(), project=project_filter)
             persistent = [a for a in items if a.is_persistent]
             if not persistent:
-                return "No persistent agents."
+                return "No persistent agents." + (f" (project: {project_filter})" if project_filter else "")
             alive_count = sum(1 for a in persistent if _agents.session_alive(a.session_name))
-            lines = [f"<b>Team Status</b> ({alive_count}/{len(persistent)} alive)\n"]
+            title = f"<b>Team Status</b> ({alive_count}/{len(persistent)} alive)"
+            if project_filter:
+                title += f" — project: <b>{project_filter}</b>"
+            lines = [title + "\n"]
+
+            # Group by project
+            from collections import defaultdict
+            by_project: dict[str, list] = defaultdict(list)
             for a in persistent:
-                spec_file = a.agent_dir / "spec" if a.agent_dir else None
-                spec_label = ""
-                if spec_file and spec_file.is_file():
-                    spec_label = spec_file.read_text().strip()
-                alive = _agents.session_alive(a.session_name)
-                icon = "\U0001f7e2" if alive else "\u26aa"
-                status = a.status or "-"
-                lines.append(_DIVIDER)
-                lines.append(f"{icon}  <b>{a.name}</b>")
-                if spec_label:
-                    lines.append(f"       Spec: <b>{spec_label}</b>")
-                lines.append(f"       Status: {status}")
+                by_project[a.project or "(global)"].append(a)
+
+            for proj_name in sorted(by_project.keys()):
+                agents = by_project[proj_name]
+                if len(by_project) > 1:
+                    lines.append(f"\n\U0001f4c1 <b>{proj_name}</b>")
+                for a in agents:
+                    spec_file = a.agent_dir / "spec" if a.agent_dir else None
+                    spec_label = ""
+                    if spec_file and spec_file.is_file():
+                        spec_label = spec_file.read_text().strip()
+                    alive = _agents.session_alive(a.session_name)
+                    icon = "\U0001f7e2" if alive else "\u26aa"
+                    status = a.status or "-"
+                    lines.append(_DIVIDER)
+                    lines.append(f"{icon}  <b>{a.name}</b>")
+                    if spec_label:
+                        lines.append(f"       Spec: <b>{spec_label}</b>")
+                    lines.append(f"       Status: {status}")
             lines.append(_DIVIDER)
             return Reply("\n".join(lines), parse_mode="HTML")
         except Exception as e:
