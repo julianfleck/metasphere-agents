@@ -793,7 +793,6 @@ def _gc_ephemeral_agents(
         return []
 
     results: list[dict] = []
-    gc_log_dir = paths.logs / "agent-gc"
 
     for entry in sorted(paths.agents.iterdir()):
         if not entry.is_dir() or not entry.name.startswith("@"):
@@ -845,23 +844,22 @@ def _gc_ephemeral_agents(
                 except (OSError, UnicodeDecodeError):
                     pass
 
-        # Write preserved output to GC log
+        # Preserve output under logs/agents/<agent-name>.log
         if preserved and not dry_run:
-            gc_log_dir.mkdir(parents=True, exist_ok=True)
-            today = _dt.date.today().isoformat()
-            gc_log = gc_log_dir / f"{today}.log"
-            with open(gc_log, "a", encoding="utf-8") as f:
-                f.write(f"\n{'='*60}\n")
-                f.write(f"GC: {agent_name} at {_utcnow().isoformat()}\n")
+            agent_log_dir = paths.logs / "agents"
+            agent_log_dir.mkdir(parents=True, exist_ok=True)
+            agent_log = agent_log_dir / f"{agent_name}.log"
+            with open(agent_log, "a", encoding="utf-8") as f:
+                f.write(f"# {agent_name} — {_utcnow().isoformat()}\n")
                 f.write(f"Status: {status}\n")
-                f.write(f"Reason: {'completed' if is_complete else 'dead (no session/pid)'}\n")
+                f.write(f"Reason: {'completed' if is_complete else 'dead (no session/pid)'}\n\n")
                 for fname, content in preserved.items():
-                    f.write(f"\n--- {fname} ---\n")
-                    # Cap each file at 2KB to avoid bloat
+                    f.write(f"--- {fname} ---\n")
                     f.write(content[:2048])
                     if len(content) > 2048:
                         f.write(f"\n... (truncated, {len(content)} bytes total)\n")
-                f.write(f"\n{'='*60}\n")
+                    f.write("\n")
+                f.write("\n")
 
         # Delete the directory
         if not dry_run:
