@@ -89,8 +89,31 @@ def _cmd_list(rest: list[str], paths) -> int:
     if not rows:
         print("(no projects)")
         return 0
-    for p in rows:
-        print(f"{p.name}\t{p.status}\t{p.path}")
+
+    # Separate initialized from registered-only
+    initialized = [p for p in rows if p.status != "missing"]
+    registered = [p for p in rows if p.status == "missing"]
+
+    if initialized:
+        name_w = max(len(p.name) for p in initialized)
+        for p in initialized:
+            goal = ""
+            if hasattr(p, "goal") and p.goal:
+                goal = f"  {p.goal[:60]}"
+            members = ""
+            if hasattr(p, "members") and p.members:
+                members = f"  [{len(p.members)} members]"
+            print(f"  {p.name:<{name_w}}  {p.status:<10}{members}{goal}")
+
+    if registered:
+        if initialized:
+            print()
+        print(f"  ({len(registered)} registered but not initialized — "
+              f"run `metasphere project init <path>` to set up)")
+        if "--all" in rest or "-a" in rest:
+            for p in registered:
+                print(f"    {p.name}  {p.path}")
+
     return 0
 
 

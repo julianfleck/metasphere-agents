@@ -550,11 +550,25 @@ def list_projects(*, paths: Optional[Paths] = None) -> list[Project]:
     paths = paths or resolve()
     out: list[Project] = []
     for entry in _load_registry(paths):
+        name = entry.get("name", "")
         ep = Path(entry.get("path", ""))
+        # Try loading from the repo directory first, then from
+        # ~/.metasphere/projects/<name>/ (the canonical location for
+        # projects created via `metasphere project new`).
         proj = load_project(ep)
         if proj is None:
+            # Projects created via `metasphere project new` store their
+            # project.json directly at ~/.metasphere/projects/<name>/project.json
+            # (not under a .metasphere/ subdirectory). Try loading directly.
+            meta_proj_file = paths.projects / name / "project.json"
+            if meta_proj_file.is_file():
+                data = read_json(meta_proj_file, default=None)
+                if data:
+                    proj = Project.from_dict(data)
+                    proj.path = proj.path or str(ep)
+        if proj is None:
             out.append(Project(
-                name=entry.get("name", ""),
+                name=name,
                 path=entry.get("path", ""),
                 status="missing",
             ))
