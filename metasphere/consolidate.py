@@ -36,6 +36,7 @@ from __future__ import annotations
 import datetime as _dt
 import re
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -113,9 +114,9 @@ def build_job() -> _sched.Job:
         cron_expr=JOB_CRON,
         tz="UTC",
         payload_kind="command",
-        payload_message="python3 -m metasphere.cli.main consolidate run",
-        command="python3 -m metasphere.cli.main consolidate run",
-        full_command="python3 -m metasphere.cli.main consolidate run",
+        payload_message=f"{sys.executable} -m metasphere.cli.main consolidate run",
+        command=f"{sys.executable} -m metasphere.cli.main consolidate run",
+        full_command=f"{sys.executable} -m metasphere.cli.main consolidate run",
     )
 
 

@@ -165,7 +165,7 @@ When a session restarts, the watchdog automatically injects a continuation promp
 metasphere schedule add \
   --name daily-summary \
   --cron "0 9 * * *" \
-  --command "python3 -m metasphere.cli.main consolidate run"
+  --command "metasphere consolidate run"
 
 metasphere schedule list           # Show scheduled jobs
 metasphere schedule remove <name>  # Remove a schedule
