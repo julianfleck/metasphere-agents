@@ -58,4 +58,4 @@ The rest are user-facing CLIs and helpers:
   Claude responds → captured → sent back to Telegram via gateway
 ```
 
-Two installations of this exact stack run in parallel — one on **wintermute** (mac, your laptop) and one on **spot** (linux, inside the openclaw nspawn container on data.basicbold.de). They don't share messages or tasks; they share **memory** via CAM (Collective Agent Memory), which syncs across machines. Each installation has its own Telegram bot token and thus its own personality/conversation thread.
+Multiple installations of this stack can run in parallel on different hosts. They don't share messages or tasks; they can share **memory** via CAM (Collective Agent Memory), which syncs across machines. Each installation has its own Telegram bot token and thus its own personality/conversation thread.

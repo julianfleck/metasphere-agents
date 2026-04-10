@@ -29,9 +29,9 @@
   "path": "<repo-root>",
   "created": "2026-04-07T22:00:00Z",
   "status": "active",
-  "goal": "Self-improving multi-agent harness; Python rewrite of openclaw, dogfooding the harness on itself.",
+  "goal": "Self-improving multi-agent harness, dogfooding the harness on itself.",
   "repo": {
-    "url": "git@github.com:julian/metasphere-agents.git",
+    "url": "git@github.com:youruser/metasphere-agents.git",
     "default_branch": "main",
     "managed_by_metasphere": true
   },
@@ -41,7 +41,7 @@
     {"id": "@cli-unify",  "role": "developer", "persistent": false}
   ],
   "links": {
-    "github_issues": "https://github.com/julian/metasphere-agents/issues",
+    "github_issues": "https://github.com/youruser/metasphere-agents/issues",
     "linear_team": null
   }
 }

@@ -39,4 +39,4 @@ If you find yourself adding more than ~5 items to TaskCreate, stop and migrate t
 
 ## Cross-host
 
-Same as messages: tasks are **local to a host**. Each metasphere installation has its own task tree. Don't try to coordinate work between wintermute and spot through tasks — use Telegram (human-mediated) or CAM (shared learnings). The two installations evolve in parallel.
+Tasks are **local to a host**. Each metasphere installation has its own task tree. Don't try to coordinate work between hosts through tasks — use Telegram (human-mediated) or CAM (shared learnings). Installations evolve in parallel.

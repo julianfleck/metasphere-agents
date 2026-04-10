@@ -126,7 +126,7 @@ def cmd_tasks(args: str, ctx: Context) -> "Reply | str":
         os.environ["METASPHERE_PLAIN"] = "1"
         os.environ["METASPHERE_HTML"] = "1"
         # Pin scope to the repo root so the gateway daemon's cwd
-        # (typically /home/openclaw, NOT inside the repo) doesn't
+        # (typically the user's home, NOT inside the repo) doesn't
         # cause an empty scope and "no tasks" output.
         repo_root = os.environ.get("METASPHERE_REPO_ROOT")
         if repo_root:
@@ -287,11 +287,15 @@ def cmd_project(args: str, ctx: Context) -> str:
 
 
 def cmd_spot(args: str, ctx: Context) -> str:
+    """Check status of a remote host. Configure METASPHERE_REMOTE_HOST."""
+    host = os.environ.get("METASPHERE_REMOTE_HOST")
+    if not host:
+        return "(METASPHERE_REMOTE_HOST not set)"
+    port = os.environ.get("METASPHERE_REMOTE_PORT", "22")
     return _run(
         [
-            "ssh", "-p", "2323", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
-            "data.basicbold.de",
-            "sudo machinectl status openclaw 2>/dev/null | head -20",
+            "ssh", "-p", port, "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
+            host, "metasphere status",
         ],
         timeout=10,
     )
@@ -336,11 +340,7 @@ def cmd_schedule(args: str, ctx: Context) -> str:
     except Exception:
         # Fallback to the entry-point binary
         return _run(
-            [
-                "/home/openclaw/.openclaw/workspace/repos/rage-substrate/.venv/bin/metasphere",
-                "schedule",
-                *sub_argv,
-            ],
+            ["metasphere", "schedule", *sub_argv],
             timeout=10,
         )
 

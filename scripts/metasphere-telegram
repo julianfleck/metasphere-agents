@@ -323,10 +323,16 @@ Or chat directly with @orchestrator"
             ;;
 
         /spot*)
-            local spot_output
-            spot_output=$(ssh -p 2323 -o ConnectTimeout=5 -o BatchMode=yes data.basicbold.de \
-                "sudo machinectl status openclaw 2>/dev/null | head -20 || echo 'spot unreachable'" 2>&1 || echo "ssh failed: $?")
-            reply_code "Spot" "$spot_output"
+            local host="${METASPHERE_REMOTE_HOST:-}"
+            local port="${METASPHERE_REMOTE_PORT:-22}"
+            if [ -z "$host" ]; then
+                reply_text "METASPHERE_REMOTE_HOST not set"
+            else
+                local spot_output
+                spot_output=$(ssh -p "$port" -o ConnectTimeout=5 -o BatchMode=yes "$host" \
+                    "metasphere status 2>/dev/null || echo 'unreachable'" 2>&1 || echo "ssh failed: $?")
+                reply_code "Remote" "$spot_output"
+            fi
             ;;
 
         /project*|/p\ *|/p)

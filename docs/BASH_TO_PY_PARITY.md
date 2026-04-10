@@ -1,8 +1,8 @@
 # Bash → Python Cutover Parity Matrix
 
-Live binaries are in `/home/openclaw/.metasphere/bin/`. The Python entry point
-is `/home/openclaw/.openclaw/workspace/repos/rage-substrate/.venv/bin/metasphere`
-(installed via `pyproject.toml`). Dispatcher at `metasphere/cli/main.py`.
+Live binaries are in `~/.metasphere/bin/`. The Python entry point
+is the `metasphere` console script (installed via `pyproject.toml`).
+Dispatcher at `metasphere/cli/main.py`.
 
 | Live binary | Current impl | Python equivalent | Parity | Gap / action |
 |---|---|---|---|---|

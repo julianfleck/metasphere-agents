@@ -1,6 +1,6 @@
 # Auto-Updates
 
-Hosts running metasphere (spot, bean, future) keep themselves current with
+Hosts running metasphere keep themselves current with
 `origin/main` without manual intervention. The mechanism is:
 
 1. A config file (`~/.metasphere/config/auto-update.env`) controls behavior.
@@ -67,12 +67,12 @@ The cron job dispatches `metasphere update --quiet`, which:
 | `~/.metasphere/state/auto-update.state.json` | Last run timestamp + last `UpdateResult` (ok, hashes, commit count, reason). |
 | `~/.metasphere/schedule/jobs.json` | Cron registry. The auto-update entry has `id=metasphere-auto-update`. |
 
-## Bean VM example
+## Remote host example
 
-Once wintermute finishes installing metasphere on the bean VM:
+After installing metasphere on a remote host:
 
 ```bash
-ssh bean
+ssh myhost
 metasphere update --enable
 metasphere update --register-job   # idempotent; install.sh already does this
 metasphere update --status

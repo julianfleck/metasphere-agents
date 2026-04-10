@@ -3,8 +3,12 @@
 # Runtime state — fractal messages and tasks accumulate as files
 .messages/inbox/
 .messages/outbox/
-# Backup file from earlier in the session
-scripts/metasphere-gateway.bak
+.messages/archive/
+.tasks/active/
+.tasks/completed/
+.tasks/archive/
+# Backup files
+*.bak
 
 # Python build/cache artifacts (metasphere/ Python port)
 __pycache__/

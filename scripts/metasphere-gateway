@@ -1,2 +1,2 @@
 #!/bin/bash
-exec /home/openclaw/projects/rage-substrate/.venv/bin/metasphere gateway "$@"
+exec metasphere gateway "$@"
