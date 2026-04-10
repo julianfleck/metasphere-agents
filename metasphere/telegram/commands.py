@@ -420,6 +420,41 @@ def cmd_team(args: str, ctx: Context) -> "Reply | str":
     if sub == "specs":
         return cmd_specs("", ctx)
 
+    if sub in ("assign", "dispatch"):
+        # /team assign @agent "task description" [--project name]
+        if len(sub_argv) < 3:
+            return "Usage: /team assign agent-name \"task description\" [--project name]"
+        target_agent = sub_argv[1]
+        if not target_agent.startswith("@"):
+            target_agent = "@" + target_agent
+        task_title = sub_argv[2]
+        project_name = ""
+        if "--project" in sub_argv:
+            idx = sub_argv.index("--project")
+            if idx + 1 < len(sub_argv):
+                project_name = sub_argv[idx + 1]
+        try:
+            from metasphere.tasks import dispatch_task
+            result = dispatch_task(
+                title=task_title,
+                agent_id=target_agent,
+                project=project_name,
+            )
+            task = result["task"]
+            agent = result["agent"]
+            agent_status = "woken" if agent else "not persistent"
+            lines = [
+                f"\u2705 Task dispatched",
+                f"       Task: {task.id}",
+                f"       Agent: {target_agent.lstrip('@')} ({agent_status})",
+                f"       Title: {task_title}",
+            ]
+            if project_name:
+                lines.append(f"       Project: {project_name}")
+            return Reply("\n".join(lines), parse_mode="HTML")
+        except Exception as e:
+            return f"Dispatch failed: {e}"
+
     if sub == "seed":
         if len(sub_argv) < 3:
             return "Usage: /team seed &lt;spec-name&gt; @agent-name [--project name]"

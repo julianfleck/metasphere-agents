@@ -257,6 +257,99 @@ def move_task_project(task_id: str, project: str, repo_root: Path) -> Task:
                        note=f"Moved to project {project}")
 
 
+def dispatch_task(
+    title: str,
+    agent_id: str,
+    *,
+    priority: str = "!normal",
+    project: str = "",
+    scope: Path | None = None,
+    description: str = "",
+) -> dict:
+    """Create a task, wake the assigned agent, and send a !task message.
+
+    This is the single entry point for delegating work to a project agent.
+    Connects the task system, agent lifecycle, and message system in one
+    atomic action.
+
+    Returns a dict with keys: task, agent, message_id.
+    """
+    from . import agents as _agents
+    from . import messages as _msg
+    from .events import log_event
+    from .paths import resolve
+
+    paths = resolve()
+    if not agent_id.startswith("@"):
+        agent_id = "@" + agent_id
+
+    # Resolve scope: project path if specified, else repo root
+    if scope is None:
+        if project:
+            # Try to find the project's path
+            try:
+                from . import project as _proj
+                proj = _proj.load_project(project, paths=paths)
+                scope = Path(proj.path)
+            except Exception:
+                scope = paths.repo
+        else:
+            scope = paths.repo
+
+    # 1. Create the task
+    task = create_task(
+        title=title,
+        priority=priority,
+        scope=scope,
+        repo_root=paths.repo,
+        assigned_to=agent_id,
+        project=project or None,
+    )
+
+    # Append description to task body if provided
+    if description:
+        update_task(task.id, paths.repo, note=f"Brief: {description}")
+
+    # 2. Wake the agent if dormant
+    agent_record = None
+    try:
+        agent_record = _agents.wake_persistent(agent_id, paths=paths)
+    except ValueError:
+        pass  # Not a persistent agent, or no MISSION.md — that's ok
+
+    # 3. Send a !task message referencing the task ID
+    message_body = f"[task:{task.id}] {title}"
+    if description:
+        message_body += f"\n\n{description}"
+    message_id = ""
+    try:
+        msg = _msg.send_message(
+            target=agent_id,
+            label="task",
+            body=message_body,
+            from_agent="@orchestrator",
+        )
+        message_id = getattr(msg, "id", "")
+    except Exception:
+        pass  # Message send failure shouldn't block task creation
+
+    # 4. Log the event
+    log_event(
+        "task.dispatch",
+        f"Dispatched '{title}' to {agent_id} (task:{task.id})",
+        agent="@orchestrator",
+        paths=paths,
+    )
+
+    return {
+        "task": task,
+        "agent": agent_record,
+        "message_id": message_id,
+        "agent_id": agent_id,
+        "project": project,
+    }
+
+
 def _find_task_file(task_id: str, repo_root: Path, *, include_completed: bool = True) -> Path | None:
     """Walk every ``.tasks/`` under ``repo_root`` looking for ``<task_id>.md``.
 
