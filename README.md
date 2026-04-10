@@ -1,18 +1,42 @@
 # Metasphere Agents
 
-An autonomous agent harness for Claude Code. Your agent runs 24/7, you talk to it from Telegram — it thinks, works, spawns helpers, and reports back. You can interrupt it mid-thought, redirect it, or just watch it work.
+A hackable autonomous agent harness built around Claude Code. Your agent runs 24/7, you talk to it from Telegram — it thinks, works, spawns helpers, and reports back. You can interrupt it mid-thought, redirect it, or just watch it work.
+
+If you already use Claude Code and like its ecosystem — skills, hooks, MCP servers, IDE integrations — but want your agents to run persistently, be reachable from your phone, and operate with more structure than Claude Code's remote agents offer, this is the missing layer. You get Claude Code's reliability and tool ecosystem with a controllable harness around it: task management, multi-agent coordination, scheduled automation, and transparent state you can inspect and modify.
 
 ## What it does
 
 - **Always-on agent** — runs in tmux, survives disconnects, restarts itself after crashes. You don't babysit it.
 - **Telegram as your interface** — message your agent from your phone. Ask questions, give tasks, check on progress. It responds in real-time.
-- **Interruptible** — unlike batch-mode agents, you can send a message while the agent is working and it will see it on its next turn. No more waiting for a long task to finish before you can course-correct.
+- **Interruptible** — you can send a message while the agent is working and it will see it on its next turn. No more waiting for a long task to finish before you can course-correct.
 - **Multi-agent** — break complex work into child agents that run in parallel with sandboxed permissions. They report back when done.
 - **Projects with transparent tasks** — every task is a markdown file in the project directory. You can read them, edit them, grep them. Nothing is hidden in a database.
-- **Scheduled automation** — cron-style jobs for recurring work (market scans, memory consolidation, research monitors)
+- **Scheduled automation** — cron-style jobs for recurring work (health checks, memory consolidation, periodic reports)
 - **Agent memory** — persistent memory across sessions via daily logs, learnings files, and searchable memory index
+- **Your Claude Code setup, preserved** — skills, slash commands, MCP servers, hooks, keybindings — everything you've configured in Claude Code works inside your agents. The harness wraps Claude Code, it doesn't replace it.
 
 ## Installation
+
+### Prerequisites
+
+Install [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and authenticate:
+
+```bash
+npm install -g @anthropic-ai/claude-code
+claude login
+```
+
+You also need `tmux`, `Python 3.11+`, and `jq`:
+
+```bash
+# macOS
+brew install tmux jq python@3.11
+
+# Debian/Ubuntu
+sudo apt install tmux jq python3.11
+```
+
+### Install Metasphere
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/julianfleck/metasphere-agents/main/install.sh | bash
@@ -25,8 +49,6 @@ git clone https://github.com/julianfleck/metasphere-agents.git
 cd metasphere-agents
 ./install.sh
 ```
-
-Requires: Claude Code CLI (authenticated), tmux, Python 3.11+, jq.
 
 ## Quick Start
 
