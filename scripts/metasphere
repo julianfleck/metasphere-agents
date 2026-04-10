@@ -789,20 +789,22 @@ case "${1:-}" in
             ok "Scripts updated"
         fi
 
-        # Update skills + commands in ~/.claude/
+        # Update skills + commands in ~/.claude/ (symlinks into repo)
         if [[ -d "$install_source/skills" ]]; then
             mkdir -p "$HOME/.claude/skills"
             for _sd in "$install_source/skills"/*/; do
                 [[ -f "$_sd/SKILL.md" ]] || continue
                 _sn=$(basename "$_sd")
-                [[ -f "$HOME/.claude/skills/$_sn/.user-customized" ]] && continue
-                rm -rf "$HOME/.claude/skills/$_sn"
-                cp -r "$_sd" "$HOME/.claude/skills/$_sn"
+                [[ -d "$HOME/.claude/skills/$_sn" && ! -L "$HOME/.claude/skills/$_sn" && -f "$HOME/.claude/skills/$_sn/.user-customized" ]] && continue
+                ln -sfn "$(cd "$_sd" && pwd)" "$HOME/.claude/skills/$_sn"
             done
         fi
         if [[ -d "$install_source/.claude/commands" ]]; then
             mkdir -p "$HOME/.claude/commands"
-            cp "$install_source/.claude/commands"/*.md "$HOME/.claude/commands/" 2>/dev/null || true
+            for _cf in "$install_source/.claude/commands"/*.md; do
+                [[ -f "$_cf" ]] || continue
+                ln -sfn "$(cd "$(dirname "$_cf")" && pwd)/$(basename "$_cf")" "$HOME/.claude/commands/$(basename "$_cf")"
+            done
         fi
 
         # Re-pip-install the python package if pyproject.toml or any

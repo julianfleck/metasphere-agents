@@ -1068,33 +1068,35 @@ install_skills() {
     local commands_dst="$HOME/.claude/commands"
     local installed=0
 
-    # Skills: copy each skill directory from repo to ~/.claude/skills/
+    # Skills: symlink each skill directory into ~/.claude/skills/
+    # Symlinks stay in sync with git pull — no copy-on-update needed.
     if [[ -d "$skills_src" ]]; then
         mkdir -p "$skills_dst"
         for skill_dir in "$skills_src"/*/; do
             [[ -f "$skill_dir/SKILL.md" ]] || continue
             local name=$(basename "$skill_dir")
-            # Don't overwrite user-customized skills
-            if [[ -d "$skills_dst/$name" && -f "$skills_dst/$name/.user-customized" ]]; then
+            local target=$(cd "$skill_dir" && pwd)
+            # Don't overwrite user-customized skills (real dir, not symlink)
+            if [[ -d "$skills_dst/$name" && ! -L "$skills_dst/$name" && -f "$skills_dst/$name/.user-customized" ]]; then
                 continue
             fi
-            rm -rf "$skills_dst/$name"
-            cp -r "$skill_dir" "$skills_dst/$name"
+            ln -sfn "$target" "$skills_dst/$name"
             ((installed++))
         done
     fi
 
-    # Commands: copy slash command .md files to ~/.claude/commands/
+    # Commands: symlink slash command .md files into ~/.claude/commands/
     if [[ -d "$commands_src" ]]; then
         mkdir -p "$commands_dst"
         for cmd_file in "$commands_src"/*.md; do
             [[ -f "$cmd_file" ]] || continue
-            cp "$cmd_file" "$commands_dst/"
+            local cmd_target=$(cd "$(dirname "$cmd_file")" && pwd)/$(basename "$cmd_file")
+            ln -sfn "$cmd_target" "$commands_dst/$(basename "$cmd_file")"
             ((installed++))
         done
     fi
 
-    [[ $installed -gt 0 ]] && ok "Installed $installed skills/commands to ~/.claude/"
+    [[ $installed -gt 0 ]] && ok "Linked $installed skills/commands into ~/.claude/"
 }
 
 main() {
