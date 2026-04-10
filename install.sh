@@ -330,6 +330,24 @@ migrate_openclaw() {
     echo "Found existing OpenClaw installation at $OPENCLAW_DIR"
     echo
 
+    # Show what we found before asking
+    echo "  Detected:"
+    [[ -d "$OPENCLAW_DIR/workspace" ]] && echo "    - Workspace directory" || echo "    - No workspace directory"
+    if [[ -f "$OPENCLAW_DIR/openclaw.json" ]]; then
+        echo "    - openclaw.json config file"
+        if $OPENCLAW_HAS_TELEGRAM; then
+            local preview_token
+            preview_token=$(jq -r '.channels.telegram.botToken // .telegram.botToken // .TELEGRAM_BOT_TOKEN // .env.TELEGRAM_BOT_TOKEN // empty' "$OPENCLAW_DIR/openclaw.json" 2>/dev/null)
+            if [[ -n "$preview_token" && "$preview_token" != "null" ]]; then
+                echo "    - Telegram token: ${preview_token:0:10}...${preview_token: -4}"
+            fi
+        fi
+    else
+        echo "    - No openclaw.json (token will need to be entered manually)"
+    fi
+    [[ -f "$OPENCLAW_DIR/memory/main.sqlite" ]] && echo "    - Memory database"
+    echo
+
     if $INTERACTIVE; then
         read -p "Migrate configuration from OpenClaw? [Y/n] " -n 1 -r
         echo
@@ -339,15 +357,9 @@ migrate_openclaw() {
         fi
     fi
 
-    # Run migration script if available
-    if [[ -x "$METASPHERE_DIR/bin/metasphere-migrate" ]]; then
-        "$METASPHERE_DIR/bin/metasphere-migrate" run
-    elif [[ -x "$SCRIPT_DIR/scripts/metasphere-migrate" ]]; then
-        "$SCRIPT_DIR/scripts/metasphere-migrate" run
-    else
-        # Inline migration for bootstrap
-        migrate_openclaw_inline
-    fi
+    # Inline migration only — don't shell out to metasphere-migrate which
+    # may have different guards. Keep everything in one place.
+    migrate_openclaw_inline
 
     # Ask about disabling OpenClaw
     if $INTERACTIVE; then
@@ -375,17 +387,23 @@ migrate_openclaw_inline() {
     info "Migrating OpenClaw configuration..."
 
     # Extract Telegram token (canonical openclaw schema: channels.telegram.botToken)
+    # Guard: only attempt if openclaw.json exists AND contains a token
     if [[ -f "$OPENCLAW_DIR/openclaw.json" ]] && $OPENCLAW_HAS_TELEGRAM; then
         local token=""
-        token=$(jq -r '.channels.telegram.botToken // .telegram.botToken // .TELEGRAM_BOT_TOKEN // .env.TELEGRAM_BOT_TOKEN // empty' "$OPENCLAW_DIR/openclaw.json" 2>/dev/null)
+        token=$(jq -r '.channels.telegram.botToken // .telegram.botToken // .TELEGRAM_BOT_TOKEN // .env.TELEGRAM_BOT_TOKEN // empty' "$OPENCLAW_DIR/openclaw.json" 2>/dev/null || echo "")
 
-        if [[ -n "$token" && "$token" != "null" ]]; then
+        # Validate: token must look like a Telegram bot token (digits:alphanum)
+        if [[ -n "$token" && "$token" != "null" && "$token" =~ ^[0-9]+: ]]; then
             mkdir -p "$METASPHERE_DIR/config"
             echo "TELEGRAM_BOT_TOKEN=$token" > "$METASPHERE_DIR/config/telegram.env"
             chmod 600 "$METASPHERE_DIR/config/telegram.env"
             ok "Migrated Telegram token from OpenClaw"
             TELEGRAM_BOT_TOKEN="$token"  # Set for later verification
+        else
+            warn "Found openclaw.json but token looks invalid (skipping)"
         fi
+    elif [[ ! -f "$OPENCLAW_DIR/openclaw.json" ]]; then
+        info "No openclaw.json found — Telegram token will be configured manually"
     fi
 
     # Register openclaw workspace as live legacy context source
@@ -562,62 +580,87 @@ disable_openclaw_gateway() {
 # =============================================================================
 
 setup_telegram() {
-    info "Configuring Telegram..."
+    echo
+    echo "Telegram Bot Setup"
+    echo "------------------"
 
     local token_file="$METASPHERE_DIR/config/telegram.env"
+    local existing_token=""
+    local verified_bot=""
 
     # Check if token already set (possibly from migration)
     if [[ -f "$token_file" ]] && grep -q "TELEGRAM_BOT_TOKEN=" "$token_file"; then
-        # Verify the token
         source "$token_file"
-        local bot_info=$(curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getMe" 2>/dev/null | jq -r '.result.username // empty')
-        if [[ -n "$bot_info" ]]; then
-            ok "Telegram configured (bot: @$bot_info)"
-            return
+        existing_token="$TELEGRAM_BOT_TOKEN"
+    fi
+
+    # Also check environment variable
+    if [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -z "$existing_token" ]]; then
+        existing_token="$TELEGRAM_BOT_TOKEN"
+    fi
+
+    # If we have a token, verify it
+    if [[ -n "$existing_token" ]]; then
+        echo "  Found token: ${existing_token:0:10}...${existing_token: -4}"
+        verified_bot=$(curl -s "https://api.telegram.org/bot$existing_token/getMe" 2>/dev/null | jq -r '.result.username // empty')
+        if [[ -n "$verified_bot" ]]; then
+            ok "Token valid (bot: @$verified_bot)"
+            echo "TELEGRAM_BOT_TOKEN=$existing_token" > "$token_file"
+            chmod 600 "$token_file"
+
+            if $INTERACTIVE; then
+                read -p "  Keep this token? [Y/n] " -n 1 -r
+                echo
+                if [[ $REPLY =~ ^[Nn]$ ]]; then
+                    existing_token=""
+                    verified_bot=""
+                else
+                    return
+                fi
+            else
+                return
+            fi
         else
-            warn "Telegram token invalid - reconfiguring"
+            warn "Token found but invalid (API verification failed)"
+            existing_token=""
         fi
     fi
 
-    # Check environment variable
-    if [[ -n "$TELEGRAM_BOT_TOKEN" ]]; then
-        echo "TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN" > "$token_file"
-        chmod 600 "$token_file"
-        ok "Telegram token set from environment"
-        return
-    fi
-
-    # Interactive prompt
+    # No valid token — prompt user
     if $INTERACTIVE; then
         echo
-        echo "Telegram Bot Setup"
-        echo "------------------"
-        echo "1. Message @BotFather on Telegram"
-        echo "2. Send /newbot and follow instructions"
-        echo "3. Copy the token (format: 123456789:ABCdefGHI...)"
+        echo "  Metasphere uses a Telegram bot for the human interface."
+        echo "  To set one up:"
+        echo "    1. Message @BotFather on Telegram"
+        echo "    2. Send /newbot and follow instructions"
+        echo "    3. Copy the token (format: 123456789:ABCdefGHI...)"
         echo
-        read -p "Enter bot token (or press Enter to skip): " token
+        read -p "  Enter bot token (or press Enter to skip): " token
 
         if [[ -n "$token" ]]; then
+            # Validate format before saving
+            if [[ ! "$token" =~ ^[0-9]+: ]]; then
+                warn "Token format looks wrong (expected 123456789:ABC...). Saving anyway."
+            fi
             echo "TELEGRAM_BOT_TOKEN=$token" > "$token_file"
             chmod 600 "$token_file"
             ok "Telegram token saved"
 
             # Verify token
-            local bot_info=$(curl -s "https://api.telegram.org/bot$token/getMe" | jq -r '.result.username // empty')
+            local bot_info
+            bot_info=$(curl -s "https://api.telegram.org/bot$token/getMe" 2>/dev/null | jq -r '.result.username // empty')
             if [[ -n "$bot_info" ]]; then
                 ok "Bot verified: @$bot_info"
-                echo
-                echo "Send a message to @$bot_info to complete setup"
+                echo "  Send a message to @$bot_info to complete setup"
             else
-                warn "Could not verify token - check if correct"
+                warn "Could not verify token — check if correct"
             fi
         else
             warn "Skipped Telegram setup"
-            echo "    Run later: metasphere telegram setup"
+            echo "  Run later: metasphere config telegram <token>"
         fi
     else
-        warn "No TELEGRAM_BOT_TOKEN - skipping Telegram"
+        warn "No TELEGRAM_BOT_TOKEN — set via environment or run installer interactively"
     fi
 }
 
