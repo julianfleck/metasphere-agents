@@ -16,6 +16,7 @@ state. ``run_watchdog`` composes them.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -165,12 +166,100 @@ def check_safety_hooks_confirmation(
     return True
 
 
+# Grace period after restart before injecting the continuation prompt.
+# Claude Code needs a few seconds to start up, load CLAUDE.md, and
+# display the initial prompt.
+_RESTART_GRACE_S = 8
+# If the marker is older than this, something went wrong — clear it
+# rather than injecting into a session that's been running for ages.
+_RESTART_STALE_S = 120
+
+
+def check_restart_pending(
+    session_name: str = SESSION_NAME,
+    paths: Optional[Paths] = None,
+    *,
+    now: Optional[int] = None,
+) -> bool:
+    """Detect a restart-pending marker and inject a continuation prompt
+    into the fresh Claude instance once the grace period has elapsed.
+
+    The marker is written by ``restart_session()`` before it sends
+    ``/exit``. After ``_RESTART_GRACE_S`` seconds (enough for the
+    respawn loop to start a new Claude process), we inject a wake-up
+    message. The context hook fires on that message, giving the new
+    instance its full persona/tasks/messages context.
+
+    Returns True if a wake-up message was injected.
+    """
+    paths = paths or resolve()
+    marker = paths.state / "restart_pending.json"
+    if not marker.exists():
+        return False
+
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        # Corrupt marker — clean up.
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+        return False
+
+    ts = data.get("timestamp", 0)
+    reason = data.get("reason", "unknown")
+    now = now if now is not None else int(time.time())
+    age = now - ts
+
+    if age > _RESTART_STALE_S:
+        # Stale marker — session has been running long past the restart.
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+        return False
+
+    if age < _RESTART_GRACE_S:
+        # Too soon — Claude may not be ready yet.
+        return False
+
+    if not session_alive(session_name):
+        return False
+
+    # Grace period elapsed, session is alive — inject the wake-up.
+    try:
+        marker.unlink()
+    except OSError:
+        pass
+
+    from ..telegram.inject import submit_to_tmux as _submit
+
+    wake_msg = (
+        f"[session restarted] reason: {reason}. "
+        "Check messages and tasks, resume where you left off."
+    )
+    success = _submit("system", wake_msg, session=session_name)
+
+    try:
+        log_event(
+            "supervisor.restart_wake",
+            f"Injected continuation prompt after restart ({reason})",
+            agent="@daemon-supervisor",
+            paths=paths,
+        )
+    except Exception:
+        pass
+
+    return success
+
+
 def run_watchdog(paths: Optional[Paths] = None) -> None:
     """Run all stuck-prompt checks. Failures of one check do not abort
     the others. This is the only watchdog entry point the daemon calls.
     """
     paths = paths or resolve()
-    for fn in (check_stuck_paste, check_safety_hooks_confirmation):
+    for fn in (check_stuck_paste, check_safety_hooks_confirmation, check_restart_pending):
         try:
             fn(SESSION_NAME, paths)
         except Exception as e:  # pragma: no cover - defensive

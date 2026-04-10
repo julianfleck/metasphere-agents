@@ -37,4 +37,5 @@ That helper sends the `/exit` keystroke to the `metasphere-orchestrator` tmux se
 
 - This is the canonical way to clear the "harness drift detected" warning that appears at the top of every heartbeat when `~/.metasphere/state/harness_hash_baseline` is stale.
 - The new REPL inherits the persistent tmux session, the offset file, the message inbox, and all spawned children. Only the in-memory Claude state (current conversation, working memory) is lost.
+- **Auto-continuation:** `restart_session()` writes a `restart_pending.json` marker to `~/.metasphere/state/`. The gateway watchdog detects this marker after an 8-second grace period and injects a continuation prompt into the fresh Claude instance, so the new session picks up automatically without manual intervention.
 - If the restart hangs (gateway dead, no respawn loop), the operator may need to start the gateway manually: `systemctl --user restart metasphere-gateway`.

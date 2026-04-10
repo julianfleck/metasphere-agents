@@ -9,6 +9,7 @@ historically used the bare name. We preserve that for compatibility.)
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import time
@@ -38,10 +39,23 @@ SESSION_NAME = "metasphere-orchestrator"
 # The respawn loop the bash gateway puts in the pane. When the agent runs
 # /exit, claude returns to bash, the loop sleeps, and a fresh REPL starts —
 # picking up the latest harness automatically.
+# The respawn loop writes a restart_pending marker whenever claude exits,
+# so the watchdog can inject a continuation prompt into the fresh instance.
+# The marker is a JSON file with timestamp + reason. If restart_session()
+# already wrote one (programmatic restart), the loop overwrites it with a
+# fresh timestamp — harmless, and ensures the grace period resets to when
+# the new process actually starts.
 _RESPAWN_CMD = (
-    "exec bash -c 'while true; do claude --dangerously-skip-permissions; "
+    "exec bash -c '"
+    'STATE_DIR="$HOME/.metasphere/state"; '
+    "mkdir -p \"$STATE_DIR\"; "
+    "while true; do "
+    "claude --dangerously-skip-permissions; "
     'ec=$?; echo "[gateway] claude exited ($ec), respawning in 1s..."; '
-    "sleep 1; done'"
+    'echo "{\\\"timestamp\\\": $(date +%s), \\\"reason\\\": \\\"claude exited (code $ec)\\\"}" '
+    '> "$STATE_DIR/restart_pending.json"; '
+    "sleep 1; "
+    "done'"
 )
 
 
@@ -125,6 +139,11 @@ def start_session(paths: Paths | None = None) -> bool:
     _tmux("set-option", "-t", SESSION_NAME, "history-limit", "100000")
     _tmux("send-keys", "-t", SESSION_NAME, _RESPAWN_CMD, "Enter")
 
+    # Write restart marker so watchdog injects a wake-up prompt into the
+    # fresh instance (same path as restart_session — new sessions need a
+    # kick too).
+    _write_restart_pending(paths, "session created")
+
     # Snapshot harness hash so drift detection has a reference point.
     write_harness_hash_baseline(paths)
 
@@ -148,12 +167,30 @@ def start_session(paths: Paths | None = None) -> bool:
     return True
 
 
+def _write_restart_pending(paths: Paths, reason: str) -> None:
+    """Write a restart-pending marker so the watchdog knows to inject a
+    continuation prompt once the fresh Claude instance is ready."""
+    try:
+        paths.state.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(
+            paths.state / "restart_pending.json",
+            json.dumps({
+                "timestamp": int(time.time()),
+                "reason": reason,
+            }) + "\n",
+        )
+    except OSError:
+        pass
+
+
 def restart_session(reason: str, paths: Paths | None = None) -> None:
     """Restart claude inside the existing orchestrator session.
 
-    Sends C-c twice + ``/exit`` + sleep, then re-launches the respawn
-    loop. Leaves the tmux session itself intact so external attachers
-    (mosh, spot-chat) don't drop. Mirrors ``restart_claude_in_session``.
+    Sends C-c twice + ``/exit``, then the respawn loop (already running
+    in the pane's shell) revives Claude automatically. A restart-pending
+    marker is written so the watchdog can inject a continuation prompt
+    once the new instance is ready. Leaves the tmux session itself
+    intact so external attachers (mosh, spot-chat) don't drop.
     """
     paths = paths or resolve()
     if not session_alive(SESSION_NAME):
@@ -179,14 +216,18 @@ def restart_session(reason: str, paths: Paths | None = None) -> None:
     except Exception:
         pass
 
+    # Write marker BEFORE killing the process so the watchdog can
+    # detect the restart even if this function is interrupted.
+    _write_restart_pending(paths, reason)
+
     _tmux("send-keys", "-t", SESSION_NAME, "C-c")
     time.sleep(0.3)
     _tmux("send-keys", "-t", SESSION_NAME, "C-c")
     time.sleep(0.3)
     _tmux("send-keys", "-t", SESSION_NAME, "/exit", "Enter")
-    time.sleep(1)
-    _tmux("send-keys", "-t", SESSION_NAME, _RESPAWN_CMD, "Enter")
-    time.sleep(0.5)
+    # The respawn loop (already running in the pane shell) handles
+    # restarting Claude. We do NOT re-send _RESPAWN_CMD — that would
+    # nest a second loop inside the first.
 
 
 def ensure_session(paths: Paths | None = None) -> None:
