@@ -755,6 +755,7 @@ class ConsolidateReport:
     dry_run: bool
     results: list[dict] = field(default_factory=list)
     message_results: list[dict] = field(default_factory=list)
+    gc_results: list[dict] = field(default_factory=list)
 
     def counts(self) -> dict[str, int]:
         out: dict[str, int] = {}
@@ -767,6 +768,122 @@ class ConsolidateReport:
         for r in self.message_results:
             out[r["action"]] = out.get(r["action"], 0) + 1
         return out
+
+
+def _gc_ephemeral_agents(
+    paths: Paths,
+    *,
+    dry_run: bool = False,
+) -> list[dict]:
+    """Remove dead ephemeral agent directories, preserving useful output.
+
+    An agent is eligible for GC if:
+    - It has no MISSION.md (ephemeral, not persistent)
+    - Its status starts with "complete" OR it has no alive tmux session
+      and no pid file pointing to a running process
+
+    Preserved before deletion:
+    - output.log, report.md, harness.md → appended to a daily GC log
+    - task completion status → logged as event
+    """
+    from . import agents as _agents
+    from .events import log_event
+
+    if not paths.agents.is_dir():
+        return []
+
+    results: list[dict] = []
+    gc_log_dir = paths.logs / "agent-gc"
+
+    for entry in sorted(paths.agents.iterdir()):
+        if not entry.is_dir() or not entry.name.startswith("@"):
+            continue
+
+        # Skip persistent agents
+        if (entry / "MISSION.md").is_file():
+            continue
+
+        agent_name = entry.name
+        status = ""
+        try:
+            status = (entry / "status").read_text(encoding="utf-8").strip()
+        except (OSError, FileNotFoundError):
+            pass
+
+        # Check if agent is still running
+        session = _agents.session_name_for(agent_name)
+        is_alive = _agents.session_alive(session)
+
+        # Check for running pid
+        pid_alive = False
+        pid_file = entry / "pid"
+        if pid_file.is_file():
+            try:
+                import os
+                pid = int(pid_file.read_text().strip())
+                os.kill(pid, 0)  # Check if process exists
+                pid_alive = True
+            except (ValueError, OSError, ProcessLookupError):
+                pass
+
+        # Only GC if completed or dead (no session, no pid)
+        is_complete = status.startswith("complete")
+        is_dead = not is_alive and not pid_alive
+
+        if not is_complete and not is_dead:
+            continue  # Still running, leave it
+
+        # Preserve useful output before deletion
+        preserved = {}
+        for fname in ("output.log", "report.md", "harness.md", "task", "status"):
+            fpath = entry / fname
+            if fpath.is_file():
+                try:
+                    content = fpath.read_text(encoding="utf-8")
+                    if content.strip():
+                        preserved[fname] = content
+                except (OSError, UnicodeDecodeError):
+                    pass
+
+        # Write preserved output to GC log
+        if preserved and not dry_run:
+            gc_log_dir.mkdir(parents=True, exist_ok=True)
+            today = _dt.date.today().isoformat()
+            gc_log = gc_log_dir / f"{today}.log"
+            with open(gc_log, "a", encoding="utf-8") as f:
+                f.write(f"\n{'='*60}\n")
+                f.write(f"GC: {agent_name} at {_utcnow().isoformat()}\n")
+                f.write(f"Status: {status}\n")
+                f.write(f"Reason: {'completed' if is_complete else 'dead (no session/pid)'}\n")
+                for fname, content in preserved.items():
+                    f.write(f"\n--- {fname} ---\n")
+                    # Cap each file at 2KB to avoid bloat
+                    f.write(content[:2048])
+                    if len(content) > 2048:
+                        f.write(f"\n... (truncated, {len(content)} bytes total)\n")
+                f.write(f"\n{'='*60}\n")
+
+        # Delete the directory
+        if not dry_run:
+            import shutil
+            shutil.rmtree(entry, ignore_errors=True)
+
+        reason = "completed" if is_complete else "dead"
+        results.append({
+            "agent": agent_name,
+            "reason": reason,
+            "status": status,
+            "preserved_files": list(preserved.keys()),
+        })
+
+        log_event(
+            "agent.gc",
+            f"{agent_name} cleaned up ({reason})",
+            agent=agent_name,
+            paths=paths,
+        )
+
+    return results
 
 
 def run_pass(
@@ -830,5 +947,10 @@ def run_pass(
             sender=sender,
         )
         report.message_results.append(mresult)
+
+    # Ephemeral agent cleanup — remove dead one-shot agent directories,
+    # preserving any useful output first.
+    gc_results = _gc_ephemeral_agents(paths, dry_run=dry_run)
+    report.gc_results = gc_results
 
     return report
