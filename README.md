@@ -115,12 +115,15 @@ metasphere agent report @name "progress note"
 ### Sessions
 
 ```bash
-metasphere session start @agent    # Start tmux session
-metasphere session attach @agent   # Attach to session
+metasphere session list              # List active sessions
+metasphere session info @agent       # Session details
+metasphere session attach @agent     # Attach to session
 metasphere session send @agent "msg" # Send input
-metasphere session list            # List active sessions
-metasphere session stop @agent     # Stop session
+metasphere session restart @agent    # Restart claude (respawn loop + auto-continuation)
+metasphere session stop @agent       # Stop session
 ```
+
+When a session restarts (via `restart` or the agent issuing `/exit`), the gateway watchdog automatically injects a continuation prompt into the fresh Claude instance after an 8-second grace period. The context hook fires on that prompt, giving the new instance its full persona, messages, and tasks — no manual intervention needed.
 
 ### Scheduling
 

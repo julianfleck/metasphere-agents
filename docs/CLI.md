@@ -473,29 +473,37 @@ metasphere-wake status              # alias
 
 ---
 
-## metasphere-session
+## metasphere session
 
-Per-agent tmux session management used by `metasphere-agent spawn --interactive` and ad hoc starts. Similar to wake but builds a richer initial prompt from SOUL.md and task, and doesn't use a respawn loop.
+Canonical session lifecycle management for all agent tmux sessions. Python implementation at `metasphere/session.py`, CLI at `metasphere/cli/session.py`. The bash script `scripts/metasphere-session` is deprecated.
 
 ### Subcommands
 
 ```
-metasphere-session start|new @agent     # start interactive session (requires tmux)
-metasphere-session attach|a @agent      # tmux attach
-metasphere-session send|msg @agent "msg"   # inject via submit_to_tmux
-metasphere-session list|ls              # list metasphere-* tmux sessions
-metasphere-session stop|kill @agent     # graceful /exit then kill
+metasphere session list              # list all metasphere-* tmux sessions
+metasphere session info @agent       # session details (name, windows, attached)
+metasphere session attach @agent     # tmux attach (replaces current process)
+metasphere session send @agent "msg" # inject message via submit_to_tmux
+metasphere session restart @agent [reason]  # restart claude inside session
+metasphere session stop @agent       # graceful /exit then kill tmux session
 ```
 
-Honors agent `sandbox` level for `--allowedTools`.
+### Restart + auto-continuation
 
-### Files read
+`restart` writes a per-agent marker (`~/.metasphere/state/restart_pending.@name.json`) before sending `/exit`. The respawn loop (already running in the tmux pane) brings Claude back. The gateway watchdog detects the marker after an 8-second grace period and injects a continuation prompt into the fresh instance. The context hook fires on that prompt, giving the new instance its full persona, messages, and tasks.
 
-- `~/.metasphere/agents/@<agent>/{scope,task,sandbox,SOUL.md}`
+The respawn loop itself also writes the marker whenever Claude exits (covering direct `/exit` from within Claude). This only applies to sessions created after the feature was added — older sessions get coverage via the programmatic `restart` path.
+
+### Watchdog coverage
+
+The gateway watchdog (`metasphere/gateway/watchdog.py`) now scans ALL `metasphere-*` tmux sessions, not just the orchestrator. Every agent session gets:
+- Stuck pasted-text placeholder recovery (force Enter after 15s)
+- Safety-hooks confirmation auto-approve (rate-limited to 10s)
+- Restart-pending marker processing (inject wake-up after 8s grace)
 
 ### Dependencies
 
-`tmux`, `claude`, `metasphere-tmux-submit`.
+`tmux`, `metasphere-tmux-submit` (bash, for reliable paste submission).
 
 ---
 
@@ -528,11 +536,12 @@ Set via `METASPHERE_SESSION_MODE`.
 
 ### Watchdog responsibilities
 
+Scans ALL `metasphere-*` tmux sessions (not just orchestrator):
+
 - Revive dead orchestrator session
-- Stuck `[Pasted text #N` placeholder recovery (via `tmux_submit_watchdog`)
-- Config-file mtime watch on settings.{json,local.json}, metasphere-context, metasphere-tmux-submit → `restart_claude_in_session`
-- Auto-approve safety-hooks confirmation prompt (`check_stuck_prompts` sends "1"+Enter)
-- Force-Enter stuck paste placeholder older than 15 s
+- Stuck `[Pasted text #N` placeholder recovery (force Enter after 15s)
+- Auto-approve safety-hooks confirmation prompt (sends "1"+Enter, rate-limited 10s)
+- Per-agent restart-pending marker processing (inject continuation prompt after 8s grace period)
 
 ### Harness hash baseline
 
