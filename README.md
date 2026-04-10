@@ -147,6 +147,43 @@ metasphere migrate run --disable   # Migrate and disable OpenClaw
 
 Migrates: Telegram bot token, SOUL.md, memory files, session history (via CAM indexing).
 
+### Projects
+
+```bash
+metasphere project new <name> [--path P] [--goal "..."] [--member @agent:role]
+metasphere project list              # List all projects
+metasphere project show [name]       # Project details
+metasphere project member add <name> @agent [--role R] [--persistent]
+metasphere project wake [name]       # Wake all persistent members
+metasphere project chat <name> "msg" # Send to project Telegram topic
+```
+
+### Telegram Bot Commands
+
+These slash commands are available in the Telegram chat with your bot:
+
+```
+/status              System overview
+/tasks               List active tasks (card format)
+/messages            Show inbox messages
+/agents              List all agents across projects
+/projects            List projects (card format)
+/projects show <n>   Project details
+/schedule            Show scheduled jobs
+/schedule run <n>    Trigger a job manually
+/team                Project teams: /team [status|specs|seed|wake]
+/specs               List available agent specs
+/send @agent !label message
+/cam <query>         Search agent memory
+/events              Tail recent events
+/session             Restart orchestrator REPL
+/spot                Remote host status
+/help                Show help
+/ping                Ping the bot
+```
+
+You can also send free-text messages — they're injected directly into the orchestrator's Claude Code session.
+
 ## Claude Code Hooks
 
 Metasphere uses Claude Code's hook system to inject context and route output:
