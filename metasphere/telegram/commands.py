@@ -80,7 +80,7 @@ def cmd_start(args: str, ctx: Context) -> str:
         "Commands:\n"
         "/status /tasks /agents /messages /inbox\n"
         "/send @agent !label msg\n"
-        "/projects [sub args...] | /cam query | /groups | /link\n"
+        "/projects [sub args...] | /memory query | /groups | /link\n"
         "/events | /tree | /spot | /ping | /help\n\n"
         "Or just message me directly."
     )
@@ -237,7 +237,7 @@ def cmd_send(args: str, ctx: Context) -> str:
 
 def cmd_cam(args: str, ctx: Context) -> str:
     if not args.strip():
-        return "Usage: /cam <query>"
+        return "Usage: /memory <query>"
     return _run(["cam", "search", args.strip(), "--limit", "5"])
 
 
@@ -573,7 +573,8 @@ COMMANDS: Dict[str, Callable[[str, Context], str]] = {
     "a": cmd_agents,
     "inbox": cmd_inbox,
     "send": cmd_send,
-    "cam": cmd_cam,
+    "memory": cmd_cam,
+    "cam": cmd_cam,  # backward compat alias
     "groups": cmd_groups,
     "link": cmd_link,
     "events": cmd_events,
@@ -613,7 +614,7 @@ BOT_COMMANDS_MANIFEST: list[tuple[str, str]] = [
     ("send", "Send: /send @agent !label message"),
     ("projects", "Projects: /projects [list|show|new|wake|chat ...]"),
     ("schedule", "Inspect schedule: /schedule [list|show|run ...]"),
-    ("cam", "Search CAM memory: /cam <query>"),
+    ("memory", "Search agent memory: /memory <query>"),
     ("events", "Tail recent events"),
     ("spot", "Show remote host status"),
     ("session", "Restart orchestrator REPL"),
