@@ -13,10 +13,8 @@ import collections as _collections
 import datetime as _dt
 import hashlib
 import json
-import os
 import subprocess
 from pathlib import Path
-from typing import Iterable
 
 from . import messages as _msgs
 from . import tasks as _tasks
@@ -152,100 +150,20 @@ _TELEGRAM_BYTE_CAP = 1024
 def _render_telegram(paths: Paths, history: int = 3) -> str:
     """Render the recent telegram conversation.
 
-    Shells out to ``scripts/metasphere-telegram-stream context --history 3``
-    and caps at 1024 bytes. Falls back to inline JSONL parsing if the
-    script is missing (e.g. in test environments).
+    Uses the Python ``telegram_context()`` function directly instead of
+    shelling out to ``scripts/metasphere-telegram-stream``. Caps at
+    ``_TELEGRAM_BYTE_CAP`` bytes.
     """
-    streamer = paths.repo / "scripts" / "metasphere-telegram-stream"
-    if streamer.is_file() and os.access(streamer, os.X_OK):
-        try:
-            res = subprocess.run(
-                [str(streamer), "context", "--history", str(history)],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            body = res.stdout
-        except (subprocess.SubprocessError, OSError):
-            body = ""
-        if not body.strip():
-            return "## Telegram (recent conversation)\n(no recent messages)\n"
-        data = body.encode("utf-8")[:_TELEGRAM_BYTE_CAP]
-        return data.decode("utf-8", errors="ignore").rstrip() + "\n"
+    from .telegram.archiver import telegram_context
 
-    # Fallback: parse today's archive directly.
-    today = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
-    archive = paths.telegram_stream / f"{today}.jsonl"
-    if not archive.is_file():
-        return "## Telegram (recent conversation)\n(no recent messages)\n"
     try:
-        lines = archive.read_text(encoding="utf-8").splitlines()
-    except OSError:
+        body = telegram_context(history=history, base_dir=str(paths.telegram))
+    except Exception:
+        body = ""
+    if not body.strip():
         return "## Telegram (recent conversation)\n(no recent messages)\n"
-    # The file may contain pretty-printed JSON for outgoing messages. Be
-    # defensive: walk the file as a stream of objects, then take the last
-    # `history` of them.
-    objs = _parse_jsonl_loose(lines)
-    if not objs:
-        return "## Telegram (recent conversation)\n(no recent messages)\n"
-    objs = objs[-history:]
-    out = ["## Telegram (recent conversation)", ""]
-    for o in objs:
-        frm_field = o.get("from")
-        if isinstance(frm_field, dict):
-            frm = frm_field.get("username") or frm_field.get("first_name") or "unknown"
-        elif isinstance(frm_field, str):
-            frm = frm_field
-        else:
-            frm = "unknown"
-        text = o.get("text") or ""
-        if not text:
-            continue
-        date_ts = o.get("date") or 0
-        try:
-            ts = _dt.datetime.fromtimestamp(float(date_ts), _dt.timezone.utc).strftime("%H:%M")
-        except (TypeError, ValueError, OSError):
-            ts = ""
-        direction = "→" if o.get("outgoing") else "←"
-        out.append(f"{direction} **@{frm}** ({ts}): {text}")
-    out.append("")
-    out.append('_Reply via: `metasphere-telegram send "message"`_')
-    return "\n".join(out) + "\n"
-
-
-def _parse_jsonl_loose(lines: Iterable[str]) -> list[dict]:
-    """Parse a file that mixes single-line JSONL with pretty-printed objects.
-
-    The archiver writes single-line JSONL, but the outgoing-archive path
-    sometimes writes pretty-printed records. Use
-    ``json.JSONDecoder().raw_decode`` over a sliding buffer so that braces
-    inside string literals don't desync our offset (the previous brace-
-    counting parser had this footgun).
-    """
-    out: list[dict] = []
-    buf = "\n".join(lines).strip()
-    decoder = json.JSONDecoder()
-    i = 0
-    n = len(buf)
-    while i < n:
-        # Skip whitespace and stray separators between objects.
-        while i < n and buf[i] in " \t\r\n,":
-            i += 1
-        if i >= n:
-            break
-        try:
-            obj, end = decoder.raw_decode(buf, i)
-        except json.JSONDecodeError:
-            # Resync: skip to the next '{' if we get stuck.
-            nxt = buf.find("{", i + 1)
-            if nxt == -1:
-                break
-            i = nxt
-            continue
-        if isinstance(obj, dict):
-            out.append(obj)
-        i = end
-    return out
+    data = body.encode("utf-8")[:_TELEGRAM_BYTE_CAP]
+    return data.decode("utf-8", errors="ignore").rstrip() + "\n"
 
 
 def _render_messages(paths: Paths) -> str:

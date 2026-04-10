@@ -26,7 +26,6 @@ _AGENT_RE = re.compile(r"^@[A-Za-z0-9_-]+$")
 _LABEL_RE = re.compile(r"^![A-Za-z0-9_-]+$")
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-SCRIPTS_DIR = os.path.join(REPO_ROOT, "scripts")
 METASPHERE_DIR = os.path.expanduser("~/.metasphere")
 
 
@@ -93,14 +92,12 @@ def cmd_ping(args: str, ctx: Context) -> str:
 
 
 def cmd_status(args: str, ctx: Context) -> str:
-    # Prefer Python entry if it lands; fall back to bash.
     try:
-        from metasphere import status as ms_status  # type: ignore
+        from metasphere.status import summary
 
-        return ms_status.summary()  # pragma: no cover
-    except Exception:
-        pass
-    return _run([os.path.join(SCRIPTS_DIR, "metasphere"), "status"])
+        return summary()
+    except Exception as e:
+        return f"(status error: {e})"
 
 
 def cmd_tasks(args: str, ctx: Context) -> "Reply | str":
@@ -153,18 +150,17 @@ def cmd_tasks(args: str, ctx: Context) -> "Reply | str":
                 os.environ.pop("METASPHERE_SCOPE", None)
             else:
                 os.environ["METASPHERE_SCOPE"] = prev_scope
-    except Exception:
-        return _run([os.path.join(SCRIPTS_DIR, "tasks")])
+    except Exception as e:
+        return f"(tasks error: {e})"
 
 
 def cmd_messages(args: str, ctx: Context) -> str:
     try:
-        from metasphere import messages as ms_messages  # type: ignore
+        from metasphere import messages as ms_messages
 
-        return ms_messages.list_messages_text()  # pragma: no cover
-    except Exception:
-        pass
-    return _run([os.path.join(SCRIPTS_DIR, "messages")])
+        return ms_messages.list_messages_text()
+    except Exception as e:
+        return f"(messages error: {e})"
 
 
 def cmd_agents(args: str, ctx: Context) -> "Reply | str":
@@ -207,15 +203,12 @@ def cmd_inbox(args: str, ctx: Context) -> str:
     target = (args.strip() or "@orchestrator")
     if not _AGENT_RE.match(target):
         return "Invalid agent name"
-    scope_file = os.path.join(METASPHERE_DIR, "agents", target, "scope")
-    scope = METASPHERE_DIR
-    if os.path.exists(scope_file):
-        with open(scope_file) as f:
-            scope = f.read().strip() or scope
-    return _run(
-        [os.path.join(SCRIPTS_DIR, "messages")],
-        env={"METASPHERE_SCOPE": scope, "METASPHERE_AGENT_ID": target},
-    )
+    try:
+        from metasphere import messages as ms_messages
+
+        return ms_messages.list_messages_text(agent=target)
+    except Exception as e:
+        return f"(inbox error: {e})"
 
 
 def cmd_send(args: str, ctx: Context) -> str:
@@ -227,10 +220,20 @@ def cmd_send(args: str, ctx: Context) -> str:
         return "Invalid target (expected @name)"
     if not _LABEL_RE.match(label):
         return "Invalid label (expected !name)"
-    return _run(
-        [os.path.join(SCRIPTS_DIR, "messages"), "send", target, label, message],
-        env={"METASPHERE_AGENT_ID": "@user"},
-    )
+    try:
+        from metasphere.messages import send_message
+        from metasphere.paths import resolve
+
+        send_message(
+            target=target,
+            label=label,
+            body=message,
+            from_agent="@user",
+            paths=resolve(),
+        )
+        return f"Sent {label} to {target}"
+    except Exception as e:
+        return f"(send error: {e})"
 
 
 def cmd_cam(args: str, ctx: Context) -> str:
@@ -240,11 +243,18 @@ def cmd_cam(args: str, ctx: Context) -> str:
 
 
 def cmd_groups(args: str, ctx: Context) -> str:
-    script = os.path.join(SCRIPTS_DIR, "metasphere-telegram-groups")
-    if not args.strip():
-        return _run([script, "list"])
-    sub = args.strip().split()
-    return _run([script, *sub])
+    try:
+        from metasphere.telegram import groups as tg_groups
+        from metasphere.paths import resolve
+
+        if not args.strip():
+            topics = tg_groups.list_topics(paths=resolve())
+            if not topics:
+                return "(no forum topics)"
+            return "\n".join(f"- {t.name} (id={t.id})" for t in topics)
+        return f"Usage: /groups"
+    except Exception as e:
+        return f"(groups error: {e})"
 
 
 def cmd_link(args: str, ctx: Context) -> str:
@@ -254,16 +264,46 @@ def cmd_link(args: str, ctx: Context) -> str:
         return f"Topic link: https://t.me/c/{chat_clean}/{ctx.thread_id}"
     if not name:
         return 'Usage: /link "Project Name"'
-    script = os.path.join(SCRIPTS_DIR, "metasphere-telegram-groups")
-    return _run([script, "workspace", "project", name])
+    try:
+        from metasphere.project import get_project
+        from metasphere.paths import resolve
+
+        proj = get_project(name, paths=resolve())
+        if proj is None:
+            return f"Project not found: {name}"
+        if not proj.telegram_topic:
+            return f"No Telegram topic for {name}"
+        return f"Topic: {proj.telegram_topic.get('name')} (id={proj.telegram_topic.get('id')})"
+    except Exception as e:
+        return f"(link error: {e})"
 
 
 def cmd_events(args: str, ctx: Context) -> str:
-    return _run([os.path.join(SCRIPTS_DIR, "metasphere-events"), "tail", "10"])
+    from metasphere.events import tail_events
+
+    return tail_events(10)
 
 
 def cmd_tree(args: str, ctx: Context) -> str:
-    return _run([os.path.join(SCRIPTS_DIR, "metasphere-agent"), "tree"])
+    try:
+        from metasphere.agents import list_agents, session_alive
+        from metasphere.paths import resolve
+
+        agents = list_agents(resolve())
+        if not agents:
+            return "(no agents)"
+        lines = []
+        for a in agents:
+            live = ""
+            try:
+                if session_alive(a.session_name):
+                    live = " [live]"
+            except Exception:
+                pass
+            lines.append(f"{a.name}{live} — {a.status or 'unknown'}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"(tree error: {e})"
 
 
 def _run_project_cli(sub_argv: list[str]) -> str:
@@ -389,8 +429,14 @@ def cmd_session(args: str, ctx: Context) -> str:
     if sub == "status":
         return _run(["systemctl", "--user", "status", "metasphere-gateway", "--no-pager"], timeout=5)
     if sub == "restart":
-        out = _run([os.path.join(SCRIPTS_DIR, "metasphere-gateway"), "restart-orchestrator"], timeout=10)
-        return f"♻️  Restarting orchestrator REPL (respawn loop will revive it).\n\n{out}".strip()
+        try:
+            from metasphere.gateway.session import restart_session
+            from metasphere.paths import resolve
+
+            restart_session("Telegram /session restart", resolve())
+            return "Restarting orchestrator REPL (respawn loop will revive it)."
+        except Exception as e:
+            return f"(restart error: {e})"
     return f"Unknown /session subcommand: {sub}\nUsage: /session [restart|status]"
 
 

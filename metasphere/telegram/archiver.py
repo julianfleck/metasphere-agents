@@ -80,6 +80,101 @@ def save_latest(message: dict, base_dir: str = DEFAULT_DIR) -> str:
     return path
 
 
+def telegram_context(history: int = 3, base_dir: str = DEFAULT_DIR) -> str:
+    """Return the last *history* telegram messages formatted as context text.
+
+    Reads today's (and optionally yesterday's) stream archive JSONL files
+    and formats them the same way the bash ``metasphere-telegram-stream
+    context --history N`` command does.
+
+    Returns a section header + formatted messages, or a
+    ``(no recent messages)`` fallback.
+    """
+    stream_dir = os.path.join(base_dir, STREAM_SUBDIR)
+    today = _dt.datetime.now(_dt.timezone.utc)
+    today_str = today.strftime("%Y-%m-%d")
+    yesterday_str = (today - _dt.timedelta(days=1)).strftime("%Y-%m-%d")
+
+    today_file = os.path.join(stream_dir, f"{today_str}.jsonl")
+    yesterday_file = os.path.join(stream_dir, f"{yesterday_str}.jsonl")
+
+    def _read_jsonl(path: str) -> list[dict]:
+        if not os.path.isfile(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except OSError:
+            return []
+        objs: list[dict] = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                objs.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return objs
+
+    # Collect messages: today first, backfill from yesterday if needed
+    today_msgs = _read_jsonl(today_file)
+    msgs = today_msgs[-history:]
+    if len(msgs) < history:
+        need = history - len(msgs)
+        yesterday_msgs = _read_jsonl(yesterday_file)
+        msgs = yesterday_msgs[-need:] + msgs
+
+    if not msgs:
+        # Fallback: try latest.json
+        latest_path = os.path.join(base_dir, LATEST_NAME)
+        if os.path.isfile(latest_path):
+            try:
+                with open(latest_path, "r", encoding="utf-8") as f:
+                    latest = json.load(f)
+                frm = latest.get("from") or "unknown"
+                text = latest.get("text") or ""
+                ts = latest.get("timestamp") or ""
+                if text and text != "null":
+                    return (
+                        "## Telegram (last message)\n"
+                        "\n"
+                        f"**@{frm}** ({ts}):\n"
+                        f"> {text}\n"
+                    )
+            except (OSError, json.JSONDecodeError):
+                pass
+        return "## Telegram: No recent messages\n"
+
+    out = ["## Telegram (recent conversation)", ""]
+    for o in msgs:
+        frm_field = o.get("from")
+        if isinstance(frm_field, dict):
+            frm = frm_field.get("username") or frm_field.get("first_name") or "unknown"
+        elif isinstance(frm_field, str):
+            frm = frm_field
+        else:
+            frm = "unknown"
+        text = o.get("text") or ""
+        if not text or text == "null":
+            continue
+        date_ts = o.get("date") or 0
+        ts = ""
+        if date_ts and date_ts != "null":
+            try:
+                ts = _dt.datetime.fromtimestamp(
+                    float(date_ts), _dt.timezone.utc
+                ).strftime("%H:%M")
+            except (TypeError, ValueError, OSError):
+                pass
+        direction = "\u2192" if o.get("outgoing") else "\u2190"
+        out.append(f"{direction} **@{frm}** ({ts}): {text}")
+
+    out.append("")
+    out.append('_Reply via: `metasphere-telegram send "message"`_')
+    return "\n".join(out) + "\n"
+
+
 def archive_outgoing(
     agent: str, text: str, chat_id: int, base_dir: str = DEFAULT_DIR
 ) -> str:

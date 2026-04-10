@@ -143,22 +143,19 @@ def test_wake_persistent_already_alive_injects_task(tmp_paths: Paths):
         cp.stderr = ""
         if "has-session" in cmd:
             cp.returncode = 0  # alive
-        elif cmd[:1] == ["bash"]:
-            # submit_to_tmux shellout: ["bash", "-c", code, "_", session, body]
-            submitted.append((cmd[4], cmd[5]))
-            cp.returncode = 0
         else:
             cp.returncode = 0
         return cp
 
-    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
-        # Make the submit script look real so _submit_via_bash actually runs.
-        submit_script = tmp_paths.repo / "scripts" / "metasphere-tmux-submit"
-        submit_script.parent.mkdir(parents=True, exist_ok=True)
-        submit_script.write_text("#!/bin/bash\nsubmit_to_tmux(){ :; }\n")
+    def fake_tmux_submit(session: str, message: str) -> bool:
+        submitted.append((session, message))
+        return True
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run), \
+         patch("metasphere.agents._tmux_submit", side_effect=fake_tmux_submit):
         agents.wake_persistent("@waker", first_task="hello", paths=tmp_paths)
 
-    assert submitted, "expected submit_to_tmux shellout"
+    assert submitted, "expected _tmux_submit call"
     assert submitted[0][0] == "metasphere-waker"
     assert "hello" in submitted[0][1]
 

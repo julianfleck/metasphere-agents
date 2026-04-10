@@ -15,7 +15,6 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import re
-import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -626,9 +625,9 @@ def wake_recipient_if_live(
     body: str,
     paths: Paths | None = None,
 ) -> None:
-    """Best-effort wake. Shells out to ``scripts/metasphere-tmux-submit``
-    via a tiny inline bash, since the tmux session-name convention and
-    submit_to_tmux helper still live in bash. Failures are silent."""
+    """Best-effort wake via :mod:`metasphere.tmux`. Failures are silent."""
+    from .tmux import submit_to_tmux as _tmux_submit
+
     paths = paths or resolve()
     agent_name: str | None = None
     if target == "@..":
@@ -644,25 +643,12 @@ def wake_recipient_if_live(
     if not agent_name:
         return
 
-    script = paths.repo / "scripts" / "metasphere-tmux-submit"
-    if not script.exists():
-        return
-
     session = f"metasphere-{agent_name}"
     body_preview = body[:200] + ("..." if len(body) > 200 else "")
     notice = f"[wake] new {label} from {from_agent}: {body_preview}"
 
-    cmd = (
-        f'source "{script}" && submit_to_tmux "{session}" "$1"'
-    )
     try:
-        subprocess.run(
-            ["bash", "-c", cmd, "_", notice],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-        )
+        _tmux_submit(session, notice)
     except Exception:
         pass
 

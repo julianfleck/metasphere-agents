@@ -15,7 +15,6 @@ from __future__ import annotations
 import dataclasses
 import datetime as _dt
 import os
-import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -186,26 +185,10 @@ def invoke_agent_heartbeat(
     session = session_name_for(agent)
 
     if session_alive(session):
-        submit_script = paths.repo / "scripts" / "metasphere-tmux-submit"
-        if not submit_script.is_file():
-            return False
-        # Hard-codes the submit function's two-positional-arg signature
-        # (session, context). If scripts/metasphere-tmux-submit ever
-        # changes submit_to_tmux's argument shape this will silently
-        # break — keep this Python wrapper in sync with that file.
-        cmd = (
-            f"source {shlex.quote(str(submit_script))}; "
-            f"submit_to_tmux \"$1\" \"$2\""
-        )
-        try:
-            subprocess.run(
-                ["bash", "-c", cmd, "_", session, context],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=30,
-            )
-        except Exception:
+        from .tmux import submit_to_tmux as _tmux_submit
+
+        ok = _tmux_submit(session, context)
+        if not ok:
             return False
         try:
             log_event(

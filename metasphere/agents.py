@@ -9,9 +9,9 @@ Why this shape:
   loop around ``claude --dangerously-skip-permissions``. Persistence is
   declared by the presence of ``MISSION.md`` in the agent dir.
 
-Tmux paste-submission stays in bash (``scripts/metasphere-tmux-submit``);
-Python shells out to it. The same goes for the respawn loop and readiness
-poll: this module just orchestrates the tmux commands and the script call.
+Tmux paste-submission uses :mod:`metasphere.tmux`. The respawn loop and
+readiness poll stay as direct tmux commands: this module just orchestrates
+the tmux commands and the submit call.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from typing import Optional
 from .events import log_event
 from .io import atomic_write_text, file_lock
 from .paths import Paths, resolve
+from .tmux import submit_to_tmux as _tmux_submit
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -450,22 +451,9 @@ def _wait_for_ready(session: str, timeout_s: int = _READY_TIMEOUT_S) -> bool:
     return False
 
 
-def _submit_via_bash(session: str, body: str, paths: Paths) -> None:
-    """Shell out to scripts/metasphere-tmux-submit."""
-    submit_script = paths.repo / "scripts" / "metasphere-tmux-submit"
-    if not submit_script.is_file():
-        return
-    # The script defines submit_to_tmux as a function — source it then call.
-    # shlex.quote both the script path and tmux binary so a path containing
-    # whitespace or quotes can never break the invocation.
-    cmd = (
-        f"source {shlex.quote(str(submit_script))}; "
-        f"TMUX_CMD={shlex.quote(_tmux_bin())} submit_to_tmux \"$1\" \"$2\""
-    )
-    subprocess.run(
-        ["bash", "-c", cmd, "_", session, body],
-        check=False,
-    )
+def _submit_via_tmux(session: str, body: str) -> None:
+    """Submit text to a tmux session via :mod:`metasphere.tmux`."""
+    _tmux_submit(session, body)
 
 
 def wake_persistent(
@@ -498,7 +486,7 @@ def wake_persistent(
 
     if session_alive(session):
         if first_task:
-            _submit_via_bash(session, f"[task] {first_task}", paths)
+            _submit_via_tmux(session, f"[task] {first_task}")
         return rec
 
     # Cold start.
@@ -538,7 +526,7 @@ def wake_persistent(
     time.sleep(0.2)
 
     if first_task:
-        _submit_via_bash(session, f"[task] {first_task}", paths)
+        _submit_via_tmux(session, f"[task] {first_task}")
 
     return _agent_record_from_dir(agent_dir, project=project)
 

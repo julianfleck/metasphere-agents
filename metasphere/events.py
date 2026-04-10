@@ -17,6 +17,10 @@ import secrets
 import time
 from typing import Any
 
+import collections as _collections
+import json
+import re
+
 from .identity import resolve_agent_id
 from .io import append_jsonl
 from .paths import Paths, resolve
@@ -61,3 +65,44 @@ def log_event(
     }
     append_jsonl(paths.events_log, record)
     return record
+
+
+def tail_events(n: int = 10, *, paths: Paths | None = None) -> str:
+    """Return the last *n* events formatted as human-readable lines.
+
+    Output matches the bash ``metasphere-events tail`` format::
+
+        HH:MM:SSZ [type] @agent: message (truncated to 80 chars)
+
+    Returns ``"(no events)"`` when the log file is missing or empty.
+    """
+    paths = paths or resolve()
+    log = paths.events_log
+    if not log.is_file():
+        return "(no events)"
+    try:
+        with open(log, "r", encoding="utf-8") as f:
+            tail = list(_collections.deque(f, maxlen=n))
+    except OSError:
+        return "(no events)"
+    if not tail:
+        return "(no events)"
+    lines: list[str] = []
+    for raw in tail:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        ts = rec.get("timestamp", "")
+        # Extract HH:MM:SSZ from ISO timestamp like 2024-01-01T12:34:56Z
+        time_part = ts.split("T", 1)[1].split(".")[0] if "T" in ts else ts
+        typ = rec.get("type", "")
+        agent = rec.get("agent", "")
+        msg = rec.get("message", "") or ""
+        # Strip newlines and truncate to 80 chars, matching bash version
+        msg = re.sub(r"[\n\r]", " ", msg)[:80]
+        lines.append(f"{time_part} [{typ}] {agent}: {msg}")
+    return "\n".join(lines) if lines else "(no events)"
