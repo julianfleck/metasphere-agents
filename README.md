@@ -9,6 +9,7 @@ If you already use Claude Code and like its ecosystem — skills, hooks, MCP ser
 - **Always-on agent** — runs in tmux, survives disconnects, restarts itself after crashes. You don't babysit it.
 - **Telegram as your interface** — message your agent from your phone. Ask questions, give tasks, check on progress. It responds in real-time.
 - **Interruptible** — you can send a message while the agent is working and it will see it on its next turn. No more waiting for a long task to finish before you can course-correct.
+- **Full observability** — every agent runs in its own tmux session. `metasphere session attach @agent` and you see exactly what it's doing — the same Claude Code interface you'd see if you were sitting at the terminal. Watch it think, read its tool calls, take over if needed.
 - **Multi-agent** — break complex work into child agents that run in parallel with sandboxed permissions. They report back when done.
 - **Projects with transparent tasks** — every task is a markdown file in the project directory. You can read them, edit them, grep them. Nothing is hidden in a database.
 - **Scheduled automation** — cron-style jobs for recurring work (health checks, memory consolidation, periodic reports)
