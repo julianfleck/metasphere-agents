@@ -35,6 +35,7 @@ except ImportError as e:  # pragma: no cover
         "metasphere.schedule requires the 'croniter' package."
     ) from e
 
+from . import agents as _agents
 from .events import log_event
 from .io import atomic_write_text, file_lock
 from .messages import send_message
@@ -229,12 +230,97 @@ def _wake_script(paths: Paths) -> Path:
     return paths.project_root / "scripts" / "metasphere-wake"
 
 
-def dispatch_command(payload: str, *, timeout: int = 600) -> bool:
+def _find_mission(target_agent: str, paths: Paths) -> Path | None:
+    """Return the ``MISSION.md`` path for ``target_agent`` if it names a
+    persistent agent (global or project-scoped), else None.
+
+    Mirrors :func:`metasphere.agents._find_agent_dir` precedence —
+    project-scoped dirs first, then global. We only need the existence
+    check, not a full :class:`AgentRecord`.
+    """
+    if paths.projects.is_dir():
+        try:
+            for proj_dir in sorted(paths.projects.iterdir()):
+                if not proj_dir.is_dir():
+                    continue
+                mission = proj_dir / "agents" / target_agent / "MISSION.md"
+                if mission.is_file():
+                    return mission
+        except OSError:
+            pass
+    mission = paths.agent_dir(target_agent) / "MISSION.md"
+    if mission.is_file():
+        return mission
+    return None
+
+
+def _wake_target(
+    target_agent: str,
+    first_task: str | None,
+    paths: Paths,
+) -> bool:
+    """Wake ``target_agent`` via :func:`metasphere.agents.wake_persistent`.
+
+    Idempotent: if the tmux session is already alive, the helper just
+    injects ``first_task`` (if any) and returns. Returns True on success,
+    False on any exception — callers fall back to inbox-only delivery.
+    """
+    try:
+        _agents.wake_persistent(
+            target_agent, first_task=first_task, paths=paths,
+        )
+        return True
+    except Exception as e:
+        logger.warning("wake_persistent failed for %s: %s", target_agent, e)
+        return False
+
+
+def _extract_messages_send_target(payload: str) -> str | None:
+    """Parse ``payload`` as a ``messages send @X !label ...`` command and
+    return ``@X`` if it matches, else None.
+
+    Handles both bare ``messages`` (assumed on PATH) and full-path forms
+    like ``/usr/local/bin/messages`` or ``scripts/messages``.
+    """
+    import shlex
+
+    try:
+        argv = shlex.split(payload or "")
+    except ValueError:
+        return None
+    if len(argv) < 4:
+        return None
+    for i in range(len(argv) - 3):
+        if Path(argv[i]).name != "messages":
+            continue
+        if argv[i + 1] != "send":
+            continue
+        tgt = argv[i + 2]
+        if tgt.startswith("@"):
+            return tgt
+        return None
+    return None
+
+
+def dispatch_command(
+    payload: str,
+    *,
+    paths: Paths | None = None,
+    timeout: int = 600,
+) -> bool:
     """Execute a ``payload_kind=="command"`` job.
 
     Splits ``payload`` with :func:`shlex.split` (no shell, no eval) and
     runs the resulting argv via :func:`subprocess.run`. Returns True on
     exit-code 0.
+
+    Pre-wake: if ``payload`` is a ``messages send @X !task ...`` command
+    and ``@X`` is a persistent agent (has ``MISSION.md`` under global or
+    project agents), we first wake ``@X``'s tmux+REPL via
+    :func:`metasphere.agents.wake_persistent`. Without this, the
+    subsequent ``messages send`` writes the inbox file but
+    ``wake_recipient_if_live`` silently no-ops on a dormant session, so
+    scheduled polymarket / research tasks accumulate unread forever.
     """
     import shlex
 
@@ -247,6 +333,12 @@ def dispatch_command(payload: str, *, timeout: int = 600) -> bool:
         return False
     if not argv:
         return False
+
+    paths = paths or resolve()
+    target = _extract_messages_send_target(payload)
+    if target is not None and _find_mission(target, paths) is not None:
+        _wake_target(target, first_task=None, paths=paths)
+
     try:
         proc = subprocess.run(
             argv,
@@ -275,31 +367,20 @@ def dispatch_to_agent(
 ) -> bool:
     """Wake the target agent or fall back to a ``!task`` message.
 
-    If the agent has a ``MISSION.md`` we treat it as a persistent
-    collaborator and call ``scripts/metasphere-wake`` (subprocess, explicit
-    argv — never via shell). Otherwise we drop a ``!task`` message into
-    its inbox via :func:`metasphere.messages.send_message`.
+    If the agent has a ``MISSION.md`` (global **or** project-scoped) we
+    treat it as a persistent collaborator and call
+    :func:`metasphere.agents.wake_persistent` — this starts the tmux+REPL
+    session if dormant and injects ``payload`` as a first task. Otherwise
+    we drop a ``!task`` message into its inbox via
+    :func:`metasphere.messages.send_message`.
     """
     paths = paths or resolve()
-    mission = paths.agent_dir(target_agent) / "MISSION.md"
 
-    if mission.exists():
-        wake = _wake_script(paths)
-        if wake.exists():
-            try:
-                subprocess.run(
-                    [str(wake), target_agent, payload],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                return True
-            except Exception as e:  # pragma: no cover - defensive
-                logger.warning("metasphere-wake failed for %s: %s", target_agent, e)
-                return False
+    if _find_mission(target_agent, paths) is not None:
+        if _wake_target(target_agent, first_task=payload, paths=paths):
+            return True
+        # Fall through to inbox-only delivery if wake itself failed.
 
-    # Fallback: drop a task message into the inbox.
     try:
         send_message(
             target_agent,
@@ -350,7 +431,7 @@ def run_due_jobs(paths: Paths | None = None, *, now: int | None = None) -> list[
                 logger.warning("log_event failed: %s", e)
 
             if job.payload_kind == "command":
-                ok = dispatch_command(job.payload_message)
+                ok = dispatch_command(job.payload_message, paths=paths)
             else:
                 ok = dispatch_to_agent(
                     target,

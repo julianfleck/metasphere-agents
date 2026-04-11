@@ -95,24 +95,181 @@ def test_run_due_jobs_updates_last_fired_at(tmp_paths):
     assert reloaded[0].last_fired_at == fixed_now
 
 
-def test_dispatch_prefers_metasphere_wake_when_mission_exists(tmp_paths):
-    target = "@research-brand-mentions"
+def test_dispatch_prefers_wake_persistent_when_global_mission_exists(tmp_paths):
+    target = "@polymarket"
     agent_dir = tmp_paths.agent_dir(target)
     agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "MISSION.md").write_text("mission\n")
 
-    wake_path = tmp_paths.project_root / "scripts" / "metasphere-wake"
-    wake_path.parent.mkdir(parents=True, exist_ok=True)
-    wake_path.write_text("#!/bin/sh\nexit 0\n")
-    wake_path.chmod(0o755)
-
-    with mock.patch("metasphere.schedule.subprocess.run") as run_mock:
-        run_mock.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+    with mock.patch("metasphere.schedule._agents.wake_persistent") as wake_mock:
+        wake_mock.return_value = mock.Mock()
         ok = _sched.dispatch_to_agent(target, "payload-text", paths=tmp_paths)
 
     assert ok is True
+    wake_mock.assert_called_once()
+    # wake_persistent(target, first_task=payload, paths=tmp_paths)
+    args, kwargs = wake_mock.call_args
+    assert args[0] == target
+    assert kwargs.get("first_task") == "payload-text"
+    assert kwargs.get("paths") is tmp_paths
+
+
+def test_dispatch_wakes_project_scoped_persistent_agent(tmp_paths):
+    """Project-scoped research agents live under
+    ``projects/<proj>/agents/@name/MISSION.md``. Dispatching must find
+    them too, or @research-* jobs pile up unread (Julian's bug report)."""
+    target = "@research-brand-mentions"
+    proj_agent_dir = tmp_paths.project_agent_dir("research", target)
+    proj_agent_dir.mkdir(parents=True, exist_ok=True)
+    (proj_agent_dir / "MISSION.md").write_text("mission\n")
+
+    with mock.patch("metasphere.schedule._agents.wake_persistent") as wake_mock:
+        wake_mock.return_value = mock.Mock()
+        ok = _sched.dispatch_to_agent(target, "scan now", paths=tmp_paths)
+
+    assert ok is True
+    wake_mock.assert_called_once()
+    args, kwargs = wake_mock.call_args
+    assert args[0] == target
+    assert kwargs.get("first_task") == "scan now"
+
+
+def test_dispatch_to_agent_falls_back_to_inbox_when_wake_fails(tmp_paths):
+    target = "@polymarket"
+    agent_dir = tmp_paths.agent_dir(target)
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "MISSION.md").write_text("mission\n")
+
+    with mock.patch(
+        "metasphere.schedule._agents.wake_persistent",
+        side_effect=RuntimeError("tmux died"),
+    ), mock.patch("metasphere.schedule.send_message") as send_mock:
+        send_mock.return_value = mock.Mock()
+        ok = _sched.dispatch_to_agent(target, "payload", paths=tmp_paths)
+
+    assert ok is True
+    send_mock.assert_called_once()
+
+
+def test_dispatch_to_agent_ephemeral_uses_inbox(tmp_paths):
+    # No MISSION.md anywhere → drop to inbox, no wake.
+    target = "@someone"
+    with mock.patch("metasphere.schedule._agents.wake_persistent") as wake_mock, \
+            mock.patch("metasphere.schedule.send_message") as send_mock:
+        send_mock.return_value = mock.Mock()
+        ok = _sched.dispatch_to_agent(target, "payload", paths=tmp_paths)
+
+    assert ok is True
+    wake_mock.assert_not_called()
+    send_mock.assert_called_once()
+
+
+# ---------- dispatch_command: wake-before-send ----------
+
+
+def test_extract_messages_send_target_bare_command():
+    assert (
+        _sched._extract_messages_send_target(
+            'messages send @polymarket !task "run pipeline"'
+        )
+        == "@polymarket"
+    )
+
+
+def test_extract_messages_send_target_full_path():
+    assert (
+        _sched._extract_messages_send_target(
+            '/usr/local/bin/messages send @research-brand !task "scan"'
+        )
+        == "@research-brand"
+    )
+
+
+def test_extract_messages_send_target_not_a_send_command():
+    assert _sched._extract_messages_send_target("echo hi") is None
+    assert _sched._extract_messages_send_target("messages inbox") is None
+    # Send but no @-target (shouldn't happen, but don't crash).
+    assert _sched._extract_messages_send_target("messages send !task hi") is None
+
+
+def test_extract_messages_send_target_malformed_payload():
+    # Unbalanced quote → shlex raises → return None cleanly.
+    assert _sched._extract_messages_send_target('messages send @x "oops') is None
+
+
+def test_dispatch_command_pre_wakes_messages_send_task_target(tmp_paths):
+    """The main regression fix: scheduled `messages send @polymarket !task`
+    commands must cold-start the agent's tmux+REPL before sending, so
+    the inbox notice has a live session to inject into."""
+    target = "@polymarket"
+    agent_dir = tmp_paths.agent_dir(target)
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "MISSION.md").write_text("mission\n")
+
+    with mock.patch("metasphere.schedule._agents.wake_persistent") as wake_mock, \
+            mock.patch("metasphere.schedule.subprocess.run") as run_mock:
+        wake_mock.return_value = mock.Mock()
+        run_mock.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+        ok = _sched.dispatch_command(
+            'messages send @polymarket !task "run the poly pipeline"',
+            paths=tmp_paths,
+        )
+
+    assert ok is True
+    wake_mock.assert_called_once()
+    args, kwargs = wake_mock.call_args
+    assert args[0] == target
+    # Pre-wake should not pass a first_task — the subsequent shell
+    # command carries the actual inbox notice.
+    assert kwargs.get("first_task") is None
+    # The real shell command must still run after the pre-wake.
     run_mock.assert_called_once()
-    argv = run_mock.call_args[0][0]
-    assert argv[0] == str(wake_path)
-    assert argv[1] == target
-    assert argv[2] == "payload-text"
+
+
+def test_dispatch_command_pre_wakes_project_scoped_research_target(tmp_paths):
+    target = "@research-brand-mentions"
+    proj_agent_dir = tmp_paths.project_agent_dir("research", target)
+    proj_agent_dir.mkdir(parents=True, exist_ok=True)
+    (proj_agent_dir / "MISSION.md").write_text("mission\n")
+
+    with mock.patch("metasphere.schedule._agents.wake_persistent") as wake_mock, \
+            mock.patch("metasphere.schedule.subprocess.run") as run_mock:
+        wake_mock.return_value = mock.Mock()
+        run_mock.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+        ok = _sched.dispatch_command(
+            'messages send @research-brand-mentions !task "do the scan"',
+            paths=tmp_paths,
+        )
+
+    assert ok is True
+    wake_mock.assert_called_once()
+
+
+def test_dispatch_command_skips_wake_for_ephemeral_target(tmp_paths):
+    # No MISSION.md — nothing to wake, command still runs.
+    with mock.patch("metasphere.schedule._agents.wake_persistent") as wake_mock, \
+            mock.patch("metasphere.schedule.subprocess.run") as run_mock:
+        run_mock.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+        ok = _sched.dispatch_command(
+            'messages send @ephemeral !task "x"',
+            paths=tmp_paths,
+        )
+
+    assert ok is True
+    wake_mock.assert_not_called()
+    run_mock.assert_called_once()
+
+
+def test_dispatch_command_does_not_wake_for_non_send_command(tmp_paths):
+    # Arbitrary command, not `messages send` — never wake.
+    target_dir = tmp_paths.agent_dir("@polymarket")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    (target_dir / "MISSION.md").write_text("mission\n")
+
+    with mock.patch("metasphere.schedule._agents.wake_persistent") as wake_mock, \
+            mock.patch("metasphere.schedule.subprocess.run") as run_mock:
+        run_mock.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+        ok = _sched.dispatch_command("echo hello", paths=tmp_paths)
+
+    assert ok is True
+    wake_mock.assert_not_called()
