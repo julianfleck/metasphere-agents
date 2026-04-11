@@ -74,17 +74,42 @@ def tail_events(n: int = 10, *, paths: Paths | None = None) -> str:
 
         HH:MM:SSZ [type] @agent: message (truncated to 80 chars)
 
-    Returns ``"(no events)"`` when the log file is missing or empty.
+    Walks the dated ``events-YYYY-MM-DD.jsonl`` files newest-first until
+    *n* lines have been collected, so a tail across a midnight boundary
+    transparently spans yesterday and today. Falls back to the legacy
+    single ``events.jsonl`` file only when no dated files exist (transition
+    guard for fixtures and freshly-installed hosts).
+
+    Returns ``"(no events)"`` when no log files are present or readable.
     """
     paths = paths or resolve()
-    log = paths.events_log
-    if not log.is_file():
-        return "(no events)"
-    try:
-        with open(log, "r", encoding="utf-8") as f:
-            tail = list(_collections.deque(f, maxlen=n))
-    except OSError:
-        return "(no events)"
+    events_dir = paths.events
+    dated = []
+    if events_dir.is_dir():
+        dated = sorted(events_dir.glob("events-*.jsonl"))
+    tail: list[str] = []
+    if dated:
+        # Walk newest-first, collecting up to n lines.
+        for log in reversed(dated):
+            try:
+                with open(log, "r", encoding="utf-8") as f:
+                    chunk = list(_collections.deque(f, maxlen=n))
+            except OSError:
+                continue
+            # Prepend older-file chunk so final order is chronological.
+            tail = chunk + tail
+            if len(tail) >= n:
+                tail = tail[-n:]
+                break
+    else:
+        legacy = events_dir / "events.jsonl"
+        if not legacy.is_file():
+            return "(no events)"
+        try:
+            with open(legacy, "r", encoding="utf-8") as f:
+                tail = list(_collections.deque(f, maxlen=n))
+        except OSError:
+            return "(no events)"
     if not tail:
         return "(no events)"
     lines: list[str] = []

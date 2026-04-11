@@ -1,11 +1,12 @@
 import json
 import multiprocessing as mp
+import re
 import shutil
 import subprocess
 
 import pytest
 
-from metasphere.events import log_event
+from metasphere.events import log_event, tail_events
 
 
 def _worker(i):
@@ -55,6 +56,79 @@ def test_log_event_concurrent(tmp_paths):
     # All have the required fields.
     for p in parsed:
         assert {"id", "timestamp", "type", "message", "agent", "scope", "meta"} <= set(p.keys())
+
+
+def test_log_event_writes_to_dated_file(tmp_paths):
+    # Daily rotation: log_event must land in a date-stamped file under
+    # the events dir, never the legacy single events.jsonl.
+    log_event("rotation", "dated", agent="@x")
+    events_dir = tmp_paths.root / "events"
+    dated = sorted(events_dir.glob("events-*.jsonl"))
+    assert len(dated) == 1
+    assert re.fullmatch(r"events-\d{4}-\d{2}-\d{2}\.jsonl", dated[0].name)
+    # Legacy single file must NOT be created by the new code path.
+    assert not (events_dir / "events.jsonl").exists()
+
+
+def test_tail_events_reads_across_dated_files(tmp_paths):
+    # Synthesize two dated files (yesterday + today) and assert tail_events
+    # walks both, returning lines in chronological order.
+    events_dir = tmp_paths.root / "events"
+    events_dir.mkdir(parents=True, exist_ok=True)
+
+    def _rec(ts: str, msg: str) -> str:
+        return json.dumps({
+            "id": f"evt-{msg}",
+            "timestamp": ts,
+            "type": "rot.test",
+            "message": msg,
+            "agent": "@x",
+            "scope": "/",
+            "meta": {},
+        })
+
+    yday = events_dir / "events-2026-04-10.jsonl"
+    today = events_dir / "events-2026-04-11.jsonl"
+    yday.write_text(_rec("2026-04-10T23:59:00Z", "yday-1") + "\n"
+                    + _rec("2026-04-10T23:59:30Z", "yday-2") + "\n")
+    today.write_text(_rec("2026-04-11T00:00:01Z", "today-1") + "\n"
+                     + _rec("2026-04-11T00:00:02Z", "today-2") + "\n")
+
+    out = tail_events(n=4, paths=tmp_paths)
+    lines = out.splitlines()
+    assert len(lines) == 4
+    # Chronological order: yday rows first, today rows last.
+    assert "yday-1" in lines[0]
+    assert "yday-2" in lines[1]
+    assert "today-1" in lines[2]
+    assert "today-2" in lines[3]
+
+    # n smaller than total: should return only the most recent rows.
+    out2 = tail_events(n=2, paths=tmp_paths)
+    lines2 = out2.splitlines()
+    assert len(lines2) == 2
+    assert "today-1" in lines2[0]
+    assert "today-2" in lines2[1]
+
+
+def test_tail_events_legacy_fallback(tmp_paths):
+    # Transition guard: when no dated files exist but a legacy events.jsonl
+    # is present, tail_events still reads it. This keeps freshly-installed
+    # hosts and existing fixtures working until they roll over.
+    events_dir = tmp_paths.root / "events"
+    events_dir.mkdir(parents=True, exist_ok=True)
+    legacy = events_dir / "events.jsonl"
+    legacy.write_text(json.dumps({
+        "id": "evt-legacy",
+        "timestamp": "2025-12-31T12:00:00Z",
+        "type": "legacy.tick",
+        "message": "from-legacy",
+        "agent": "@x",
+        "scope": "/",
+        "meta": {},
+    }) + "\n")
+    out = tail_events(n=5, paths=tmp_paths)
+    assert "from-legacy" in out
 
 
 def test_log_event_jq_roundtrip(tmp_paths):

@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import subprocess
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 
@@ -104,7 +105,11 @@ class Paths:
 
     @property
     def events_log(self) -> Path:
-        return self.events / "events.jsonl"
+        # Daily rotation: each call recomputes today's path so a long-running
+        # process that crosses midnight starts writing to the new dated file
+        # without restart. The legacy unrotated ``events.jsonl`` is intentionally
+        # left alone — operator-driven migration handles the historical file.
+        return self.events / f"events-{date.today():%Y-%m-%d}.jsonl"
 
     @property
     def schedule(self) -> Path:
