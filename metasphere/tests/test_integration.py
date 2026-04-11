@@ -247,9 +247,11 @@ def test_cross_module_task_message_event(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_read_existing_bash_msg_files_roundtrip(tmp_path):
-    inbox = REPO_ROOT / ".messages" / "inbox"
-    files = sorted(inbox.glob("msg-*.msg"))[:3]
-    assert len(files) >= 3, f"need >=3 bash msgs in {inbox}, found {len(files)}"
+    # Use checked-in fixtures (originally captured from bash-era .messages/
+    # inbox/) so the test is stable regardless of live inbox state.
+    fixtures = Path(__file__).parent / "fixtures" / "bash_msgs"
+    files = sorted(fixtures.glob("msg-*.msg"))[:3]
+    assert len(files) >= 3, f"need >=3 bash msg fixtures in {fixtures}, found {len(files)}"
 
     for src in files:
         msg = M.read_message(src)

@@ -107,9 +107,11 @@ def test_spawn_message_reply_chain(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_bash_msg_files_roundtrip(tmp_path):
-    inbox = REPO_ROOT / ".messages" / "inbox"
-    files = sorted(inbox.glob("msg-*.msg"))[:5]
-    assert len(files) >= 5, f"need >=5 bash msg files in {inbox}"
+    # Use checked-in fixtures so the test is stable regardless of live
+    # inbox state.
+    fixtures = Path(__file__).parent / "fixtures" / "bash_msgs"
+    files = sorted(fixtures.glob("msg-*.msg"))[:5]
+    assert len(files) >= 5, f"need >=5 bash msg fixtures in {fixtures}"
 
     for src in files:
         msg = M.read_message(src)
@@ -126,9 +128,11 @@ def test_bash_msg_files_roundtrip(tmp_path):
 
 
 def test_bash_task_md_files_roundtrip(tmp_path):
-    tdir = REPO_ROOT / ".tasks" / "active"
-    files = sorted(tdir.glob("*.md"))[:5]
-    assert len(files) >= 3, f"need >=3 bash task .md files in {tdir}"
+    # Use checked-in fixtures so the test is stable regardless of live
+    # active-tasks state.
+    fixtures = Path(__file__).parent / "fixtures" / "bash_tasks"
+    files = sorted(fixtures.glob("*.md"))[:5]
+    assert len(files) >= 3, f"need >=3 bash task fixtures in {fixtures}"
 
     for src in files:
         fm = read_frontmatter_file(src)

@@ -212,7 +212,8 @@ def resolve_target_agent(job: Job) -> str:
     name = job.name or ""
     if name.startswith("research-monitor:"):
         # Project-scoped: research agents live in projects/research/agents/
-        return "@" + name[len("research-monitor:"):]
+        # and are named @research-<area> (e.g. @research-brand-mentions).
+        return "@research-" + name[len("research-monitor:"):]
     if name.startswith("polymarket:"):
         return "@polymarket"
     if name.startswith("spot:autonomous-exploration"):
