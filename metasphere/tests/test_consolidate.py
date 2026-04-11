@@ -723,3 +723,118 @@ def test_unregister_job(repo, tmp_paths):
     assert _con.unregister_job(tmp_paths) is True
     jobs = _sched.load_jobs(tmp_paths)
     assert all(j.id != _con.JOB_ID for j in jobs)
+
+
+# ---------------------------------------------------------------------------
+# Ephemeral agent GC — deliverable preservation
+# ---------------------------------------------------------------------------
+
+
+def _seed_ephemeral_agent(
+    tmp_paths, name: str, *, files: dict[str, str], status: str = "complete: done"
+) -> Path:
+    """Create a fake completed ephemeral agent dir for GC testing.
+
+    Ephemeral here means: no MISSION.md (so not persistent), status starts
+    with ``complete`` (so the alive-session check is bypassed).
+    """
+    agent_dir = tmp_paths.agents / name
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "status").write_text(status, encoding="utf-8")
+    for fname, content in files.items():
+        (agent_dir / fname).write_text(content, encoding="utf-8")
+    return agent_dir
+
+
+def test_gc_preserves_uppercase_REPORT_md_in_full(tmp_paths):
+    """Regression: an audit agent that writes REPORT.md (uppercase) must
+    not have its deliverable silently rmtree'd. The old whitelist only
+    matched lowercase ``report.md`` — glob by .md extension now covers
+    both. The full report must land in a sibling file, not just the
+    2KB-truncated concatenated log.
+    """
+    big_report = "# Audit Report\n\n" + ("a citation line.\n" * 500)  # ~9KB
+    assert len(big_report) > 2048  # prove we're over the log truncation budget
+
+    _seed_ephemeral_agent(
+        tmp_paths,
+        "@audit-bot",
+        files={
+            "harness.md": "# Agent: @audit-bot\n\n## Task\n\naudit thing\n",
+            "task": "audit thing\n",
+            "REPORT.md": big_report,
+        },
+    )
+
+    results = _con._gc_ephemeral_agents(tmp_paths, dry_run=False)
+
+    # Agent dir itself is gone.
+    assert not (tmp_paths.agents / "@audit-bot").exists()
+
+    # Exactly one agent GC'd.
+    assert len(results) == 1
+    r = results[0]
+    assert r["agent"] == "@audit-bot"
+    assert r["reason"] == "completed"
+    assert "REPORT.md" in r["preserved_files"]
+
+    # Concatenated log exists and points at the preserved deliverable.
+    log_file = tmp_paths.logs / "agents" / "_global" / "@audit-bot.log"
+    assert log_file.is_file()
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "deliverables" in log_text
+    assert "REPORT.md" in log_text
+
+    # Full deliverable preserved in a sibling file, not truncated.
+    deliv_path = (
+        tmp_paths.logs / "agents" / "_global" / "@audit-bot" / "REPORT.md"
+    )
+    assert deliv_path.is_file()
+    assert deliv_path.read_text(encoding="utf-8") == big_report
+
+
+def test_gc_preserves_multiple_md_deliverables(tmp_paths):
+    """An agent can produce more than one .md deliverable (e.g. both
+    FINDINGS.md and summary.md). Each gets its own preserved sibling.
+    ``harness.md`` is still routed to the concatenated log, not the
+    deliverables lane.
+    """
+    _seed_ephemeral_agent(
+        tmp_paths,
+        "@researcher",
+        files={
+            "harness.md": "# Agent: @researcher\n",
+            "status": "complete: done",
+            "FINDINGS.md": "# Findings\n\nthing 1\nthing 2\n",
+            "summary.md": "# Summary\n\nall good\n",
+        },
+    )
+    # status file written twice — _seed_ephemeral_agent wrote one
+    # already, but the dict override lets us test the status-in-files
+    # path too. Normalize:
+    (tmp_paths.agents / "@researcher" / "status").write_text("complete: done")
+
+    _con._gc_ephemeral_agents(tmp_paths, dry_run=False)
+
+    base = tmp_paths.logs / "agents" / "_global" / "@researcher"
+    assert (base / "FINDINGS.md").read_text().startswith("# Findings")
+    assert (base / "summary.md").read_text().startswith("# Summary")
+    # harness.md is bookkeeping, not a standalone deliverable file
+    assert not (base / "harness.md").exists()
+
+
+def test_gc_skips_persistent_agents(tmp_paths):
+    """A persistent agent (has MISSION.md) must never be GC'd, even
+    with a ``complete:`` status and a deliverable file present.
+    """
+    agent_dir = tmp_paths.agents / "@orchestrator"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "MISSION.md").write_text("# Mission\n")
+    (agent_dir / "status").write_text("complete: done")
+    (agent_dir / "REPORT.md").write_text("# Report\n")
+
+    results = _con._gc_ephemeral_agents(tmp_paths, dry_run=False)
+
+    assert results == []
+    assert agent_dir.exists()
+    assert (agent_dir / "REPORT.md").exists()

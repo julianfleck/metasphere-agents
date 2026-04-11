@@ -925,9 +925,29 @@ def _gc_ephemeral_agents(
         if not is_complete and not is_dead:
             continue  # Still running, leave it
 
-        # Preserve useful output before deletion
-        preserved = {}
-        for fname in ("output.log", "report.md", "harness.md", "task", "status"):
+        # Preserve useful output before deletion.
+        #
+        # Two lanes:
+        #
+        # 1. Bookkeeping (output.log, harness.md, task, status) gets
+        #    concatenated into the per-agent log, truncated to 2KB each.
+        #    These are context for "what was this agent" — the full file
+        #    doesn't need to survive.
+        #
+        # 2. Deliverables (any other top-level .md file, matched
+        #    case-insensitively on the extension) are the artifacts the
+        #    agent was spawned to produce: audit reports, research
+        #    notes, findings. They get preserved in full as sibling
+        #    files under logs/agents/<project>/<agent-name>/. The
+        #    concatenated log gets a pointer.
+        #
+        #    This lane exists because the old whitelist hardcoded
+        #    "report.md" lowercase, and an audit agent that wrote its
+        #    deliverable as REPORT.md had it silently rmtree'd with the
+        #    rest of the agent_dir. Globbing by extension avoids that
+        #    class of bug for any *.md name the agent chooses.
+        preserved: dict[str, str] = {}
+        for fname in ("output.log", "harness.md", "task", "status"):
             fpath = entry / fname
             if fpath.is_file():
                 try:
@@ -937,8 +957,24 @@ def _gc_ephemeral_agents(
                 except (OSError, UnicodeDecodeError):
                     pass
 
+        deliverables: dict[str, str] = {}
+        for child in sorted(entry.iterdir()):
+            if not child.is_file():
+                continue
+            lname = child.name.lower()
+            if lname == "harness.md":
+                continue  # bookkeeping, already captured above
+            if not lname.endswith(".md"):
+                continue
+            try:
+                content = child.read_text(encoding="utf-8")
+                if content.strip():
+                    deliverables[child.name] = content
+            except (OSError, UnicodeDecodeError):
+                pass
+
         # Preserve output under logs/agents/<project>/<agent-name>.log
-        if preserved and not dry_run:
+        if (preserved or deliverables) and not dry_run:
             project_name = ""
             try:
                 project_name = (entry / "project").read_text(encoding="utf-8").strip()
@@ -957,7 +993,18 @@ def _gc_ephemeral_agents(
                     if len(content) > 2048:
                         f.write(f"\n... (truncated, {len(content)} bytes total)\n")
                     f.write("\n")
+                if deliverables:
+                    f.write(f"--- deliverables (preserved in full at {agent_name}/) ---\n")
+                    for dname in sorted(deliverables):
+                        f.write(f"  {dname} ({len(deliverables[dname])} bytes)\n")
+                    f.write("\n")
                 f.write("\n")
+
+            if deliverables:
+                deliv_dir = agent_log_dir / agent_name
+                deliv_dir.mkdir(parents=True, exist_ok=True)
+                for dname, content in deliverables.items():
+                    (deliv_dir / dname).write_text(content, encoding="utf-8")
 
         # Delete the directory
         if not dry_run:
@@ -969,7 +1016,7 @@ def _gc_ephemeral_agents(
             "agent": agent_name,
             "reason": reason,
             "status": status,
-            "preserved_files": list(preserved.keys()),
+            "preserved_files": list(preserved.keys()) + list(deliverables.keys()),
         })
 
         log_event(
