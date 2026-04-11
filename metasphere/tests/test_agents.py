@@ -78,6 +78,61 @@ def test_spawn_ephemeral_writes_files_and_skips_exec(tmp_paths: Paths, monkeypat
     assert rec.name == "@spawnling"
 
 
+def test_spawn_ephemeral_contract_fields_persist_and_render(tmp_paths: Paths, monkeypatch):
+    # Contract-first delegation: authority/responsibility/accountability
+    # are persisted to the agent dir and rendered into the harness so
+    # the spawned agent can see them up front.
+    monkeypatch.setenv("METASPHERE_SPAWN_NO_EXEC", "1")
+
+    rec = agents.spawn_ephemeral(
+        "@contractor",
+        "/",
+        "fix the thing",
+        parent="@orchestrator",
+        paths=tmp_paths,
+        authority="Read/write metasphere/consolidate.py and its test file only.",
+        responsibility="Ship a commit that stops UNOWNED re-escalation after N pings.",
+        accountability="I will re-run pytest and grep for noop-pinged-out in events.",
+    )
+
+    agent_dir = tmp_paths.agents / "@contractor"
+    # Persisted to disk
+    assert (agent_dir / "authority").read_text().strip() == (
+        "Read/write metasphere/consolidate.py and its test file only."
+    )
+    assert (agent_dir / "responsibility").read_text().strip() == (
+        "Ship a commit that stops UNOWNED re-escalation after N pings."
+    )
+    assert (agent_dir / "accountability").read_text().strip() == (
+        "I will re-run pytest and grep for noop-pinged-out in events."
+    )
+    # Rendered into the harness as a contract block
+    harness = (agent_dir / "harness.md").read_text()
+    assert "Delegation Contract" in harness
+    assert "Authority (what you MAY do)" in harness
+    assert "Responsibility (what you MUST produce)" in harness
+    assert "Accountability (how parent will verify)" in harness
+    assert "Read/write metasphere/consolidate.py" in harness
+
+
+def test_spawn_ephemeral_legacy_no_contract_still_works(tmp_paths: Paths, monkeypatch):
+    # Back-compat: spawning without any contract fields produces a
+    # harness with no Delegation Contract block, and the agent dir has
+    # no authority/responsibility/accountability sidecar files.
+    monkeypatch.setenv("METASPHERE_SPAWN_NO_EXEC", "1")
+
+    agents.spawn_ephemeral(
+        "@legacy", "/", "prose task", parent="@orchestrator", paths=tmp_paths,
+    )
+
+    agent_dir = tmp_paths.agents / "@legacy"
+    harness = (agent_dir / "harness.md").read_text()
+    assert "Delegation Contract" not in harness
+    assert not (agent_dir / "authority").exists()
+    assert not (agent_dir / "responsibility").exists()
+    assert not (agent_dir / "accountability").exists()
+
+
 def test_spawn_ephemeral_normalizes_unprefixed_name(tmp_paths: Paths, monkeypatch):
     monkeypatch.setenv("METASPHERE_SPAWN_NO_EXEC", "1")
     rec = agents.spawn_ephemeral("noprefix", "/", "task", paths=tmp_paths)

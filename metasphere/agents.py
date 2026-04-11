@@ -180,7 +180,39 @@ def is_persistent(agent: AgentRecord) -> bool:
 # Harness rendering
 # ---------------------------------------------------------------------------
 
-def _render_harness(agent_id: str, scope_path: str, parent: str, task: str, timestamp: str) -> str:
+def _render_harness(
+    agent_id: str,
+    scope_path: str,
+    parent: str,
+    task: str,
+    timestamp: str,
+    *,
+    authority: str = "",
+    responsibility: str = "",
+    accountability: str = "",
+) -> str:
+    # Contract-first delegation (see agent-economy/NOTES-METASPHERE.md
+    # for the mapping to DeepMind's Intelligent Delegation paper). If any
+    # of the three fields are empty we still render a harness — legacy
+    # spawns keep working — but the orchestrator is strongly nudged to
+    # fill them in and the CLI/library layer warns on empty.
+    contract = ""
+    if authority or responsibility or accountability:
+        contract = (
+            "## Delegation Contract\n\n"
+            "You were spawned under an explicit contract. Read it before\n"
+            "you begin. If any field is ambiguous, do NOT guess — send\n"
+            "`messages send @.. !query \"clarify: …\"` and wait.\n\n"
+            f"### Authority (what you MAY do)\n\n{authority or '(unspecified — ask parent before acting)'}\n\n"
+            f"### Responsibility (what you MUST produce)\n\n{responsibility or '(unspecified — ask parent)'}\n\n"
+            f"### Accountability (how parent will verify)\n\n{accountability or '(unspecified — ask parent)'}\n\n"
+            "Your `!done` message must include attestation: the concrete\n"
+            "artifacts that satisfy Accountability (commit SHAs, test\n"
+            "counts, files touched, paths, IDs — whatever the spec calls\n"
+            "for). `!done` without attestation will be rejected.\n\n"
+            "---\n\n"
+        )
+
     return f"""# Agent: {agent_id}
 
 You are **{agent_id}**, an autonomous agent working in the Metasphere system.
@@ -200,7 +232,7 @@ You are **{agent_id}**, an autonomous agent working in the Metasphere system.
 
 ---
 
-You are autonomous. Work through your task systematically, communicate
+{contract}You are autonomous. Work through your task systematically, communicate
 status via `messages send @.. !info`, ask for help if blocked, and
 complete your objective.
 
@@ -217,7 +249,7 @@ stay out of that loop.
 When done:
 
     echo "complete: summary" > ~/.metasphere/agents/{agent_id}/status
-    messages send @.. !done "Completed: ..."
+    messages send @.. !done "Completed: <summary>\\n\\nAttestation: <concrete evidence>"
 """
 
 
@@ -248,9 +280,21 @@ def spawn_ephemeral(
     task: str,
     parent: str = "@orchestrator",
     paths: Paths | None = None,
+    *,
+    authority: str = "",
+    responsibility: str = "",
+    accountability: str = "",
 ) -> AgentRecord:
     """Create an ephemeral one-shot agent and (unless opted out) launch
     it headless via ``claude -p``.
+
+    The three optional contract fields — ``authority``, ``responsibility``,
+    ``accountability`` — implement a minimum-viable version of the
+    contract-first decomposition described in DeepMind's Intelligent
+    Delegation paper (arxiv 2602.11865). When supplied they're rendered
+    into the agent's harness as an explicit Delegation Contract block
+    and persisted to the agent dir so the parent can reload them on
+    ``!done`` verification. Legacy calls that omit them keep working.
 
     Honors ``METASPHERE_SPAWN_NO_EXEC=1`` to skip execution.
     """
@@ -274,6 +318,15 @@ def spawn_ephemeral(
     _atomic_meta_write(agent_dir, "scope", str(scope_abs))
     _atomic_meta_write(agent_dir, "parent", parent)
     _atomic_meta_write(agent_dir, "spawned_at", timestamp)
+    # Persist the contract so the parent can reload it on !done and run
+    # verification against accountability. Empty strings are fine — they
+    # just mean this spawn was legacy/no-contract.
+    if authority:
+        _atomic_meta_write(agent_dir, "authority", authority)
+    if responsibility:
+        _atomic_meta_write(agent_dir, "responsibility", responsibility)
+    if accountability:
+        _atomic_meta_write(agent_dir, "accountability", accountability)
 
     # Create a backing .tasks/active/<slug>.md and link it to the agent
     # via agent_dir/task_id. This is what lets posthook auto-archive the
@@ -301,7 +354,12 @@ def spawn_ephemeral(
     (paths.root / "messages" / agent_id / "inbox").mkdir(parents=True, exist_ok=True)
 
     harness_path = agent_dir / "harness.md"
-    harness = _render_harness(agent_id, scope_path, parent, task, timestamp)
+    harness = _render_harness(
+        agent_id, scope_path, parent, task, timestamp,
+        authority=authority,
+        responsibility=responsibility,
+        accountability=accountability,
+    )
     atomic_write_text(harness_path, harness)
 
     # Initial !task message in the agent's scope. Local import dodges
@@ -331,13 +389,25 @@ def spawn_ephemeral(
         agent_dir=agent_dir,
     )
 
+    # Meta is shared across every agent.spawn event variant. Contract
+    # fields are always included so the events log is a usable
+    # provenance ledger even for legacy spawns (empty strings are fine).
+    spawn_meta = {
+        "child": agent_id,
+        "scope": scope_path,
+        "has_contract": bool(authority or responsibility or accountability),
+        "authority": authority,
+        "responsibility": responsibility,
+        "accountability": accountability,
+    }
+
     no_exec = os.environ.get("METASPHERE_SPAWN_NO_EXEC", "0") == "1"
     if no_exec:
         log_event(
             "agent.spawn",
             f"{agent_id} spawned at {scope_path} (no-exec)",
             agent=parent,
-            meta={"child": agent_id, "scope": scope_path, "no_exec": True},
+            meta={**spawn_meta, "no_exec": True},
             paths=paths,
         )
         return record
@@ -347,7 +417,7 @@ def spawn_ephemeral(
             "agent.spawn",
             f"{agent_id} harness ready at {scope_path} (claude not in PATH)",
             agent=parent,
-            meta={"child": agent_id, "scope": scope_path, "claude_missing": True},
+            meta={**spawn_meta, "claude_missing": True},
             paths=paths,
         )
         return record
@@ -398,7 +468,7 @@ def spawn_ephemeral(
         "agent.spawn",
         f"{agent_id} spawned at {scope_path} (pid {proc.pid})",
         agent=parent,
-        meta={"child": agent_id, "scope": scope_path, "pid": proc.pid},
+        meta={**spawn_meta, "pid": proc.pid},
         paths=paths,
     )
     return record

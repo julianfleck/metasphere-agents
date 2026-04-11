@@ -54,22 +54,81 @@ def _status() -> int:
 # ---------------------------------------------------------------------------
 
 _SPAWN_USAGE = (
-    "Usage: metasphere-spawn @agent /scope/ \"task description\" [@parent]"
+    "Usage:\n"
+    "  metasphere-spawn @agent /scope/ \"task description\" [@parent]\n"
+    "       [--authority \"...\"] [--responsibility \"...\"] [--accountability \"...\"]\n"
+    "\n"
+    "Contract fields (strongly recommended, treated as required in a\n"
+    "future release — see agent-economy/NOTES-METASPHERE.md for rationale):\n"
+    "  --authority       What the agent MAY do (scope of allowed actions)\n"
+    "  --responsibility  What the agent MUST produce (artifact contract)\n"
+    "  --accountability  How parent will verify on !done (concrete check)\n"
 )
+
+
+def _extract_flag(argv: list[str], flag: str) -> tuple[str, list[str]]:
+    """Return (value, argv_without_flag). Accepts --flag=value or --flag value."""
+    out: list[str] = []
+    value = ""
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == flag and i + 1 < len(argv):
+            value = argv[i + 1]
+            i += 2
+            continue
+        if a.startswith(flag + "="):
+            value = a[len(flag) + 1 :]
+            i += 1
+            continue
+        out.append(a)
+        i += 1
+    return value, out
 
 
 def spawn_main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    # Peel off contract flags first so they can appear anywhere.
+    authority, argv = _extract_flag(argv, "--authority")
+    responsibility, argv = _extract_flag(argv, "--responsibility")
+    accountability, argv = _extract_flag(argv, "--accountability")
+
     if len(argv) < 3:
         print(_SPAWN_USAGE, file=sys.stderr)
         return 1
     agent_id, scope_path, task = argv[0], argv[1], argv[2]
     parent = argv[3] if len(argv) >= 4 else "@orchestrator"
-    rec = _agents.spawn_ephemeral(agent_id, scope_path, task, parent)
+
+    # Nudge: warn loudly when spawning without a contract so the
+    # operator (or orchestrator) feels the friction. Don't hard-block
+    # yet — that breaks every legacy spawn site.
+    if not (authority or responsibility or accountability):
+        print(
+            "warning: spawning without --authority/--responsibility/--accountability.\n"
+            "         Legacy spawn accepted, but the contract-first form is strongly\n"
+            "         preferred. See agent-economy/NOTES-METASPHERE.md.",
+            file=sys.stderr,
+        )
+
+    rec = _agents.spawn_ephemeral(
+        agent_id,
+        scope_path,
+        task,
+        parent,
+        authority=authority,
+        responsibility=responsibility,
+        accountability=accountability,
+    )
     print(f"Spawned {rec.name}")
     print(f"  Scope:  {rec.scope}")
     print(f"  Parent: {rec.parent}")
     print(f"  Task:   {task}")
+    if authority:
+        print(f"  Authority:       {authority[:100]}")
+    if responsibility:
+        print(f"  Responsibility:  {responsibility[:100]}")
+    if accountability:
+        print(f"  Accountability:  {accountability[:100]}")
     if rec.pid_file and rec.pid_file.is_file():
         print(f"  PID:    {rec.pid_file.read_text().strip()}")
     return 0

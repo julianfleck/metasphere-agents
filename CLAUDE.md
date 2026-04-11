@@ -295,21 +295,49 @@ This is configured in `.claude/settings.json`:
 
 ### Spawning Child Agents
 
-When a task is too complex, spawn specialized children:
+When a task is too complex, spawn specialized children **under a contract**:
 
 ```bash
-# Research agent at root scope
-metasphere-spawn @researcher / "Investigate JWT security patterns" @orchestrator
-
-# Implementation agent at scripts/ scope
-metasphere-spawn @scripts-dev /scripts/ "Add messages --json output" @orchestrator
+metasphere-spawn @researcher / "Investigate JWT security patterns" @orchestrator \
+  --authority "Read-only: browse the web, read files under metasphere/, docs/. Do NOT write code, commit, or push." \
+  --responsibility "Produce a markdown report at docs/research/jwt-patterns-<date>.md with 5+ cited patterns, pros/cons, and a recommendation. Commit and push that one file." \
+  --accountability "On !done I will verify: (1) the file exists at the named path, (2) it has 5+ distinct patterns each with ≥1 source link, (3) it ends with a Recommendation section, (4) git log shows a single commit touching only that file."
 ```
 
+**Contract-first delegation (required).** Every spawn MUST fill in three
+fields. They come from the minimum-viable reading of DeepMind's
+Intelligent Delegation paper (arxiv 2602.11865) — see
+`~/projects/agent-economy/NOTES-METASPHERE.md` for the mapping.
+
+- **Authority**: what the agent *may* do. Scope boundary, allowed
+  tools, allowed side-effects. Privilege attenuation: the child gets
+  *less* than you have, not the same. If you cannot name what the
+  child is permitted to do, you cannot spawn — decompose further.
+- **Responsibility**: what the agent *must* produce. The artifact
+  contract. Concrete nouns, not verbs ("ships commit SHA on main", not
+  "works on the fix").
+- **Accountability**: how *you* will verify on `!done`. A concrete,
+  re-runnable check you will actually execute. If you cannot write
+  this, the task is too subjective to delegate — decompose it until
+  every leaf has a verification.
+
+Legacy spawns without the three fields still work (the CLI warns but
+accepts) so existing code doesn't break. Strongly prefer the
+contract-first form for anything non-trivial.
+
+**`!done` is not enough on its own.** The child's `!done` message must
+include *attestation* — the concrete evidence that satisfies
+Accountability. Commit SHAs, test pass counts, file paths, IDs,
+whatever the spec calls for. When you receive `!done`, re-run the
+Accountability check. If it fails, reject and reopen. Do not act as an
+unthinking router that forwards `!done` upstream without verification.
+
 Spawned agents:
-- Receive a harness with their identity and task
+- Receive a harness with their identity, task, and (when provided) the
+  three contract fields rendered prominently at the top
 - Work within their assigned scope
 - See messages/tasks from scope + parents
-- Report completion via `messages send @.. !done "summary"`
+- Report completion via `messages send @.. !done "summary + attestation"`
 
 ### Message Flow
 
