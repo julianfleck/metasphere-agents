@@ -362,22 +362,16 @@ def spawn_ephemeral(
     )
     atomic_write_text(harness_path, harness)
 
-    # Initial !task message in the agent's scope. Local import dodges
-    # the messages → events → identity dependency cycle on cold start.
-    try:
-        from .messages import send_message
-
-        # We send into the scope by addressing the scope path itself.
-        send_message(
-            target="@" + scope_path,
-            label="!task",
-            body=task,
-            from_agent=parent,
-            paths=paths,
-            wake=False,
-        )
-    except Exception:
-        pass
+    # No initial !task message in scope — the harness already embeds
+    # the task in its `Your Task` section, so this would be redundant
+    # signaling. The previous version sent one anyway, which polluted
+    # the parent's scope inbox with an orphan SACRED !task per spawn
+    # (since parent and child share scope=/, the parent saw every
+    # spawn's task message and there was nobody to act on it: the
+    # child already had the task via the harness, the parent was the
+    # one who issued it). See `messages_done_self_loop.md` and
+    # `ephemeral_gc_no_reader_followup.md` in memory for the broader
+    # "no reader" thread that this is the third instance of.
 
     record = AgentRecord(
         name=agent_id,

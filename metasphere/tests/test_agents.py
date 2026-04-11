@@ -140,6 +140,24 @@ def test_spawn_ephemeral_normalizes_unprefixed_name(tmp_paths: Paths, monkeypatc
     assert (tmp_paths.agents / "@noprefix").is_dir()
 
 
+def test_spawn_ephemeral_does_not_pollute_scope_inbox(tmp_paths: Paths, monkeypatch):
+    # Regression: a previous version sent an initial `!task` message
+    # into the scope inbox alongside the harness, claiming to "let the
+    # agent see the task". The harness already embeds the task in its
+    # `Your Task` section, so the message was redundant — and at
+    # shared scopes (parent and child both at /) it permanently
+    # polluted the parent's inbox with an orphan SACRED !task per
+    # spawn. The send is now elided.
+    monkeypatch.setenv("METASPHERE_SPAWN_NO_EXEC", "1")
+    agents.spawn_ephemeral(
+        "@quiet-spawn", "/", "do work", parent="@orchestrator", paths=tmp_paths,
+    )
+    # Scope-/ resolves to project_root in spawn_ephemeral.
+    inbox = tmp_paths.project_root / ".messages" / "inbox"
+    msgs = list(inbox.glob("*.msg")) if inbox.exists() else []
+    assert msgs == [], f"spawn should not create scope-inbox messages, got {msgs}"
+
+
 # ---------------------------------------------------------------------------
 # wake_persistent
 # ---------------------------------------------------------------------------
