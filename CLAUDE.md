@@ -307,7 +307,7 @@ metasphere-spawn @researcher / "Investigate JWT security patterns" @orchestrator
 **Contract-first delegation (required).** Every spawn MUST fill in three
 fields. They come from the minimum-viable reading of DeepMind's
 Intelligent Delegation paper (arxiv 2602.11865) — see
-`~/projects/agent-economy/NOTES-METASPHERE.md` for the mapping.
+`~/projects/agent-economy/NOTES-DEEPMIND-DELEGATION.md` for the mapping.
 
 - **Authority**: what the agent *may* do. Scope boundary, allowed
   tools, allowed side-effects. Privilege attenuation: the child gets

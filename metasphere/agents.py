@@ -191,7 +191,7 @@ def _render_harness(
     responsibility: str = "",
     accountability: str = "",
 ) -> str:
-    # Contract-first delegation (see agent-economy/NOTES-METASPHERE.md
+    # Contract-first delegation (see agent-economy/NOTES-DEEPMIND-DELEGATION.md
     # for the mapping to DeepMind's Intelligent Delegation paper). If any
     # of the three fields are empty we still render a harness — legacy
     # spawns keep working — but the orchestrator is strongly nudged to

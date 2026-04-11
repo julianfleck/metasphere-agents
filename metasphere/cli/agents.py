@@ -59,7 +59,7 @@ _SPAWN_USAGE = (
     "       [--authority \"...\"] [--responsibility \"...\"] [--accountability \"...\"]\n"
     "\n"
     "Contract fields (strongly recommended, treated as required in a\n"
-    "future release — see agent-economy/NOTES-METASPHERE.md for rationale):\n"
+    "future release — see agent-economy/NOTES-DEEPMIND-DELEGATION.md for rationale):\n"
     "  --authority       What the agent MAY do (scope of allowed actions)\n"
     "  --responsibility  What the agent MUST produce (artifact contract)\n"
     "  --accountability  How parent will verify on !done (concrete check)\n"
@@ -106,7 +106,7 @@ def spawn_main(argv: list[str] | None = None) -> int:
         print(
             "warning: spawning without --authority/--responsibility/--accountability.\n"
             "         Legacy spawn accepted, but the contract-first form is strongly\n"
-            "         preferred. See agent-economy/NOTES-METASPHERE.md.",
+            "         preferred. See agent-economy/NOTES-DEEPMIND-DELEGATION.md.",
             file=sys.stderr,
         )
 
