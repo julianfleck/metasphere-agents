@@ -14,11 +14,18 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from .agents import _tmux_bin, session_alive, session_name_for
+from .agents import (
+    AgentRecord,
+    _tmux_bin,
+    list_agents,
+    session_alive,
+    session_name_for,
+)
 from .events import log_event
 from .paths import Paths, resolve
 
 _SESSION_PREFIX = "metasphere-"
+VIEWER_SESSION_NAME = "metasphere-all"
 
 
 @dataclass
@@ -187,3 +194,99 @@ def send_to_session(agent: str, message: str, paths: Paths | None = None) -> boo
     from .telegram.inject import submit_to_tmux as _submit
 
     return _submit("@cli", message, session=target)
+
+
+# ---------------------------------------------------------------------------
+# Multi-agent viewer session (``metasphere sessions all``)
+# ---------------------------------------------------------------------------
+
+def list_alive_persistent_agents(
+    paths: Paths | None = None,
+) -> list[tuple[AgentRecord, str]]:
+    """Return ``[(agent, session_name), ...]`` for every persistent agent
+    whose tmux session is currently alive.
+
+    Walks both global (``~/.metasphere/agents/@*``) and project-scoped
+    (``~/.metasphere/projects/*/agents/@*``) directories via
+    ``list_agents``.
+    """
+    paths = paths or resolve()
+    out: list[tuple[AgentRecord, str]] = []
+    for agent in list_agents(paths):
+        if not agent.is_persistent:
+            continue
+        sname = agent.session_name
+        if session_alive(sname):
+            out.append((agent, sname))
+    return out
+
+
+def kill_viewer_session(viewer: str = VIEWER_SESSION_NAME) -> bool:
+    """Kill the viewer tmux session if it exists. Source sessions are
+    unaffected (linked windows are simply dropped).
+
+    Returns True if a session was killed.
+    """
+    if not session_alive(viewer):
+        return False
+    _tmux_run("kill-session", "-t", viewer)
+    return True
+
+
+def build_viewer_session(
+    viewer: str = VIEWER_SESSION_NAME,
+    paths: Paths | None = None,
+) -> tuple[str, list[AgentRecord]]:
+    """Build (or rebuild) a tmux session showing every alive persistent
+    agent as a linked window.
+
+    Idempotent: any pre-existing ``viewer`` session is killed first.
+    Returns ``(viewer_name, linked_agents)``. ``linked_agents`` is empty
+    if no agents were alive; in that case no viewer session is created.
+
+    Source sessions are not modified — ``link-window`` is non-destructive,
+    and tearing down the viewer later via ``kill_viewer_session`` does
+    not touch the sources.
+    """
+    alive = list_alive_persistent_agents(paths)
+
+    # Idempotent rebuild: drop any stale viewer first.
+    if session_alive(viewer):
+        _tmux_run("kill-session", "-t", viewer)
+
+    if not alive:
+        return viewer, []
+
+    # Detached placeholder window at index 0; linked sources get real indices.
+    _tmux_run("new-session", "-d", "-s", viewer, "-n", "_placeholder")
+
+    linked: list[AgentRecord] = []
+    for idx, (agent, src) in enumerate(alive, start=1):
+        r = _tmux_run(
+            "link-window",
+            "-s", f"{src}:0",
+            "-t", f"{viewer}:{idx}",
+        )
+        if r.returncode == 0:
+            linked.append(agent)
+
+    # Drop the placeholder; if nothing linked successfully, tear down the
+    # viewer entirely so the caller sees an empty result.
+    _tmux_run("kill-window", "-t", f"{viewer}:_placeholder")
+    if not linked:
+        _tmux_run("kill-session", "-t", viewer)
+        return viewer, []
+
+    _tmux_run("select-window", "-t", f"{viewer}:{1}")
+    return viewer, linked
+
+
+def attach_viewer(viewer: str = VIEWER_SESSION_NAME) -> int:
+    """Exec ``tmux attach`` to the viewer session. Replaces current proc.
+
+    Returns 1 if the viewer does not exist (does not exec).
+    """
+    if not session_alive(viewer):
+        return 1
+    os.execvp(_tmux_bin(), [_tmux_bin(), "attach-session", "-t", viewer])
+    return 0  # unreachable
