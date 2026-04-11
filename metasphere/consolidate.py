@@ -677,13 +677,20 @@ def classify_message(
             return MSG_VERDICT_INFO_AUTO_ARCHIVE
         return MSG_VERDICT_SACRED
 
+    # DONE-PENDING-ARCHIVE: already completed, still sitting in inbox/.
+    # This check fires BEFORE the SACRED-label check because completing
+    # a message IS the explicit human action SACRED is supposed to
+    # protect — once acted on, even a !task or !query should archive.
+    # The previous order left completed sacred messages stuck in inbox
+    # forever (witnessed 2026-04-11 — !task messages closed via
+    # `messages done` at 19:18Z were still showing in heartbeats hours
+    # later because SACRED short-circuited before COMPLETED).
+    if msg.status == _messages.STATUS_COMPLETED:
+        return MSG_VERDICT_DONE_PENDING_ARCHIVE
+
     # Sacred labels: never touched by the consolidator beyond reporting.
     if msg.label in _messages.SACRED_LABELS:
         return MSG_VERDICT_SACRED
-
-    # DONE-PENDING-ARCHIVE: already completed, still sitting in inbox/.
-    if msg.status == _messages.STATUS_COMPLETED:
-        return MSG_VERDICT_DONE_PENDING_ARCHIVE
 
     # UNREAD-OLD: status still unread after the stale window. Rare after
     # auto-mark-read on view, but catches messages on agents that

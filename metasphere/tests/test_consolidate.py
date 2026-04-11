@@ -564,6 +564,20 @@ def test_msg_classify_done_pending_archive(repo, tmp_paths):
     assert _con.classify_message(m_) == _con.MSG_VERDICT_DONE_PENDING_ARCHIVE
 
 
+def test_msg_classify_completed_sacred_label_still_archives(repo, tmp_paths):
+    # Regression: when a !task or !query is explicitly closed via
+    # `messages done`, it should archive on the next consolidate cycle —
+    # NOT stay parked as MSG_VERDICT_SACRED forever. Completing IS the
+    # explicit human action SACRED is supposed to protect; once acted
+    # on, the message has done its job. The previous code checked the
+    # SACRED label before the COMPLETED status and left closed sacred
+    # messages stuck in inbox indefinitely (witnessed 2026-04-11).
+    m_ = _send_msg(tmp_paths, "!task")
+    _msgs.update_status(m_.path, "status", _msgs.STATUS_COMPLETED)
+    m_ = _msgs.read_message(m_.path)
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_DONE_PENDING_ARCHIVE
+
+
 def test_msg_classify_info_auto_archive(repo, tmp_paths):
     m_ = _send_msg(tmp_paths, "!info")
     m_ = _age_msg(m_, read_min_ago=120)
