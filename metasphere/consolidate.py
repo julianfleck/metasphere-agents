@@ -554,6 +554,14 @@ def classify_message(
     if info_archive_after_minutes is None:
         info_archive_after_minutes = INFO_AUTO_ARCHIVE_AFTER_MINUTES
 
+    # Messages from @consolidate itself are meta-signals about other
+    # messages (escalations, pings). They must never re-enter the
+    # consolidation loop — if they did, each tick would escalate the
+    # previous tick's escalations, producing geometric cascade growth.
+    # Treat them as sacred; their fate is the same as any other !info.
+    if (msg.from_ or "").lstrip("@") == "consolidate":
+        return MSG_VERDICT_SACRED
+
     # Sacred labels: never touched by the consolidator beyond reporting.
     if msg.label in _messages.SACRED_LABELS:
         return MSG_VERDICT_SACRED
@@ -568,6 +576,12 @@ def classify_message(
     if msg.status == _messages.STATUS_UNREAD:
         created = _parse_iso(msg.created)
         if created and (now - created) >= window:
+            # Cooldown: if we already escalated this message recently,
+            # leave alone. Without this, every 5-min consolidate tick
+            # re-escalates the same old unread message forever.
+            last_ping = _parse_iso(msg.last_pinged_at)
+            if last_ping and (now - last_ping) < window:
+                return MSG_VERDICT_ACTIVE
             return MSG_VERDICT_UNREAD_OLD
         return MSG_VERDICT_ACTIVE
 
@@ -705,11 +719,19 @@ def apply_message_verdict(
         else:
             result.update(_archive_msg(msg, "info-auto-archive"))
     elif verdict == MSG_VERDICT_UNREAD_OLD:
-        if dry_run:
-            result["action"] = "would-escalate-orchestrator"
-            result["target"] = "@orchestrator"
+        # Threshold: after N escalations with no progress, archive
+        # instead of re-escalating forever. Matches STALE behaviour.
+        if msg.ping_count >= ping_escalate_threshold:
+            if dry_run:
+                result["action"] = "would-archive"
+            else:
+                result.update(_archive_msg(msg, "unread-old-pinged-out"))
         else:
-            result.update(_escalate_msg_to_orchestrator(msg, "unread-old", paths, sender=sender))
+            if dry_run:
+                result["action"] = "would-escalate-orchestrator"
+                result["target"] = "@orchestrator"
+            else:
+                result.update(_escalate_msg_to_orchestrator(msg, "unread-old", paths, sender=sender))
     elif verdict == MSG_VERDICT_STALE:
         if msg.ping_count >= ping_escalate_threshold:
             if dry_run:

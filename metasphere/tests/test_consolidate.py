@@ -442,6 +442,45 @@ def test_msg_classify_stale_nonsacred(repo, tmp_paths):
     assert _con.classify_message(m_) == _con.MSG_VERDICT_STALE
 
 
+def test_msg_classify_unread_old_cooldown(repo, tmp_paths):
+    # Freshly escalated UNREAD-OLD should go back to ACTIVE until the
+    # cooldown window expires — without this, every 5-min consolidate
+    # tick re-escalates the same old unread message forever.
+    m_ = _send_msg(tmp_paths, "!info")
+    m_ = _age_msg(m_, created_min_ago=60)
+    _msgs.update_status(m_.path, "last_pinged_at", _iso(5))
+    m_ = _msgs.read_message(m_.path)
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_ACTIVE
+
+
+def test_msg_classify_from_consolidate_is_sacred(repo, tmp_paths):
+    # Messages authored by @consolidate itself (escalations, pings)
+    # must never re-enter the loop, or the cascade grows geometrically.
+    m_ = _msgs.send_message(
+        "@.", "!info", "x", "@consolidate", paths=tmp_paths, wake=False
+    )
+    m_ = _age_msg(m_, created_min_ago=60)  # UNREAD-OLD candidate
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_SACRED
+
+
+def test_msg_apply_unread_old_threshold_archives(repo, tmp_paths):
+    # After ping_escalate_threshold escalations, UNREAD-OLD archives
+    # instead of escalating forever.
+    m_ = _send_msg(tmp_paths, "!info")
+    m_ = _age_msg(m_, created_min_ago=60)
+    _msgs.update_status(m_.path, "ping_count", "5")
+    m_ = _msgs.read_message(m_.path)
+    src = m_.path
+    sender = _FakeSender()
+    result = _con.apply_message_verdict(
+        m_, _con.MSG_VERDICT_UNREAD_OLD, tmp_paths, sender=sender
+    )
+    assert result["action"] == "archived"
+    assert not src.exists()
+    # Critically: no new escalation !info sent.
+    assert len(sender.calls) == 0
+
+
 def test_msg_classify_stale_cooldown(repo, tmp_paths):
     m_ = _send_msg(tmp_paths, "!reply")
     m_ = _age_msg(m_, read_min_ago=60)
