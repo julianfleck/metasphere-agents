@@ -56,6 +56,7 @@ STATUS_PENDING = "pending"
 STATUS_IN_PROGRESS = "in-progress"
 STATUS_BLOCKED = "blocked"
 STATUS_COMPLETED = "completed"
+STATUS_ABANDONED = "abandoned"
 
 
 @dataclass
@@ -524,6 +525,43 @@ def complete_task(task_id: str, summary: str, project_root: Path) -> Task:
 
     # Sidecar lock follows the task file so active/ doesn't accumulate orphans.
     # Done after the `with` block so the flock is released first.
+    lock_dest = _lock_path(dest)
+    if lock_src.exists() and not lock_dest.exists():
+        try:
+            shutil.move(str(lock_src), str(lock_dest))
+        except OSError:
+            pass
+    return task
+
+
+def abandon_task(task_id: str, reason: str, project_root: Path) -> Task:
+    """Mark task abandoned and move file from ``active/`` → ``archive/_abandoned/``.
+
+    Terminal state for orphan tasks that have aged past the abandon
+    window without ever finding an owner. Mirrors :func:`complete_task`
+    but uses a flat ``_abandoned`` bucket (no daily date dir) so the
+    archive doesn't get noisy with one-task-per-day folders.
+    """
+    path = _find_task_file(task_id, project_root)
+    if path is None:
+        raise FileNotFoundError(f"task {task_id} not found")
+
+    lock_src = _lock_path(path)
+    with file_lock(lock_src):
+        task = _load(path)
+        now = _utcnow()
+        task.status = STATUS_ABANDONED
+        task.updated = now
+        if reason:
+            task.body = _append_update(task.body, f"Abandoned: {reason}")
+        atomic_write_text(path, task.to_text())
+
+        archive_dir = path.parent.parent / "archive" / "_abandoned"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        dest = archive_dir / path.name
+        shutil.move(str(path), str(dest))
+        task.path = dest
+
     lock_dest = _lock_path(dest)
     if lock_src.exists() and not lock_dest.exists():
         try:

@@ -64,8 +64,20 @@ def _set_updated(task: _tasks.Task, iso: str, repo: Path) -> _tasks.Task:
     return _tasks.Task.from_text(task.path.read_text(), path=task.path)
 
 
+def _set_created(task: _tasks.Task, iso: str, repo: Path) -> _tasks.Task:
+    text = task.path.read_text()
+    new = text.replace(f"created: {task.created}", f"created: {iso}")
+    task.path.write_text(new)
+    return _tasks.Task.from_text(task.path.read_text(), path=task.path)
+
+
 def _iso(minutes_ago: int) -> str:
     dt = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=minutes_ago)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _iso_days(days_ago: int) -> str:
+    dt = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days_ago)
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -233,6 +245,123 @@ def test_unowned_threshold_stops_escalating(repo, tmp_paths):
     assert result["action"] == "noop-pinged-out"
     # Critically: no new escalation !info sent.
     assert len(sender.calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# ABANDONED — terminal verdict for orphan tasks that aged out
+# ---------------------------------------------------------------------------
+
+
+def test_classify_abandoned_when_unowned_pinged_out_and_old(repo, tmp_paths):
+    # UNOWNED + ping_count >= threshold + created >= 3 days ago → ABANDONED
+    t = _create_task(repo, "ancient orphan")
+    t = _set_updated(t, _iso(60), repo)
+    t = _set_created(t, _iso_days(4), repo)
+    _tasks.update_task(t.id, repo, ping_count=5)
+    t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    # update_task bumped updated_at; force it back
+    t = _set_updated(t, _iso(60), repo)
+    assert _con.classify_task(t, stale_window_minutes=15) == _con.VERDICT_ABANDONED
+
+
+def test_classify_unowned_not_abandoned_when_recently_created(repo, tmp_paths):
+    # Pinged out but only 1 day old → still UNOWNED, not ABANDONED
+    t = _create_task(repo, "recent orphan")
+    t = _set_updated(t, _iso(60), repo)
+    t = _set_created(t, _iso_days(1), repo)
+    _tasks.update_task(t.id, repo, ping_count=5)
+    t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    t = _set_updated(t, _iso(60), repo)
+    assert _con.classify_task(t, stale_window_minutes=15) == _con.VERDICT_UNOWNED
+
+
+def test_classify_unowned_not_abandoned_when_not_pinged_out(repo, tmp_paths):
+    # Old enough but ping_count below threshold → still UNOWNED
+    t = _create_task(repo, "quiet orphan")
+    t = _set_updated(t, _iso(60), repo)
+    t = _set_created(t, _iso_days(7), repo)
+    assert _con.classify_task(t, stale_window_minutes=15) == _con.VERDICT_UNOWNED
+
+
+def test_classify_abandoned_respects_custom_age(repo, tmp_paths):
+    # With abandoned_age_days=1, a 2-day-old pinged-out orphan is ABANDONED
+    t = _create_task(repo, "tunable orphan")
+    t = _set_updated(t, _iso(60), repo)
+    t = _set_created(t, _iso_days(2), repo)
+    _tasks.update_task(t.id, repo, ping_count=5)
+    t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    t = _set_updated(t, _iso(60), repo)
+    assert (
+        _con.classify_task(t, stale_window_minutes=15, abandoned_age_days=1)
+        == _con.VERDICT_ABANDONED
+    )
+
+
+def test_apply_abandoned_archives_to_abandoned_bucket(repo, tmp_paths):
+    t = _create_task(repo, "to be abandoned")
+    src = t.path
+    result = _con.apply_verdict(
+        t, _con.VERDICT_ABANDONED, repo, tmp_paths
+    )
+    assert result["action"] == "archived-abandoned"
+    assert result["verdict"] == _con.VERDICT_ABANDONED
+    # File moved out of active/
+    assert not src.exists()
+    # File landed in archive/_abandoned/
+    dest = repo / ".tasks" / "archive" / "_abandoned" / f"{t.id}.md"
+    assert dest.exists()
+    # Status flipped to abandoned
+    archived = _tasks.Task.from_text(dest.read_text(), path=dest)
+    assert archived.status == _tasks.STATUS_ABANDONED
+
+
+def test_apply_abandoned_dry_run_does_not_move(repo, tmp_paths):
+    t = _create_task(repo, "dryrun abandon")
+    src = t.path
+    result = _con.apply_verdict(
+        t, _con.VERDICT_ABANDONED, repo, tmp_paths, dry_run=True
+    )
+    assert result["action"] == "would-archive-abandoned"
+    assert src.exists()
+    assert not (repo / ".tasks" / "archive" / "_abandoned" / f"{t.id}.md").exists()
+
+
+def test_apply_abandoned_emits_consolidate_event(repo, tmp_paths):
+    t = _create_task(repo, "loud abandon")
+    _con.apply_verdict(t, _con.VERDICT_ABANDONED, repo, tmp_paths)
+
+    log = tmp_paths.events_log
+    assert log.exists()
+    lines = [json.loads(l) for l in log.read_text().splitlines() if l.strip()]
+    cons = [
+        e for e in lines
+        if e["type"] == "task.consolidate"
+        and e["meta"]["task_id"] == t.id
+    ]
+    assert cons
+    assert cons[-1]["meta"]["verdict"] == _con.VERDICT_ABANDONED
+    assert cons[-1]["meta"]["action"] == "archived-abandoned"
+
+
+def test_run_pass_archives_abandoned_orphan(repo, tmp_paths):
+    # End-to-end: a pinged-out orphan that's older than the abandon
+    # window gets archived to _abandoned/ in a single consolidate pass.
+    t = _create_task(repo, "end to end abandon")
+    t = _set_updated(t, _iso(60), repo)
+    t = _set_created(t, _iso_days(5), repo)
+    _tasks.update_task(t.id, repo, ping_count=5)
+    t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    t = _set_updated(t, _iso(60), repo)
+    src = t.path
+
+    sender = _FakeSender()
+    r = _con.run_pass(project_root=repo, paths=tmp_paths, sender=sender)
+    assert any(res["verdict"] == _con.VERDICT_ABANDONED for res in r.results)
+    assert any(res["action"] == "archived-abandoned" for res in r.results)
+    assert not src.exists()
+    assert (repo / ".tasks" / "archive" / "_abandoned" / f"{t.id}.md").exists()
+    # No noisy escalation message sent.
+    assert sender.calls == []
 
 
 def test_ping_count_threshold_escalates_to_user(repo, tmp_paths):

@@ -1,20 +1,24 @@
 """Task lifecycle consolidation.
 
 This module runs on a short cron (every ~5 minutes) and classifies every
-active task into one of five lifecycle verdicts:
+active task into one of six lifecycle verdicts:
 
-* **ACTIVE**   — ``updated_at`` (or ``last_pinged_at``, used as a cooldown
-                 marker) is within the stale window. Leave alone.
-* **STALE**    — assigned, but both ``updated_at`` and ``last_pinged_at``
-                 are older than the stale window. Ping the owning agent
-                 for a status check; escalate to @orchestrator or @user
-                 if the ping count crosses the threshold.
-* **BLOCKED**  — ``status`` starts with ``blocked``. Waiting on something
-                 external — don't ping.
-* **UNOWNED**  — ``assigned_to`` is empty and no recent activity. Escalate
-                 to @orchestrator for triage.
-* **DONE**     — ``status`` starts with ``complete`` but the file is still
-                 in ``active/``. Archive immediately.
+* **ACTIVE**    — ``updated_at`` (or ``last_pinged_at``, used as a cooldown
+                  marker) is within the stale window. Leave alone.
+* **STALE**     — assigned, but both ``updated_at`` and ``last_pinged_at``
+                  are older than the stale window. Ping the owning agent
+                  for a status check; escalate to @orchestrator or @user
+                  if the ping count crosses the threshold.
+* **BLOCKED**   — ``status`` starts with ``blocked``. Waiting on something
+                  external — don't ping.
+* **UNOWNED**   — ``assigned_to`` is empty and no recent activity. Escalate
+                  to @orchestrator for triage.
+* **ABANDONED** — UNOWNED, pinged out, AND ``created_at`` older than the
+                  abandon window. Terminal: archive to
+                  ``.tasks/archive/_abandoned/`` so the task stops cycling
+                  through @orchestrator forever.
+* **DONE**      — ``status`` starts with ``complete`` but the file is still
+                  in ``active/``. Archive immediately.
 
 The git-commit collector from the previous incarnation of this module is
 kept as ONE optional signal: if a commit in the recent window references
@@ -55,9 +59,17 @@ VERDICT_ACTIVE = "ACTIVE"
 VERDICT_STALE = "STALE"
 VERDICT_BLOCKED = "BLOCKED"
 VERDICT_UNOWNED = "UNOWNED"
+VERDICT_ABANDONED = "ABANDONED"
 VERDICT_DONE = "DONE"
 
-VERDICTS = (VERDICT_ACTIVE, VERDICT_STALE, VERDICT_BLOCKED, VERDICT_UNOWNED, VERDICT_DONE)
+VERDICTS = (
+    VERDICT_ACTIVE,
+    VERDICT_STALE,
+    VERDICT_BLOCKED,
+    VERDICT_UNOWNED,
+    VERDICT_ABANDONED,
+    VERDICT_DONE,
+)
 
 # Message-lifecycle verdicts. Parallel to task verdicts but distinct so
 # the two scans don't stomp on each other's rendering.
@@ -88,6 +100,12 @@ STALE_WINDOW_MINUTES_DEFAULT = 15
 # After this many pings without progress, escalate a step further
 # (orchestrator → user).
 PING_ESCALATE_THRESHOLD_DEFAULT = 3
+
+# An UNOWNED task that has been pinged out AND is older than this many
+# days is considered ABANDONED — archive it instead of leaving it to
+# noop-bounce against @orchestrator forever. Tunable; tasks newer than
+# this stay in the noop-pinged-out state until they age in.
+ABANDONED_AGE_DAYS_DEFAULT = 3
 
 # Git lookback window. Only used as a soft signal that bumps updated_at.
 DEFAULT_SINCE = "2d"
@@ -276,8 +294,10 @@ def classify_task(
     *,
     now: _dt.datetime | None = None,
     stale_window_minutes: int = STALE_WINDOW_MINUTES_DEFAULT,
+    ping_escalate_threshold: int = PING_ESCALATE_THRESHOLD_DEFAULT,
+    abandoned_age_days: int = ABANDONED_AGE_DAYS_DEFAULT,
 ) -> str:
-    """Return one of the five lifecycle verdicts for ``task``."""
+    """Return one of the lifecycle verdicts for ``task``."""
     now = now or _utcnow()
     window = _dt.timedelta(minutes=stale_window_minutes)
 
@@ -298,6 +318,18 @@ def classify_task(
         return VERDICT_ACTIVE
 
     if not task.assignee:
+        # Terminal ABANDONED: orphan task that has already been pinged
+        # out AND is older than the abandon window. Without this branch,
+        # the task ping-bounces forever between UNOWNED → noop-pinged-out
+        # every cooldown cycle and never leaves active/.
+        created = _parse_iso(task.created)
+        abandon_window = _dt.timedelta(days=abandoned_age_days)
+        if (
+            task.ping_count >= ping_escalate_threshold
+            and created is not None
+            and (now - created) >= abandon_window
+        ):
+            return VERDICT_ABANDONED
         return VERDICT_UNOWNED
     return VERDICT_STALE
 
@@ -418,6 +450,20 @@ def archive_done_task(
         return {"action": f"error:{e}", "target": "", "delivered": False}
 
 
+def archive_abandoned_task(
+    task: _tasks.Task,
+    project_root: Path,
+    *,
+    reason: str = "orphan task aged past abandon window",
+) -> dict:
+    """Move a terminal ABANDONED task into ``.tasks/archive/_abandoned/``."""
+    try:
+        _tasks.abandon_task(task.id, reason, project_root)
+        return {"action": "archived-abandoned", "target": "", "delivered": True}
+    except Exception as e:  # pragma: no cover - defensive
+        return {"action": f"error:{e}", "target": "", "delivered": False}
+
+
 def _default_sender() -> Callable[..., object]:
     # Lazy import to keep consolidate importable in minimal contexts.
     from . import messages as _messages
@@ -479,6 +525,11 @@ def apply_verdict(
             result["action"] = "would-archive"
         else:
             result.update(archive_done_task(task, project_root))
+    elif verdict == VERDICT_ABANDONED:
+        if dry_run:
+            result["action"] = "would-archive-abandoned"
+        else:
+            result.update(archive_abandoned_task(task, project_root))
     elif verdict == VERDICT_UNOWNED:
         reason = "unowned"
         # Threshold: after N escalations without an owner assignment,
@@ -937,6 +988,7 @@ def run_pass(
     since: str = DEFAULT_SINCE,
     stale_window_minutes: int = STALE_WINDOW_MINUTES_DEFAULT,
     ping_escalate_threshold: int = PING_ESCALATE_THRESHOLD_DEFAULT,
+    abandoned_age_days: int = ABANDONED_AGE_DAYS_DEFAULT,
     dry_run: bool = False,
     paths: Paths | None = None,
     sender: Callable[..., object] | None = None,
@@ -966,7 +1018,11 @@ def run_pass(
                 t.updated = commit_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         verdict = classify_task(
-            t, now=now, stale_window_minutes=stale_window_minutes
+            t,
+            now=now,
+            stale_window_minutes=stale_window_minutes,
+            ping_escalate_threshold=ping_escalate_threshold,
+            abandoned_age_days=abandoned_age_days,
         )
         result = apply_verdict(
             t, verdict, project_root, paths,
