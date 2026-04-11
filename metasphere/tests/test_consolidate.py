@@ -217,6 +217,24 @@ def test_unowned_escalates_to_orchestrator(repo, tmp_paths):
     assert sender.calls[0]["target"] == "@orchestrator"
 
 
+def test_unowned_threshold_stops_escalating(repo, tmp_paths):
+    # After ping_escalate_threshold escalations, UNOWNED goes silent
+    # instead of pinging @orchestrator forever. The task stays in
+    # place; operator can assign/archive/blocked anytime.
+    t = _create_task(repo, "chronically orphaned")
+    t = _set_updated(t, _iso(60), repo)
+    _tasks.update_task(t.id, repo, ping_count=5)
+    t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+
+    sender = _FakeSender()
+    result = _con.apply_verdict(
+        t, _con.VERDICT_UNOWNED, repo, tmp_paths, sender=sender
+    )
+    assert result["action"] == "noop-pinged-out"
+    # Critically: no new escalation !info sent.
+    assert len(sender.calls) == 0
+
+
 def test_ping_count_threshold_escalates_to_user(repo, tmp_paths):
     _make_persistent(tmp_paths, "@worker")
     t = _create_task(repo, "loud")
@@ -453,14 +471,23 @@ def test_msg_classify_unread_old_cooldown(repo, tmp_paths):
     assert _con.classify_message(m_) == _con.MSG_VERDICT_ACTIVE
 
 
-def test_msg_classify_from_consolidate_is_sacred(repo, tmp_paths):
-    # Messages authored by @consolidate itself (escalations, pings)
-    # must never re-enter the loop, or the cascade grows geometrically.
+def test_msg_classify_from_consolidate_fresh_is_sacred(repo, tmp_paths):
+    # Freshly sent @consolidate messages stay visible for one heartbeat
+    # tick so the operator sees the escalation, then auto-archive.
     m_ = _msgs.send_message(
         "@.", "!info", "x", "@consolidate", paths=tmp_paths, wake=False
     )
-    m_ = _age_msg(m_, created_min_ago=60)  # UNREAD-OLD candidate
     assert _con.classify_message(m_) == _con.MSG_VERDICT_SACRED
+
+
+def test_msg_classify_from_consolidate_old_auto_archives(repo, tmp_paths):
+    # After the 5-min window, @consolidate-authored messages auto-archive
+    # to keep the inbox clean even though the cascade is broken.
+    m_ = _msgs.send_message(
+        "@.", "!info", "x", "@consolidate", paths=tmp_paths, wake=False
+    )
+    m_ = _age_msg(m_, created_min_ago=10)
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_INFO_AUTO_ARCHIVE
 
 
 def test_msg_apply_unread_old_threshold_archives(repo, tmp_paths):

@@ -481,11 +481,25 @@ def apply_verdict(
             result.update(archive_done_task(task, project_root))
     elif verdict == VERDICT_UNOWNED:
         reason = "unowned"
-        if dry_run:
-            result["action"] = "would-escalate-orchestrator"
-            result["target"] = "@orchestrator"
+        # Threshold: after N escalations without an owner assignment,
+        # stop pinging @orchestrator. Otherwise the task re-escalates
+        # every cooldown window forever and the inbox fills up with
+        # identical !info messages. Mirrors the STALE behaviour.
+        if task.ping_count >= ping_escalate_threshold:
+            if dry_run:
+                result["action"] = "noop-pinged-out"
+            else:
+                # Silent no-op: task stays in place, just stops bugging
+                # us. Operator can assign, archive, or revisit anytime.
+                result["action"] = "noop-pinged-out"
+                # Bump ping_count once more so this branch stays hit.
+                _bump_ping(task, project_root)
         else:
-            result.update(escalate_to_orchestrator(task, reason, project_root, paths, sender=sender))
+            if dry_run:
+                result["action"] = "would-escalate-orchestrator"
+                result["target"] = "@orchestrator"
+            else:
+                result.update(escalate_to_orchestrator(task, reason, project_root, paths, sender=sender))
     elif verdict == VERDICT_STALE:
         # If we already pinged enough times, go up one level. Otherwise
         # either ping the assignee (if persistent) or escalate right away.
@@ -555,11 +569,16 @@ def classify_message(
         info_archive_after_minutes = INFO_AUTO_ARCHIVE_AFTER_MINUTES
 
     # Messages from @consolidate itself are meta-signals about other
-    # messages (escalations, pings). They must never re-enter the
-    # consolidation loop — if they did, each tick would escalate the
-    # previous tick's escalations, producing geometric cascade growth.
-    # Treat them as sacred; their fate is the same as any other !info.
+    # messages and tasks (escalations, pings). They must never re-enter
+    # the consolidation loop — if they did, each tick would escalate
+    # the previous tick's escalations, producing geometric cascade
+    # growth. Keep them visible in the heartbeat for one tick, then
+    # auto-archive so the inbox doesn't slowly fill with transient
+    # meta-chatter.
     if (msg.from_ or "").lstrip("@") == "consolidate":
+        created = _parse_iso(msg.created)
+        if created and (now - created) >= _dt.timedelta(minutes=5):
+            return MSG_VERDICT_INFO_AUTO_ARCHIVE
         return MSG_VERDICT_SACRED
 
     # Sacred labels: never touched by the consolidator beyond reporting.
