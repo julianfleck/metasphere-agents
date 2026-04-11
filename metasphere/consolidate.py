@@ -93,6 +93,18 @@ MSG_VERDICTS = (
 # this long. They're just notifications; nothing acts on them.
 INFO_AUTO_ARCHIVE_AFTER_MINUTES = 60
 
+# System agents that have no human/REPL reader behind them. Messages
+# addressed *to* these agents will never be "followed up on" — pinging
+# them as STALE just spawns more messages that themselves age into
+# STALE, producing a self-sustaining stale-ping cycle. Treat any such
+# message that would otherwise be STALE as auto-archive instead.
+SYSTEM_AGENTS_NO_READER = frozenset({
+    "@consolidate",
+    "@scheduler",
+    "@daemon-supervisor",
+    "@supervisor",
+})
+
 # Default lifecycle window. Anything not touched within this many minutes
 # is a candidate for a status-check ping.
 STALE_WINDOW_MINUTES_DEFAULT = 15
@@ -683,6 +695,13 @@ def classify_message(
     # on (no replied_at, no completed_at). Could mean the recipient
     # forgot to follow up. Ping them.
     if read_at and (now - read_at) >= window and not msg.replied_at and not msg.completed_at:
+        # If the recipient is a no-reader system agent (e.g. @consolidate),
+        # there is nobody behind it to "follow up". Pinging it just spawns
+        # another message that ages into STALE itself — a self-sustaining
+        # loop. Auto-archive instead. Normalise to the leading-@ form.
+        to_norm = msg.to if msg.to.startswith("@") else f"@{msg.to}" if msg.to else ""
+        if to_norm in SYSTEM_AGENTS_NO_READER:
+            return MSG_VERDICT_INFO_AUTO_ARCHIVE
         # Cooldown: if we pinged recently, leave alone.
         last_ping = _parse_iso(msg.last_pinged_at)
         if last_ping and (now - last_ping) < window:

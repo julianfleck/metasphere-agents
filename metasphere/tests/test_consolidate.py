@@ -589,6 +589,25 @@ def test_msg_classify_stale_nonsacred(repo, tmp_paths):
     assert _con.classify_message(m_) == _con.MSG_VERDICT_STALE
 
 
+def test_msg_classify_stale_to_no_reader_system_agent_archives(repo, tmp_paths):
+    # A !done message addressed to @consolidate that was read past the
+    # stale window (but before the info-auto-archive window) would
+    # otherwise hit the STALE branch and trigger a ping cycle: the ping
+    # itself ages into STALE on the next tick and re-pings, forever.
+    # @consolidate has no human/REPL reader behind it, so the right
+    # answer is to auto-archive instead. Regression test for loop 2.
+    m_ = _msgs.send_message(
+        "@consolidate", "!done", "x", "@orchestrator", paths=tmp_paths, wake=False
+    )
+    # 30 min: past stale window (15) but before info-auto-archive (60).
+    m_ = _age_msg(m_, read_min_ago=30)
+    assert m_.to == "@consolidate"
+    assert m_.label == "!done"
+    assert m_.status == _msgs.STATUS_READ
+    assert not m_.completed_at
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_INFO_AUTO_ARCHIVE
+
+
 def test_msg_classify_unread_old_cooldown(repo, tmp_paths):
     # Freshly escalated UNREAD-OLD should go back to ACTIVE until the
     # cooldown window expires — without this, every 5-min consolidate
