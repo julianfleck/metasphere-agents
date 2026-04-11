@@ -1107,13 +1107,20 @@ Usage:
   metasphere agent report @name "message"   Report status to parent
   metasphere agent view @name               Show what agent can see
 
-Spawn options:
-  --scope, -s PATH     Working directory
-  --task, -t "desc"    Task description
-  --parent, -p @name   Parent agent
-  --soul FILE          SOUL.md template
-  --sandbox LEVEL      none|scoped|nobash|readonly
-  --interactive, -i    Start tmux session immediately
+Spawn (positional — see also 'metasphere-spawn --help'):
+  metasphere agent spawn @name /scope/ "task description" [@parent]
+                              [--authority "..." --responsibility "..." --accountability "..."]
+
+  @name              Agent name (must start with @)
+  /scope/            Working directory (relative to repo root, e.g. / or /core/messaging/)
+  "task description" One-line task summary
+  [@parent]          Parent agent (default: @orchestrator)
+
+Contract fields (strongly recommended; will be required in a future release —
+see agent-economy/NOTES-DEEPMIND-DELEGATION.md for the rationale):
+  --authority      "what the agent MAY do (scope of allowed actions)"
+  --responsibility "what the agent MUST produce (artifact contract)"
+  --accountability "how parent will verify on !done (concrete check)"
 
 Status states (auto-inferred from activity):
   spawned      Just created, no activity
