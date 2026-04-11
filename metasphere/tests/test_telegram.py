@@ -6,6 +6,7 @@ recorder. We don't make any real network calls.
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
 import threading
@@ -194,6 +195,240 @@ def test_save_latest_atomic(tmp_path):
     assert data["message_id"] == 7
     assert data["from"] == "u"
     assert data["text"] == "hello"
+
+
+# --- Reply / reaction capture --------------------------------------------
+
+def test_poller_captures_reply_to_fields():
+    """An update with reply_to_message should surface id + preview."""
+    payload = {
+        "update_id": 1001,
+        "message": {
+            "message_id": 50,
+            "chat": {"id": 1, "is_forum": False},
+            "from": {"username": "j0lian"},
+            "text": "yes, do it",
+            "date": 1700000000,
+            "reply_to_message": {
+                "message_id": 42,
+                "text": "Should I ship the patch now?",
+                "from": {"username": "orchestrator"},
+            },
+        },
+    }
+    u = poller.Update.from_payload(payload)
+    assert u.kind == "message"
+    assert u.message_id == 50
+    assert u.reply_to_message_id == 42
+    assert u.reply_to_text_preview == "Should I ship the patch now?"
+
+
+def test_poller_reply_preview_truncates_at_100_chars():
+    long = "x" * 250
+    payload = {
+        "update_id": 2,
+        "message": {
+            "message_id": 2,
+            "chat": {"id": 1},
+            "from": {"username": "j0lian"},
+            "text": "ok",
+            "reply_to_message": {"message_id": 1, "text": long},
+        },
+    }
+    u = poller.Update.from_payload(payload)
+    assert u.reply_to_text_preview is not None
+    assert len(u.reply_to_text_preview) == 100
+
+
+def test_poller_message_without_reply_has_none_reply_fields():
+    payload = {
+        "update_id": 3,
+        "message": {
+            "message_id": 3,
+            "chat": {"id": 1},
+            "from": {"username": "j0lian"},
+            "text": "hi",
+        },
+    }
+    u = poller.Update.from_payload(payload)
+    assert u.reply_to_message_id is None
+    assert u.reply_to_text_preview is None
+
+
+def test_poller_parses_message_reaction_update():
+    """message_reaction payloads should produce kind=='reaction' Updates."""
+    payload = {
+        "update_id": 9001,
+        "message_reaction": {
+            "chat": {"id": -1001, "is_forum": True},
+            "message_id": 17,
+            "user": {"id": 99, "username": "j0lian"},
+            "date": 1700000123,
+            "old_reaction": [],
+            "new_reaction": [{"type": "emoji", "emoji": "\U0001f44d"}],
+        },
+    }
+    u = poller.Update.from_payload(payload)
+    assert u.kind == "reaction"
+    assert u.reaction_target_message_id == 17
+    assert u.reaction_emojis == ["\U0001f44d"]
+    assert u.from_username == "j0lian"
+    assert u.chat_id == -1001
+
+
+def test_poller_allowed_updates_includes_message_reaction():
+    """get_updates must request message_reaction explicitly."""
+    assert "message_reaction" in poller.ALLOWED_UPDATES
+
+
+def test_get_updates_passes_allowed_updates(monkeypatch):
+    """The JSON payload to getUpdates must list message_reaction."""
+    captured = {}
+
+    def fake_call(method, **params):
+        captured["method"] = method
+        captured["params"] = params
+        return {"ok": True, "result": []}
+
+    monkeypatch.setattr(poller.api, "call", fake_call)
+    poller.get_updates(offset=0, timeout=1)
+    assert captured["method"] == "getUpdates"
+    allowed = json.loads(captured["params"]["allowed_updates"])
+    assert "message_reaction" in allowed
+    assert "message" in allowed
+
+
+# --- Archiver: reply / reaction round-trip -------------------------------
+
+def test_archive_message_lifts_reply_to_fields(tmp_path):
+    """archive_message should surface reply_to_* at the top level."""
+    msg = {
+        "message_id": 60,
+        "text": "replying now",
+        "from": {"username": "j0lian"},
+        "chat": {"id": 5},
+        "date": 1700000000,
+        "reply_to_message": {
+            "message_id": 42,
+            "text": "What do you think?",
+        },
+    }
+    path = archiver.archive_message(msg, base_dir=str(tmp_path))
+    with open(path) as f:
+        lines = f.readlines()
+    assert len(lines) == 1
+    row = json.loads(lines[0])
+    assert row["reply_to_message_id"] == 42
+    assert row["reply_to_text_preview"] == "What do you think?"
+    # Nested field is preserved (non-destructive enrichment)
+    assert row["reply_to_message"]["message_id"] == 42
+    # The input dict wasn't mutated
+    assert "reply_to_message_id" not in msg
+
+
+def test_archive_message_without_reply_unchanged(tmp_path):
+    msg = {
+        "message_id": 1,
+        "text": "hi",
+        "from": {"username": "u"},
+        "chat": {"id": 1},
+        "date": 0,
+    }
+    path = archiver.archive_message(msg, base_dir=str(tmp_path))
+    with open(path) as f:
+        row = json.loads(f.readline())
+    assert "reply_to_message_id" not in row
+    assert "reply_to_text_preview" not in row
+
+
+def test_archive_reaction_round_trip(tmp_path):
+    path = archiver.archive_reaction(
+        target_message_id=17,
+        emojis=["\U0001f44d"],
+        from_username="j0lian",
+        chat_id=-1001,
+        date=1700000000,
+        base_dir=str(tmp_path),
+    )
+    with open(path) as f:
+        row = json.loads(f.readline())
+    assert row["kind"] == "reaction"
+    assert row["reaction_target_message_id"] == 17
+    assert row["reactions"] == [{"emoji": "\U0001f44d", "from": "j0lian"}]
+
+
+# --- telegram_context() rendering ----------------------------------------
+
+def test_telegram_context_renders_reply_indicator(tmp_path):
+    msg = {
+        "message_id": 61,
+        "text": "yes please",
+        "from": {"username": "j0lian"},
+        "chat": {"id": 5},
+        "date": 1700000000,
+        "reply_to_message": {
+            "message_id": 42,
+            "text": "Should I ship the patch now?",
+        },
+    }
+    archiver.archive_message(msg, base_dir=str(tmp_path))
+    out = archiver.telegram_context(history=5, base_dir=str(tmp_path))
+    assert "\u21a9 replying to:" in out
+    assert "Should I ship the patch now?" in out
+
+
+def test_telegram_context_renders_reaction_line(tmp_path):
+    archiver.archive_reaction(
+        target_message_id=99,
+        emojis=["\U0001f525"],
+        from_username="j0lian",
+        chat_id=-1001,
+        date=1700000000,
+        base_dir=str(tmp_path),
+    )
+    out = archiver.telegram_context(history=5, base_dir=str(tmp_path))
+    assert "reaction:" in out
+    assert "\U0001f525" in out
+    assert "@j0lian" in out
+    assert "msg-99" in out
+
+
+def test_telegram_context_reply_preview_truncates_at_60_chars(tmp_path):
+    long_quote = "a" * 200
+    msg = {
+        "message_id": 1,
+        "text": "ok",
+        "from": {"username": "j0lian"},
+        "chat": {"id": 1},
+        "date": 1700000000,
+        "reply_to_message": {"message_id": 99, "text": long_quote},
+    }
+    archiver.archive_message(msg, base_dir=str(tmp_path))
+    out = archiver.telegram_context(history=5, base_dir=str(tmp_path))
+    # 60 chars of 'a' plus the trailing ellipsis marker
+    assert ("a" * 60 + "...") in out
+
+
+def test_telegram_context_backcompat_old_rows_without_new_fields(tmp_path):
+    """Rows written before reply_to / reactions existed must still render."""
+    import os as _os
+
+    stream = _os.path.join(str(tmp_path), "stream")
+    _os.makedirs(stream, exist_ok=True)
+    # Write an old-shape row directly to today's file.
+    today = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+    with open(_os.path.join(stream, f"{today}.jsonl"), "w") as f:
+        f.write(json.dumps({
+            "message_id": 1,
+            "text": "legacy row",
+            "from": {"username": "j0lian"},
+            "chat": {"id": 1},
+            "date": 1700000000,
+        }) + "\n")
+    out = archiver.telegram_context(history=5, base_dir=str(tmp_path))
+    assert "legacy row" in out
+    assert "\u21a9" not in out  # No reply indicator when field absent
+    assert "reaction:" not in out
 
 
 # --- Chunk splitter unit -------------------------------------------------
