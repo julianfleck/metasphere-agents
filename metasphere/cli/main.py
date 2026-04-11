@@ -49,6 +49,7 @@ REGISTRY: dict[str, str] = {
     "memory":    "metasphere.cli.memory:main",
     "trace":     "metasphere.cli.trace:main",
     "session":   "metasphere.cli.session:main",
+    "sessions":  "metasphere.cli.sessions:main",
     "project":   "metasphere.cli.project:main",
     "gateway":   "metasphere.cli.gateway:main",
     "update":    "metasphere.cli.update:main",
@@ -77,6 +78,7 @@ Subcommands:
   memory search|index
   trace capture|list|search|prune
   session ...
+  sessions all|list|kill-viewer    Multi-agent tmux viewer
   project ...
   gateway status|daemon
 
