@@ -67,6 +67,22 @@ def _save_chat_id(chat_id: int) -> None:
 
 
 def _handle_update(u: poller.Update) -> None:
+    # Reaction updates are a distinct shape: no text, no `message` block,
+    # just the reaction payload. Persist via archive_reaction and bail
+    # out — there's nothing to inject into tmux and no slash-command to
+    # dispatch.
+    if u.kind == "reaction":
+        if u.chat_id is None:
+            return
+        archiver.archive_reaction(
+            target_message_id=u.reaction_target_message_id,
+            emojis=u.reaction_emojis,
+            from_username=u.from_username,
+            chat_id=u.chat_id,
+            date=u.date,
+        )
+        return
+
     if not u.text or u.chat_id is None:
         return
     # Save chat id (DMs only — forum threads have thread_id)
