@@ -589,23 +589,32 @@ def test_msg_classify_stale_nonsacred(repo, tmp_paths):
     assert _con.classify_message(m_) == _con.MSG_VERDICT_STALE
 
 
+_NO_READER_AGE_MIN = (
+    _con.STALE_WINDOW_MINUTES_DEFAULT + _con.INFO_AUTO_ARCHIVE_AFTER_MINUTES
+) // 2  # past stale window (15), before !done auto-archive window (60)
+
+
 def test_msg_classify_stale_to_no_reader_system_agent_archives(repo, tmp_paths):
-    # A !done message addressed to @consolidate that was read past the
-    # stale window (but before the info-auto-archive window) would
-    # otherwise hit the STALE branch and trigger a ping cycle: the ping
-    # itself ages into STALE on the next tick and re-pings, forever.
-    # @consolidate has no human/REPL reader behind it, so the right
-    # answer is to auto-archive instead. Regression test for loop 2.
+    # Loop 2 regression: a !done message addressed to @consolidate would
+    # otherwise STALE-ping forever — the ping spawns another no-reader
+    # message that itself ages into STALE on the next tick.
     m_ = _msgs.send_message(
         "@consolidate", "!done", "x", "@orchestrator", paths=tmp_paths, wake=False
     )
-    # 30 min: past stale window (15) but before info-auto-archive (60).
-    m_ = _age_msg(m_, read_min_ago=30)
-    assert m_.to == "@consolidate"
-    assert m_.label == "!done"
-    assert m_.status == _msgs.STATUS_READ
-    assert not m_.completed_at
-    assert _con.classify_message(m_) == _con.MSG_VERDICT_INFO_AUTO_ARCHIVE
+    m_ = _age_msg(m_, read_min_ago=_NO_READER_AGE_MIN)
+    assert _con.classify_message(m_, paths=tmp_paths) == _con.MSG_VERDICT_INFO_AUTO_ARCHIVE
+
+
+def test_msg_classify_stale_to_gcd_ephemeral_archives(repo, tmp_paths):
+    # GC'd ephemeral agents are a third "no reader" class — their
+    # agent_dir is rmtree'd on cleanup, so messages addressed to them
+    # have nobody to follow up. Same auto-archive treatment.
+    m_ = _msgs.send_message(
+        "@dead-ephemeral", "!done", "x", "@orchestrator", paths=tmp_paths, wake=False
+    )
+    m_ = _age_msg(m_, read_min_ago=_NO_READER_AGE_MIN)
+    assert not tmp_paths.agent_dir("@dead-ephemeral").exists()
+    assert _con.classify_message(m_, paths=tmp_paths) == _con.MSG_VERDICT_INFO_AUTO_ARCHIVE
 
 
 def test_msg_classify_unread_old_cooldown(repo, tmp_paths):

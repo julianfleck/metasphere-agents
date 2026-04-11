@@ -415,12 +415,9 @@ cmd_done() {
     update_msg_status "$orig_msg" "status" "completed"
     update_msg_status "$orig_msg" "completed_at" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-    # Skip self-notification: when the original sender is the same agent
-    # running `messages done`, sending a !done back to ourselves spawns a
-    # notification that the consolidator then ages into STALE and pings,
+    # Skip self-notification: sending a !done back to ourselves spawns
+    # a new message that the consolidator ages into STALE and re-pings,
     # producing a self-sustaining loop (loop 1: @orch → @orch self-notify).
-    # The original message is already marked completed above; that's all
-    # the bookkeeping needed.
     if [[ -n "$note" && "$from" == "$AGENT" ]]; then
         echo "Completed $orig_id (skip self-notify)"
         return

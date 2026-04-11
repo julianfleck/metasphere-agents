@@ -93,17 +93,49 @@ MSG_VERDICTS = (
 # this long. They're just notifications; nothing acts on them.
 INFO_AUTO_ARCHIVE_AFTER_MINUTES = 60
 
-# System agents that have no human/REPL reader behind them. Messages
-# addressed *to* these agents will never be "followed up on" — pinging
-# them as STALE just spawns more messages that themselves age into
-# STALE, producing a self-sustaining stale-ping cycle. Treat any such
-# message that would otherwise be STALE as auto-archive instead.
+# Built-in system agents that are virtual — no agent_dir on disk
+# anywhere — and therefore have no human/REPL reader behind them.
+# Used as a fast-path for `_is_no_reader` and as a fallback when no
+# Paths object is available (e.g. in unit tests that don't construct
+# a tmp_paths fixture). The agent_dir-existence check in
+# `_is_no_reader` catches every other no-reader case (GC'd ephemerals,
+# any future virtual agent) without needing to be added here.
 SYSTEM_AGENTS_NO_READER = frozenset({
     "@consolidate",
     "@scheduler",
     "@daemon-supervisor",
     "@supervisor",
 })
+
+
+def _is_no_reader(agent_name: str, paths: "Paths | None" = None) -> bool:
+    """True if a message addressed to this agent has no reader behind it.
+
+    Three classes are caught:
+    - Built-in virtual system agents in `SYSTEM_AGENTS_NO_READER` (fast
+      path; also covers paths-less test contexts).
+    - GC'd ephemeral agents whose agent_dir was rmtree'd on cleanup.
+    - Any other agent with no global or project-scoped agent_dir on disk.
+
+    Pinging a no-reader recipient as STALE spawns another no-reader
+    message that itself ages into STALE — a self-sustaining loop. The
+    consolidator should auto-archive instead.
+    """
+    if not agent_name:
+        return False
+    from . import agents as _agents
+    name = _agents._normalize_name(agent_name)
+    if name in SYSTEM_AGENTS_NO_READER:
+        return True
+    if paths is None:
+        return False
+    if paths.agent_dir(name).exists():
+        return False
+    if paths.projects.exists():
+        for proj in paths.projects.iterdir():
+            if (proj / "agents" / name).exists():
+                return False
+    return True
 
 # Default lifecycle window. Anything not touched within this many minutes
 # is a candidate for a status-check ping.
@@ -624,6 +656,7 @@ def classify_message(
     now: _dt.datetime | None = None,
     stale_window_minutes: int = STALE_WINDOW_MINUTES_DEFAULT,
     info_archive_after_minutes: int | None = None,
+    paths: "Paths | None" = None,
 ) -> str:
     """Return one of the MSG_VERDICT_* constants for ``msg``."""
     now = now or _utcnow()
@@ -695,12 +728,10 @@ def classify_message(
     # on (no replied_at, no completed_at). Could mean the recipient
     # forgot to follow up. Ping them.
     if read_at and (now - read_at) >= window and not msg.replied_at and not msg.completed_at:
-        # If the recipient is a no-reader system agent (e.g. @consolidate),
-        # there is nobody behind it to "follow up". Pinging it just spawns
-        # another message that ages into STALE itself — a self-sustaining
-        # loop. Auto-archive instead. Normalise to the leading-@ form.
-        to_norm = msg.to if msg.to.startswith("@") else f"@{msg.to}" if msg.to else ""
-        if to_norm in SYSTEM_AGENTS_NO_READER:
+        # If the recipient has no reader (built-in system agent or
+        # GC'd ephemeral), pinging just spawns another no-reader
+        # message that itself ages into STALE — a self-sustaining loop.
+        if _is_no_reader(msg.to, paths):
             return MSG_VERDICT_INFO_AUTO_ARCHIVE
         # Cooldown: if we pinged recently, leave alone.
         last_ping = _parse_iso(msg.last_pinged_at)
@@ -1105,7 +1136,7 @@ def run_pass(
     msgs_found = _messages.scan_inbox_messages(project_root)
     for mm in msgs_found:
         mverdict = classify_message(
-            mm, now=now, stale_window_minutes=stale_window_minutes
+            mm, now=now, stale_window_minutes=stale_window_minutes, paths=paths
         )
         mresult = apply_message_verdict(
             mm, mverdict, paths,
