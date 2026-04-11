@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -131,6 +132,59 @@ def test_wake_persistent_cold_start_runs_tmux_new_session(tmp_paths: Paths):
     nc = new_session_calls[0]
     assert "-s" in nc
     assert "metasphere-waker" in nc
+
+
+def test_wake_persistent_project_scoped_uses_project_cwd(tmp_paths: Paths, tmp_path: Path):
+    # When a project-scoped agent has no explicit `scope` file but its
+    # `project` file names a registered project, the tmux new-session
+    # must use the project's filesystem path as cwd — not the harness
+    # project_root. Otherwise the agent inherits the wrong
+    # .claude/settings.local.json and crashes on startup.
+    proj_path = tmp_path / "example-proj"
+    proj_path.mkdir(parents=True)
+    # Seed projects.json so get_project() resolves it.
+    (tmp_paths.root / "projects.json").write_text(json.dumps(
+        [{"name": "example-proj", "path": str(proj_path), "registered": "x"}]
+    ))
+    # Seed .metasphere/project.json so load_project succeeds.
+    (proj_path / ".metasphere").mkdir(parents=True)
+    (proj_path / ".metasphere" / "project.json").write_text(json.dumps(
+        {"name": "example-proj", "path": str(proj_path), "goal": "", "members": []}
+    ))
+    # Create the project-scoped agent dir (not in global agents/).
+    agent_dir = tmp_paths.projects / "example-proj" / "agents" / "@worker"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "MISSION.md").write_text("mission")
+    (agent_dir / "project").write_text("example-proj")
+    # NOTE: intentionally no `scope` file — this is the common case.
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        cp = MagicMock()
+        if "has-session" in cmd:
+            cp.returncode = 1
+            cp.stdout = ""
+        elif "capture-pane" in cmd:
+            cp.returncode = 0
+            cp.stdout = "bypass permissions on"
+        else:
+            cp.returncode = 0
+            cp.stdout = ""
+        cp.stderr = ""
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        agents.wake_persistent("@worker", paths=tmp_paths)
+
+    new_session = next((c for c in calls if "new-session" in c), None)
+    assert new_session, f"expected tmux new-session, got {calls}"
+    # -c <cwd> should point at the project path, not the harness.
+    cwd_idx = new_session.index("-c") + 1
+    assert new_session[cwd_idx] == str(proj_path), (
+        f"expected cwd={proj_path}, got {new_session[cwd_idx]}"
+    )
 
 
 def test_wake_persistent_already_alive_injects_task(tmp_paths: Paths):

@@ -480,7 +480,29 @@ def wake_persistent(
         )
 
     project = _read_text(agent_dir / "project")
-    scope_str = _read_text(agent_dir / "scope") or str(paths.project_root)
+
+    # Resolve cwd (scope) with sensible precedence:
+    # 1. explicit scope file on the agent dir (rare, power-user override)
+    # 2. the agent's project filesystem path (so project-scoped agents
+    #    start in their own project's checkout, not the harness checkout)
+    # 3. the harness project_root (global agents)
+    #
+    # Without #2, project-scoped agents cold-start with cwd set to the
+    # metasphere-agents checkout, which means claude-code picks up
+    # metasphere-agents/.claude/settings.local.json — including hooks
+    # with hardcoded paths that don't belong to the target project.
+    scope_str = _read_text(agent_dir / "scope")
+    if not scope_str and project:
+        try:
+            from . import project as _project
+            proj = _project.get_project(project, paths=paths)
+            if proj is not None and proj.path:
+                scope_str = str(proj.path)
+        except Exception:
+            pass
+    if not scope_str:
+        scope_str = str(paths.project_root)
+
     rec = _agent_record_from_dir(agent_dir, project=project)
     session = rec.session_name  # uses project-aware naming
 
