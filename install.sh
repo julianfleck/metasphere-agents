@@ -920,10 +920,6 @@ EOF
 seed_claude_permissions() {
     info "Seeding Claude Code permissions + hooks..."
 
-    local target_dir="$SCRIPT_DIR/.claude"
-    local target_file="$target_dir/settings.local.json"
-    mkdir -p "$target_dir"
-
     local entries='[
         "Bash(git add:*)",
         "Bash(git commit:*)",
@@ -967,29 +963,48 @@ seed_claude_permissions() {
             ]
         }')
 
-    if [[ ! -f "$target_file" ]]; then
-        jq -n --argjson new "$entries" --argjson hooks "$hooks" \
-            '{permissions: {allow: $new}, hooks: $hooks}' > "$target_file" \
-            && ok "Created $target_file (permissions + hooks)" \
-            || warn "Failed to create $target_file"
-        return
-    fi
+    # Write the same hooks + permissions block to every .claude/ location
+    # that matters:
+    #   1. $SCRIPT_DIR/.claude  — the source checkout, for running claude
+    #      directly from inside metasphere-agents/ during development.
+    #   2. $METASPHERE_DIR/.claude — the project root where the
+    #      orchestrator's tmux session actually runs. Claude Code's hook
+    #      discovery is cwd-scoped, so without this file the Stop and
+    #      UserPromptSubmit hooks silently do not fire for the live
+    #      orchestrator. (This is the bug that took out the Telegram
+    #      auto-forward for ~22h when paths.repo → project_root moved
+    #      the default cwd out from under the source-repo settings.)
+    local target
+    for target in "$SCRIPT_DIR/.claude" "$METASPHERE_DIR/.claude"; do
+        local target_file="$target/settings.local.json"
+        mkdir -p "$target"
 
-    # Merge: union of existing allow and new entries; replace hooks block
-    # with the current absolute paths (the checkout location may have moved).
-    local tmp=$(mktemp)
-    if jq --argjson new "$entries" --argjson hooks "$hooks" '
-        .permissions = (.permissions // {}) |
-        .permissions.allow = ((.permissions.allow // []) as $cur |
-            $cur + ($new - $cur)) |
-        .hooks = $hooks
-    ' "$target_file" > "$tmp" 2>/dev/null; then
-        mv "$tmp" "$target_file" && ok "Updated $target_file (permissions + hooks)" \
-            || { warn "Failed to update $target_file"; rm -f "$tmp"; }
-    else
-        rm -f "$tmp"
-        warn "Could not parse $target_file - leaving unchanged"
-    fi
+        if [[ ! -f "$target_file" ]]; then
+            jq -n --argjson new "$entries" --argjson hooks "$hooks" \
+                '{permissions: {allow: $new}, hooks: $hooks}' > "$target_file" \
+                && ok "Created $target_file (permissions + hooks)" \
+                || warn "Failed to create $target_file"
+            continue
+        fi
+
+        # Merge: union of existing allow and new entries; replace hooks
+        # block with the current absolute paths (the checkout location
+        # may have moved since the last install).
+        local tmp
+        tmp=$(mktemp)
+        if jq --argjson new "$entries" --argjson hooks "$hooks" '
+            .permissions = (.permissions // {}) |
+            .permissions.allow = ((.permissions.allow // []) as $cur |
+                $cur + ($new - $cur)) |
+            .hooks = $hooks
+        ' "$target_file" > "$tmp" 2>/dev/null; then
+            mv "$tmp" "$target_file" && ok "Updated $target_file (permissions + hooks)" \
+                || { warn "Failed to update $target_file"; rm -f "$tmp"; }
+        else
+            rm -f "$tmp"
+            warn "Could not parse $target_file - leaving unchanged"
+        fi
+    done
 }
 
 # =============================================================================
