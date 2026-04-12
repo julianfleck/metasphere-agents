@@ -212,8 +212,16 @@ def resolve_target_agent(job: Job) -> str:
     name = job.name or ""
     if name.startswith("research-monitor:"):
         # Project-scoped: research agents live in projects/research/agents/
-        # and are named @research-<area> (e.g. @research-brand-mentions).
-        return "@research-" + name[len("research-monitor:"):]
+        # under their area name directly — e.g. @brand-mentions, NOT
+        # @research-brand-mentions. This has been fixed twice before
+        # (39f22fc on 2026-04-10, then regressed in 0808693 on 2026-04-11
+        # because a test was asserting the buggy `@research-X` form and
+        # a well-meaning commit "made code match test" instead of the
+        # other way round). If you are tempted to re-add the "@research-"
+        # prefix, first run `ls ~/.metasphere/projects/research/agents/`
+        # and check whether the agents actually have that prefix. As of
+        # 2026-04-12 they do not.
+        return "@" + name[len("research-monitor:"):]
     if name.startswith("polymarket:"):
         return "@polymarket"
     if name.startswith("spot:autonomous-exploration"):

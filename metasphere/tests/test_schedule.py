@@ -67,8 +67,40 @@ def test_cron_should_fire_already_fired():
 
 
 def test_resolve_target_agent_research_monitor():
+    # research-monitor:X resolves to @X, NOT @research-X. The persistent
+    # agents under projects/research/agents/ are named @brand-mentions,
+    # @divergence-engines, etc. — without the "research-" prefix, because
+    # the enclosing project directory is already named "research".
+    #
+    # This has regressed twice (39f22fc fixed → 0808693 reverted).
+    # If this assertion looks wrong to you, check the filesystem before
+    # "fixing" the production code — `ls ~/.metasphere/projects/research/agents/`
+    # is the ground truth.
     j = _make_job(name="research-monitor:brand-mentions")
-    assert _sched.resolve_target_agent(j) == "@research-brand-mentions"
+    assert _sched.resolve_target_agent(j) == "@brand-mentions"
+
+
+def test_resolve_target_agent_research_monitor_multiple_areas():
+    # All research-monitor:X schedules share the same resolution rule.
+    # Asserting multiple forms makes it harder to re-regress by
+    # tweaking the test for a single case.
+    for area in [
+        "brand-mentions",
+        "divergence-engines",
+        "memory-architectures",
+        "residency-programs",
+        "job-opportunities",
+        "evaluation-governance",
+        "retrieval-architectures",
+        "accelerator-programs",
+        "agentic-reasoning",
+        "ephemeral-interfaces",
+    ]:
+        j = _make_job(name=f"research-monitor:{area}")
+        assert _sched.resolve_target_agent(j) == f"@{area}", (
+            f"research-monitor:{area} should map to @{area}, not @research-{area} "
+            f"(agents live at projects/research/agents/@{area}/)"
+        )
 
 
 def test_resolve_target_agent_polymarket():
