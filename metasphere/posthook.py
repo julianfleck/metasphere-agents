@@ -151,11 +151,26 @@ def mark_orchestrator_explicit_send(paths: Paths) -> None:
         pass
 
 
+import re as _re
+
+# Idle-tick patterns that should never be forwarded to Telegram.
+# These are placeholder responses the agent emits on silent heartbeat
+# ticks — they carry zero informational value for the human.
+_IDLE_PATTERN = _re.compile(
+    r"^\s*(?:standing by|silent tick|quiet|nothing to report|still here)\.?\s*$",
+    _re.IGNORECASE,
+)
+
+
 def route_to_telegram(text: str, paths: Paths) -> None:
     """Send ``text`` to Telegram, deduping
     against the last-sent hash. Failures are logged, never raised.
     """
     if not text:
+        return
+
+    # Filter idle-tick placeholders — never forward these.
+    if _IDLE_PATTERN.match(text.strip()):
         return
 
     digest = _hash_text(text)
