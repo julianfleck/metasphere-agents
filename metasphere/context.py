@@ -234,6 +234,12 @@ def _render_events(paths: Paths, n: int = 10) -> str:
     return "\n".join(out) + "\n"
 
 
+def _render_directives(paths: Paths) -> str:
+    """Render broadcast directives from DIRECTIVES.yaml at project root."""
+    from . import directives as _directives
+    return _directives.render_directives(paths)
+
+
 def _render_memory_fts(paths: Paths, agent: str) -> str:
     """Pull the memory section from ``metasphere.memory.context_for``.
 
@@ -364,6 +370,8 @@ def build_context(paths: Paths | None = None, *, budget: int = DEFAULT_SECTION_B
     sections.append(truncate_section(_render_messages(paths), budget))
     sections.append(truncate_section(_render_tasks(paths), budget))
     sections.append(truncate_section(_render_events(paths), budget))
+    directives_block = _render_directives(paths)
+    sections.append(truncate_section(directives_block, budget) if directives_block else "")
     sections.append(truncate_section(_render_memory_fts(paths, agent), budget))
 
     return "\n".join(s for s in sections if s).rstrip() + "\n"

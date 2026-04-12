@@ -1,0 +1,8 @@
+---
+date: 2026-04-12
+source: @julian
+text: Do NOT work on model diversity, Haiku model-binding, Gemini support, or provider abstraction layers. The harness runs on Claude Code with the default Claude model. Period.
+---
+date: 2026-04-12
+source: @julian
+text: Ephemerals should only work on one singular well-scoped task. Do not give ephemerals multi-step missions or compound goals.
