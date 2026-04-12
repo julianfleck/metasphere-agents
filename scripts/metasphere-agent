@@ -1090,12 +1090,17 @@ case "${1:-}" in
         shift
         cmd_view "$@"
         ;;
+    verify)
+        shift
+        exec python3 -c "import sys; from metasphere.cli.agents import verify_main; sys.exit(verify_main(sys.argv[1:]))" "$@"
+        ;;
     *)
         cat << 'EOF'
 metasphere-agent - Agent lifecycle management
 
 Usage:
   metasphere agent spawn @name [options]    Create new agent
+  metasphere agent verify @name             Print delegation contract
   metasphere agent status [@name]           Show status (with inferred state)
   metasphere agent update @name --status X  Update status
   metasphere agent sunset @name             Graceful shutdown

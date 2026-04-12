@@ -1004,7 +1004,11 @@ def _gc_ephemeral_agents(
         #    rest of the agent_dir. Globbing by extension avoids that
         #    class of bug for any *.md name the agent chooses.
         preserved: dict[str, str] = {}
-        for fname in ("output.log", "harness.md", "task", "status"):
+        for fname in (
+            "output.log", "harness.md", "task", "status",
+            "authority", "responsibility", "accountability",
+            "spawned_at", "parent",
+        ):
             fpath = entry / fname
             if fpath.is_file():
                 try:

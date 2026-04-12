@@ -316,3 +316,141 @@ def test_gc_dormant_returns_idle_agents(tmp_paths: Paths):
 
     assert "@idleone" in dormant
     assert "@freshone" not in dormant
+
+
+# ---------------------------------------------------------------------------
+# verify_main (contract retrieval)
+# ---------------------------------------------------------------------------
+
+
+def test_verify_live_agent_with_contract(tmp_paths: Paths):
+    """verify_main reads contract sidecar files from a live agent dir."""
+    from metasphere.cli.agents import verify_main
+    from io import StringIO
+
+    agent_dir = tmp_paths.agents / "@test-auditor"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "status").write_text("working: auditing")
+    (agent_dir / "task").write_text("audit the thing")
+    (agent_dir / "parent").write_text("@orchestrator")
+    (agent_dir / "spawned_at").write_text("2026-04-12T10:00:00Z")
+    (agent_dir / "authority").write_text("Read-only. MAY NOT write.")
+    (agent_dir / "responsibility").write_text("Produce REPORT.md")
+    (agent_dir / "accountability").write_text("File exists with 3+ sections")
+
+    import sys
+    old_stdout = sys.stdout
+    sys.stdout = captured = StringIO()
+    try:
+        rc = verify_main(["@test-auditor"])
+    finally:
+        sys.stdout = old_stdout
+    output = captured.getvalue()
+
+    assert rc == 0
+    assert "DELEGATION CONTRACT for @test-auditor" in output
+    assert "Read-only. MAY NOT write." in output
+    assert "Produce REPORT.md" in output
+    assert "File exists with 3+ sections" in output
+    assert "(live agent dir:" in output
+
+
+def test_verify_gcd_agent_from_log(tmp_paths: Paths):
+    """verify_main falls back to the GC preservation log when agent dir
+    is gone, and extracts contract from preserved sidecar sections."""
+    from metasphere.cli.agents import verify_main
+    from io import StringIO
+
+    # Create a GC log with preserved sidecar sections (post-e3d6100 format)
+    log_dir = tmp_paths.logs / "agents" / "_global"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "@dead-auditor.log"
+    log_file.write_text(
+        "# @dead-auditor — 2026-04-12T12:00:00Z\n"
+        "Status: complete: done\n"
+        "Reason: completed\n\n"
+        "--- task ---\n"
+        "audit something\n"
+        "--- status ---\n"
+        "complete: done\n"
+        "--- parent ---\n"
+        "@orchestrator\n"
+        "--- spawned_at ---\n"
+        "2026-04-12T09:00:00Z\n"
+        "--- authority ---\n"
+        "Read files only.\n"
+        "--- responsibility ---\n"
+        "Ship a report.\n"
+        "--- accountability ---\n"
+        "Report has 5 sections.\n"
+        "--- harness.md ---\n"
+        "# Agent: @dead-auditor\n"
+    )
+
+    import sys
+    old_stdout = sys.stdout
+    sys.stdout = captured = StringIO()
+    try:
+        rc = verify_main(["@dead-auditor"])
+    finally:
+        sys.stdout = old_stdout
+    output = captured.getvalue()
+
+    assert rc == 0
+    assert "DELEGATION CONTRACT for @dead-auditor" in output
+    assert "Read files only." in output
+    assert "Ship a report." in output
+    assert "Report has 5 sections." in output
+    assert "(from GC log:" in output
+
+
+def test_verify_gcd_agent_harness_fallback(tmp_paths: Paths):
+    """For agents GC'd before the sidecar-preserve fix, verify extracts
+    contract from the rendered harness.md section."""
+    from metasphere.cli.agents import verify_main
+    from io import StringIO
+
+    log_dir = tmp_paths.logs / "agents" / "_global"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "@old-audit.log"
+    log_file.write_text(
+        "# @old-audit — 2026-04-11T20:00:00Z\n"
+        "Status: complete: done\n"
+        "Reason: completed\n\n"
+        "--- task ---\n"
+        "old audit task\n"
+        "--- status ---\n"
+        "complete: done\n"
+        "--- harness.md ---\n"
+        "# Agent: @old-audit\n\n"
+        "## Delegation Contract\n\n"
+        "### Authority (what you MAY do)\n\n"
+        "Only read.\n\n"
+        "### Responsibility (what you MUST produce)\n\n"
+        "A findings doc.\n\n"
+        "### Accountability (how parent will verify)\n\n"
+        "Doc has intro + 2 sections.\n\n"
+        "---\n\n"
+        "You are autonomous.\n"
+    )
+
+    import sys
+    old_stdout = sys.stdout
+    sys.stdout = captured = StringIO()
+    try:
+        rc = verify_main(["@old-audit"])
+    finally:
+        sys.stdout = old_stdout
+    output = captured.getvalue()
+
+    assert rc == 0
+    assert "Only read." in output
+    assert "A findings doc." in output
+    assert "Doc has intro + 2 sections." in output
+
+
+def test_verify_nonexistent_returns_error(tmp_paths: Paths):
+    """verify_main returns 1 when no agent dir or log exists."""
+    from metasphere.cli.agents import verify_main
+    rc = verify_main(["@ghost"])
+    assert rc == 1

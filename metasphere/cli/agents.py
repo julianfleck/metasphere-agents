@@ -5,6 +5,7 @@ Command surface::
     metasphere-spawn @name /scope/ "task" [@parent]
     metasphere-wake  @name ["first task"]
     metasphere-wake  --list | --status
+    metasphere agent verify @name
     agents list
     agents status
 """
@@ -12,6 +13,7 @@ Command surface::
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from metasphere import agents as _agents
 from metasphere import paths as _paths
@@ -131,6 +133,205 @@ def spawn_main(argv: list[str] | None = None) -> int:
         print(f"  Accountability:  {accountability[:100]}")
     if rec.pid_file and rec.pid_file.is_file():
         print(f"  PID:    {rec.pid_file.read_text().strip()}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# verify entrypoint
+# ---------------------------------------------------------------------------
+
+_VERIFY_USAGE = (
+    "Usage:\n"
+    "  metasphere agent verify @name\n"
+    "\n"
+    "Print the delegation contract for a spawned agent so the parent\n"
+    "can re-read authority/responsibility/accountability before\n"
+    "accepting a !done message.\n"
+    "\n"
+    "Looks in:\n"
+    "  1. Live agent dir: ~/.metasphere/agents/@name/{authority,responsibility,accountability}\n"
+    "  2. GC'd agent log: ~/.metasphere/logs/agents/*/@name.log\n"
+)
+
+
+def _read_sidecar(agent_dir: Path, name: str) -> str:
+    f = agent_dir / name
+    if f.is_file():
+        try:
+            return f.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            pass
+    return ""
+
+
+def _find_gc_log(paths: _paths.Paths, agent_name: str) -> Path | None:
+    """Find the GC preservation log for an agent that was already cleaned up."""
+    logs_dir = paths.logs / "agents"
+    if not logs_dir.is_dir():
+        return None
+    for project_dir in sorted(logs_dir.iterdir()):
+        if not project_dir.is_dir():
+            continue
+        log = project_dir / f"{agent_name}.log"
+        if log.is_file():
+            return log
+    return None
+
+
+def _parse_contract_from_log(log_path: Path) -> dict[str, str]:
+    """Extract contract fields from a GC'd agent's preserved log.
+
+    The log has sections delimited by ``--- <filename> ---`` lines.
+    We look for the authority, responsibility, and accountability
+    sections (from the sidecar-preserve path added in e3d6100+).
+
+    Fallback: if sidecar fields are absent (agent was GC'd before that
+    fix), parse the Delegation Contract block from the harness.md
+    section, which always contained the rendered contract.
+    """
+    text = log_path.read_text(encoding="utf-8")
+    result: dict[str, str] = {}
+    current_section = ""
+    section_bodies: dict[str, str] = {}
+    lines: list[str] = []
+    KEEP = ("authority", "responsibility", "accountability",
+            "task", "status", "parent", "spawned_at", "harness.md")
+    for line in text.splitlines():
+        if line.startswith("--- ") and line.endswith(" ---"):
+            if current_section in KEEP:
+                section_bodies[current_section] = "\n".join(lines).strip()
+            section_name = line[4:-4].strip()
+            current_section = section_name
+            lines = []
+        else:
+            lines.append(line)
+    if current_section in KEEP:
+        section_bodies[current_section] = "\n".join(lines).strip()
+
+    # Direct sidecar fields (post-e3d6100 GC)
+    for key in ("authority", "responsibility", "accountability",
+                "task", "status", "parent", "spawned_at"):
+        if key in section_bodies:
+            result[key] = section_bodies[key]
+
+    # Fallback: parse from harness.md if sidecar fields not found
+    if not result.get("authority") and "harness.md" in section_bodies:
+        harness = section_bodies["harness.md"]
+        result.update(_parse_contract_from_harness(harness))
+
+    return result
+
+
+def _parse_contract_from_harness(harness_text: str) -> dict[str, str]:
+    """Extract authority/responsibility/accountability from a rendered
+    Delegation Contract block in a harness.md file.
+    """
+    result: dict[str, str] = {}
+    mapping = {
+        "### Authority (what you MAY do)": "authority",
+        "### Responsibility (what you MUST produce)": "responsibility",
+        "### Accountability (how parent will verify)": "accountability",
+    }
+    current_key = ""
+    lines: list[str] = []
+    for line in harness_text.splitlines():
+        if line in mapping:
+            if current_key:
+                result[current_key] = "\n".join(lines).strip()
+            current_key = mapping[line]
+            lines = []
+        elif line.startswith("### ") or line.startswith("## ") or line == "---":
+            if current_key:
+                result[current_key] = "\n".join(lines).strip()
+                current_key = ""
+                lines = []
+        elif current_key:
+            lines.append(line)
+    if current_key:
+        result[current_key] = "\n".join(lines).strip()
+    return result
+
+
+def verify_main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or argv[0] in ("-h", "--help"):
+        print(_VERIFY_USAGE, file=sys.stderr)
+        return 1
+    agent_name = argv[0]
+    if not agent_name.startswith("@"):
+        agent_name = f"@{agent_name}"
+
+    paths = _paths.resolve()
+    agent_dir = paths.agents / agent_name
+
+    if agent_dir.is_dir():
+        # Live agent — read sidecar files directly
+        authority = _read_sidecar(agent_dir, "authority")
+        responsibility = _read_sidecar(agent_dir, "responsibility")
+        accountability = _read_sidecar(agent_dir, "accountability")
+        task = _read_sidecar(agent_dir, "task")
+        status = _read_sidecar(agent_dir, "status")
+        parent = _read_sidecar(agent_dir, "parent")
+        spawned_at = _read_sidecar(agent_dir, "spawned_at")
+        source = f"(live agent dir: {agent_dir})"
+    else:
+        # GC'd agent — try the log
+        log_path = _find_gc_log(paths, agent_name)
+        if log_path is None:
+            print(f"No agent dir or GC log found for {agent_name}.", file=sys.stderr)
+            return 1
+        fields = _parse_contract_from_log(log_path)
+        authority = fields.get("authority", "")
+        responsibility = fields.get("responsibility", "")
+        accountability = fields.get("accountability", "")
+        task = fields.get("task", "")
+        status = fields.get("status", "")
+        parent = fields.get("parent", "")
+        spawned_at = fields.get("spawned_at", "")
+        source = f"(from GC log: {log_path})"
+
+    has_contract = bool(authority or responsibility or accountability)
+
+    print(f"DELEGATION CONTRACT for {agent_name}")
+    print(f"  {source}")
+    print()
+    if spawned_at:
+        print(f"  Spawned:  {spawned_at}")
+    if parent:
+        print(f"  Parent:   {parent}")
+    if task:
+        print(f"  Task:     {task}")
+    if status:
+        print(f"  Status:   {status}")
+    print()
+
+    if not has_contract:
+        print("  (no contract — legacy spawn without authority/responsibility/accountability)")
+        return 0
+
+    print("AUTHORITY (what they MAY do):")
+    print(f"  {authority or '(unspecified)'}")
+    print()
+    print("RESPONSIBILITY (what they MUST produce):")
+    print(f"  {responsibility or '(unspecified)'}")
+    print()
+    print("ACCOUNTABILITY (how to verify on !done):")
+    print(f"  {accountability or '(unspecified)'}")
+    print()
+
+    # Check for deliverables directory
+    logs_dir = paths.logs / "agents"
+    if logs_dir.is_dir():
+        for project_dir in logs_dir.iterdir():
+            deliv_dir = project_dir / agent_name
+            if deliv_dir.is_dir():
+                deliverables = list(deliv_dir.glob("*.md"))
+                if deliverables:
+                    print("PRESERVED DELIVERABLES:")
+                    for d in sorted(deliverables):
+                        print(f"  {d}")
+                    print()
+
     return 0
 
 
