@@ -37,15 +37,20 @@ SESSION_NAME = "metasphere-orchestrator"
 # Build the respawn loop command for a given agent. The loop writes a
 # per-agent restart_pending marker whenever claude exits, so the watchdog
 # can inject a continuation prompt into the fresh instance.
-def _respawn_cmd(agent: str = "@orchestrator") -> str:
+def _respawn_cmd(agent: str = "@orchestrator", *, model: str = "") -> str:
     """Return the respawn loop command for a given agent.
 
     The marker is a JSON file with timestamp + reason + agent. If
     restart_session() already wrote one (programmatic restart), the loop
     overwrites it with a fresh timestamp — harmless, and ensures the
     grace period resets to when the new process actually starts.
+
+    If ``model`` is set, the claude invocation includes ``--model <model>``
+    so the agent runs on a specific Anthropic model (e.g. Haiku for
+    low-stakes work).
     """
     safe_agent = agent.replace("'", "")  # paranoia
+    model_flag = f" --model {model}" if model else ""
     return (
         "exec bash -c '"
         'STATE_DIR="$HOME/.metasphere/state"; '
@@ -54,7 +59,7 @@ def _respawn_cmd(agent: str = "@orchestrator") -> str:
         # Refresh METASPHERE_PROJECT_ROOT from git on each restart so
         # stale env vars from a previous session don't persist.
         'export METASPHERE_PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$METASPHERE_PROJECT_ROOT")"; '
-        "claude --dangerously-skip-permissions; "
+        f"claude --dangerously-skip-permissions{model_flag}; "
         'ec=$?; echo "[gateway] claude exited ($ec), respawning in 1s..."; '
         'echo "{\\"timestamp\\": '
         "$(date +%s)"

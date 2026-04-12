@@ -1,7 +1,7 @@
 ---
 date: 2026-04-12
 source: @julian
-text: Do NOT work on model diversity, Haiku model-binding, Gemini support, or provider abstraction layers. The harness runs on Claude Code with the default Claude model. Period.
+text: No Gemini, no non-Anthropic provider abstraction layers, no multi-provider architecture. BUT: a --model flag on claude-code invocations IS wanted — letting agents specify which Anthropic model to use (e.g. Haiku for low-stakes work). This is a CLI pass-through, not a harness abstraction. The schedule Job.model field should wire through to the actual claude invocation.
 ---
 date: 2026-04-12
 source: @julian

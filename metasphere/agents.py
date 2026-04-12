@@ -284,6 +284,7 @@ def spawn_ephemeral(
     authority: str = "",
     responsibility: str = "",
     accountability: str = "",
+    model: str = "",
 ) -> AgentRecord:
     """Create an ephemeral one-shot agent and (unless opted out) launch
     it headless via ``claude -p``.
@@ -433,13 +434,16 @@ def spawn_ephemeral(
     log_fh = None
     try:
         log_fh = open(log_file, "ab")
+        cmd = [
+            "claude",
+            "-p",
+            harness,
+            "--dangerously-skip-permissions",
+        ]
+        if model:
+            cmd.extend(["--model", model])
         proc = subprocess.Popen(
-            [
-                "claude",
-                "-p",
-                harness,
-                "--dangerously-skip-permissions",
-            ],
+            cmd,
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=log_fh,
@@ -524,6 +528,8 @@ def wake_persistent(
     agent_name: str,
     first_task: Optional[str] = None,
     paths: Paths | None = None,
+    *,
+    model: str = "",
 ) -> AgentRecord:
     """Wake (or attach to) a persistent agent's tmux+REPL session.
 
@@ -591,7 +597,7 @@ def wake_persistent(
 
     from .gateway.session import _respawn_cmd
 
-    respawn = _respawn_cmd(agent_id)
+    respawn = _respawn_cmd(agent_id, model=model)
     _tmux_run("send-keys", "-t", session, respawn, "Enter")
 
     _atomic_meta_write(agent_dir, "status", "active: persistent session")

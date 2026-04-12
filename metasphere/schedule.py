@@ -267,6 +267,8 @@ def _wake_target(
     target_agent: str,
     first_task: str | None,
     paths: Paths,
+    *,
+    model: str = "",
 ) -> bool:
     """Wake ``target_agent`` via :func:`metasphere.agents.wake_persistent`.
 
@@ -277,6 +279,7 @@ def _wake_target(
     try:
         _agents.wake_persistent(
             target_agent, first_task=first_task, paths=paths,
+            model=model,
         )
         return True
     except Exception as e:
@@ -373,6 +376,7 @@ def dispatch_to_agent(
     *,
     paths: Paths | None = None,
     job_name: str = "",
+    model: str = "",
 ) -> bool:
     """Wake the target agent or fall back to a ``!task`` message.
 
@@ -382,11 +386,14 @@ def dispatch_to_agent(
     session if dormant and injects ``payload`` as a first task. Otherwise
     we drop a ``!task`` message into its inbox via
     :func:`metasphere.messages.send_message`.
+
+    If ``model`` is set, it's passed through to the claude invocation
+    so the agent runs on a specific Anthropic model.
     """
     paths = paths or resolve()
 
     if _find_mission(target_agent, paths) is not None:
-        if _wake_target(target_agent, first_task=payload, paths=paths):
+        if _wake_target(target_agent, first_task=payload, paths=paths, model=model):
             return True
         # Fall through to inbox-only delivery if wake itself failed.
 
@@ -447,6 +454,7 @@ def run_due_jobs(paths: Paths | None = None, *, now: int | None = None) -> list[
                     job.payload_message,
                     paths=paths,
                     job_name=job.name,
+                    model=job.model or "",
                 )
             results.append(
                 FireResult(
