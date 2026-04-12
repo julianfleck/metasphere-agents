@@ -153,11 +153,13 @@ def mark_orchestrator_explicit_send(paths: Paths) -> None:
 
 import re as _re
 
-# Idle-tick patterns that should never be forwarded to Telegram.
-# These are placeholder responses the agent emits on silent heartbeat
-# ticks — they carry zero informational value for the human.
+# The standardized idle token agents emit on silent heartbeat ticks.
+# CLAUDE.md instructs agents to emit exactly "[idle]" when there's
+# nothing to report. The posthook filters it out so it never reaches
+# Telegram. Also matches common free-form variants as a safety net.
+_IDLE_TOKEN = "[idle]"
 _IDLE_PATTERN = _re.compile(
-    r"^\s*(?:standing by|silent tick|quiet|nothing to report|still here)\.?\s*$",
+    r"^\s*(?:\[idle\]|standing by|silent tick|quiet|nothing to report|still here)\.?\s*$",
     _re.IGNORECASE,
 )
 

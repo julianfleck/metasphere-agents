@@ -147,8 +147,8 @@ This repo improves itself through a continuous evolution cycle, inspired by Karp
 
 Every turn-end emits an assistant message that the Stop hook routes to Telegram. Heartbeat-fired turns happen on a 5-minute cadence whether or not anything is worth saying. Be deliberate about what you say:
 
-1. **Silent ticks need actual silence, not "Quiet." placeholders.** When a heartbeat fires and there is genuinely nothing meaningful to report (no new user input, no child completion, no schedule fire of consequence, no internal state change worth surfacing), call a single trivial tool (e.g. `Bash` running `:`, or just don't call anything) and produce *no narrative text* at the end. The Stop hook short-circuits when `last_text` is empty, so the user sees nothing on Telegram.
-2. **Never emit "Quiet.", "Nothing.", "Idle.", or other one-word ack placeholders.** Those forward to the user's chat as noise. The user explicitly does not want them.
+1. **Silent ticks need actual silence.** When a heartbeat fires and there is genuinely nothing meaningful to report, emit exactly the token `[idle]` as your only text output. The posthook recognizes this token and suppresses it from Telegram. Do NOT vary the wording — no "Standing by.", no "Silent tick.", no "Quiet." — just `[idle]`. This must be deterministic so the filter works every time.
+2. **Never emit free-form idle placeholders.** "Standing by.", "Nothing to report.", "Quiet." — all of these forward to the user's chat as noise. Use `[idle]` and only `[idle]`.
 3. **Do emit text when:**
    - A scheduled job fired and produced something user-worthy (a trade, a bug, an unexpected result)
    - A child agent completed and you have something to bubble up
