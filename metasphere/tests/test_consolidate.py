@@ -536,14 +536,14 @@ def _age_msg(msg: _msgs.Message, *, created_min_ago: int = 0, read_min_ago: int 
     return _msgs.read_message(msg.path)
 
 
-def test_msg_classify_sacred_task(repo, tmp_paths):
+def test_msg_classify_pinned_task(repo, tmp_paths):
     m_ = _send_msg(tmp_paths, "!task")
-    assert _con.classify_message(m_) == _con.MSG_VERDICT_SACRED
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_PINNED
 
 
-def test_msg_classify_sacred_query(repo, tmp_paths):
+def test_msg_classify_pinned_query(repo, tmp_paths):
     m_ = _send_msg(tmp_paths, "!query")
-    assert _con.classify_message(m_) == _con.MSG_VERDICT_SACRED
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_PINNED
 
 
 def test_msg_classify_unread_fresh_is_active(repo, tmp_paths):
@@ -564,13 +564,13 @@ def test_msg_classify_done_pending_archive(repo, tmp_paths):
     assert _con.classify_message(m_) == _con.MSG_VERDICT_DONE_PENDING_ARCHIVE
 
 
-def test_msg_classify_completed_sacred_label_still_archives(repo, tmp_paths):
+def test_msg_classify_completed_pinned_label_still_archives(repo, tmp_paths):
     # Regression: when a !task or !query is explicitly closed via
     # `messages done`, it should archive on the next consolidate cycle —
-    # NOT stay parked as MSG_VERDICT_SACRED forever. Completing IS the
-    # explicit human action SACRED is supposed to protect; once acted
+    # NOT stay parked as MSG_VERDICT_PINNED forever. Completing IS the
+    # explicit human action PINNED is supposed to protect; once acted
     # on, the message has done its job. The previous code checked the
-    # SACRED label before the COMPLETED status and left closed sacred
+    # PINNED label before the COMPLETED status and left closed pinned
     # messages stuck in inbox indefinitely (witnessed 2026-04-11).
     m_ = _send_msg(tmp_paths, "!task")
     _msgs.update_status(m_.path, "status", _msgs.STATUS_COMPLETED)
@@ -596,7 +596,7 @@ def test_msg_classify_done_auto_archive(repo, tmp_paths):
     assert _con.classify_message(m_) == _con.MSG_VERDICT_INFO_AUTO_ARCHIVE
 
 
-def test_msg_classify_stale_nonsacred(repo, tmp_paths):
+def test_msg_classify_stale_nonpinned(repo, tmp_paths):
     # A !reply that was read long ago and never followed up on
     m_ = _send_msg(tmp_paths, "!reply")
     m_ = _age_msg(m_, read_min_ago=60)
@@ -642,13 +642,13 @@ def test_msg_classify_unread_old_cooldown(repo, tmp_paths):
     assert _con.classify_message(m_) == _con.MSG_VERDICT_ACTIVE
 
 
-def test_msg_classify_from_consolidate_fresh_is_sacred(repo, tmp_paths):
+def test_msg_classify_from_consolidate_fresh_is_pinned(repo, tmp_paths):
     # Freshly sent @consolidate messages stay visible for one heartbeat
     # tick so the operator sees the escalation, then auto-archive.
     m_ = _msgs.send_message(
         "@.", "!info", "x", "@consolidate", paths=tmp_paths, wake=False
     )
-    assert _con.classify_message(m_) == _con.MSG_VERDICT_SACRED
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_PINNED
 
 
 def test_msg_classify_from_consolidate_old_auto_archives(repo, tmp_paths):
@@ -710,11 +710,11 @@ def test_msg_apply_info_auto_archive_moves_file(repo, tmp_paths):
     assert not src.exists()
 
 
-def test_msg_apply_sacred_noop(repo, tmp_paths):
+def test_msg_apply_pinned_noop(repo, tmp_paths):
     m_ = _send_msg(tmp_paths, "!task")
     src = m_.path
     result = _con.apply_message_verdict(
-        m_, _con.MSG_VERDICT_SACRED, tmp_paths
+        m_, _con.MSG_VERDICT_PINNED, tmp_paths
     )
     assert result["action"] == "noop"
     assert src.exists()
@@ -752,7 +752,7 @@ def test_msg_apply_stale_threshold_escalates(repo, tmp_paths):
 def test_msg_run_pass_archives_old_info(repo, tmp_paths):
     m1 = _send_msg(tmp_paths, "!info")
     m1 = _age_msg(m1, read_min_ago=120)
-    m2 = _send_msg(tmp_paths, "!task")  # sacred, leave alone
+    m2 = _send_msg(tmp_paths, "!task")  # pinned, leave alone
     sender = _FakeSender()
     r = _con.run_pass(project_root=repo, paths=tmp_paths, sender=sender)
     assert any(res["action"] == "archived" for res in r.message_results)

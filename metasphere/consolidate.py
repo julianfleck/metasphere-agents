@@ -78,7 +78,7 @@ MSG_VERDICT_STALE = "MSG-STALE"
 MSG_VERDICT_UNREAD_OLD = "MSG-UNREAD-OLD"
 MSG_VERDICT_DONE_PENDING_ARCHIVE = "MSG-DONE-PENDING-ARCHIVE"
 MSG_VERDICT_INFO_AUTO_ARCHIVE = "MSG-INFO-AUTO-ARCHIVE"
-MSG_VERDICT_SACRED = "MSG-SACRED"  # !task/!query — sacred, leave alone
+MSG_VERDICT_PINNED = "MSG-PINNED"  # !task/!query — pinned until explicitly completed
 
 MSG_VERDICTS = (
     MSG_VERDICT_ACTIVE,
@@ -86,7 +86,7 @@ MSG_VERDICTS = (
     MSG_VERDICT_UNREAD_OLD,
     MSG_VERDICT_DONE_PENDING_ARCHIVE,
     MSG_VERDICT_INFO_AUTO_ARCHIVE,
-    MSG_VERDICT_SACRED,
+    MSG_VERDICT_PINNED,
 )
 
 # Info messages are auto-archived once they've been read for more than
@@ -675,22 +675,22 @@ def classify_message(
         created = _parse_iso(msg.created)
         if created and (now - created) >= _dt.timedelta(minutes=5):
             return MSG_VERDICT_INFO_AUTO_ARCHIVE
-        return MSG_VERDICT_SACRED
+        return MSG_VERDICT_PINNED
 
     # DONE-PENDING-ARCHIVE: already completed, still sitting in inbox/.
-    # This check fires BEFORE the SACRED-label check because completing
-    # a message IS the explicit human action SACRED is supposed to
-    # protect — once acted on, even a !task or !query should archive.
-    # The previous order left completed sacred messages stuck in inbox
-    # forever (witnessed 2026-04-11 — !task messages closed via
-    # `messages done` at 19:18Z were still showing in heartbeats hours
-    # later because SACRED short-circuited before COMPLETED).
+    # This check fires BEFORE the pinned-label check because completing
+    # a message IS the explicit action that unpins it — once acted on,
+    # even a !task or !query should archive. The previous order left
+    # completed pinned messages stuck in inbox forever (witnessed
+    # 2026-04-11 — !task messages closed via `messages done` at 19:18Z
+    # were still showing in heartbeats hours later because PINNED
+    # short-circuited before COMPLETED).
     if msg.status == _messages.STATUS_COMPLETED:
         return MSG_VERDICT_DONE_PENDING_ARCHIVE
 
-    # Sacred labels: never touched by the consolidator beyond reporting.
-    if msg.label in _messages.SACRED_LABELS:
-        return MSG_VERDICT_SACRED
+    # Pinned labels: never touched by the consolidator beyond reporting.
+    if msg.label in _messages.PINNED_LABELS:
+        return MSG_VERDICT_PINNED
 
     # UNREAD-OLD: status still unread after the stale window. Rare after
     # auto-mark-read on view, but catches messages on agents that
@@ -833,7 +833,7 @@ def apply_message_verdict(
         "dry_run": dry_run,
     }
 
-    if verdict in (MSG_VERDICT_ACTIVE, MSG_VERDICT_SACRED):
+    if verdict in (MSG_VERDICT_ACTIVE, MSG_VERDICT_PINNED):
         pass  # no action
     elif verdict == MSG_VERDICT_DONE_PENDING_ARCHIVE:
         if dry_run:

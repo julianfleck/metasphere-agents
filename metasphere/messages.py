@@ -60,10 +60,13 @@ _FIELD_ORDER = (
     "ping_count",
 )
 
-# Labels whose messages must NEVER be auto-mark-read on view, and must
-# never be auto-archived. These represent work-to-do that requires an
-# explicit human/agent action.
-SACRED_LABELS = frozenset({"!task", "!query"})
+# Labels whose messages are pinned in the inbox: never auto-mark-read
+# on view, never auto-archived. They represent work-to-do that requires
+# an explicit human/agent action to unpin (complete).
+PINNED_LABELS = frozenset({"!task", "!query"})
+
+# Backward-compat alias (used in older code / tests).
+SACRED_LABELS = PINNED_LABELS
 
 
 def _utcnow() -> str:

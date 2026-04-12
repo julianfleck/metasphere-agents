@@ -146,7 +146,7 @@ def test_spawn_ephemeral_does_not_pollute_scope_inbox(tmp_paths: Paths, monkeypa
     # agent see the task". The harness already embeds the task in its
     # `Your Task` section, so the message was redundant — and at
     # shared scopes (parent and child both at /) it permanently
-    # polluted the parent's inbox with an orphan SACRED !task per
+    # polluted the parent's inbox with an orphan PINNED !task per
     # spawn. The send is now elided.
     monkeypatch.setenv("METASPHERE_SPAWN_NO_EXEC", "1")
     agents.spawn_ephemeral(
@@ -319,13 +319,13 @@ def test_gc_dormant_returns_idle_agents(tmp_paths: Paths):
 
 
 # ---------------------------------------------------------------------------
-# verify_main (contract retrieval)
+# contract_main (contract retrieval)
 # ---------------------------------------------------------------------------
 
 
-def test_verify_live_agent_with_contract(tmp_paths: Paths):
-    """verify_main reads contract sidecar files from a live agent dir."""
-    from metasphere.cli.agents import verify_main
+def test_contract_live_agent_with_contract(tmp_paths: Paths):
+    """contract_main reads contract sidecar files from a live agent dir."""
+    from metasphere.cli.agents import contract_main
     from io import StringIO
 
     agent_dir = tmp_paths.agents / "@test-auditor"
@@ -342,7 +342,7 @@ def test_verify_live_agent_with_contract(tmp_paths: Paths):
     old_stdout = sys.stdout
     sys.stdout = captured = StringIO()
     try:
-        rc = verify_main(["@test-auditor"])
+        rc = contract_main(["@test-auditor"])
     finally:
         sys.stdout = old_stdout
     output = captured.getvalue()
@@ -355,10 +355,10 @@ def test_verify_live_agent_with_contract(tmp_paths: Paths):
     assert "(live agent dir:" in output
 
 
-def test_verify_gcd_agent_from_log(tmp_paths: Paths):
-    """verify_main falls back to the GC preservation log when agent dir
+def test_contract_gcd_agent_from_log(tmp_paths: Paths):
+    """contract_main falls back to the GC preservation log when agent dir
     is gone, and extracts contract from preserved sidecar sections."""
-    from metasphere.cli.agents import verify_main
+    from metasphere.cli.agents import contract_main
     from io import StringIO
 
     # Create a GC log with preserved sidecar sections (post-e3d6100 format)
@@ -391,7 +391,7 @@ def test_verify_gcd_agent_from_log(tmp_paths: Paths):
     old_stdout = sys.stdout
     sys.stdout = captured = StringIO()
     try:
-        rc = verify_main(["@dead-auditor"])
+        rc = contract_main(["@dead-auditor"])
     finally:
         sys.stdout = old_stdout
     output = captured.getvalue()
@@ -404,10 +404,10 @@ def test_verify_gcd_agent_from_log(tmp_paths: Paths):
     assert "(from GC log:" in output
 
 
-def test_verify_gcd_agent_harness_fallback(tmp_paths: Paths):
+def test_contract_gcd_agent_harness_fallback(tmp_paths: Paths):
     """For agents GC'd before the sidecar-preserve fix, verify extracts
     contract from the rendered harness.md section."""
-    from metasphere.cli.agents import verify_main
+    from metasphere.cli.agents import contract_main
     from io import StringIO
 
     log_dir = tmp_paths.logs / "agents" / "_global"
@@ -438,7 +438,7 @@ def test_verify_gcd_agent_harness_fallback(tmp_paths: Paths):
     old_stdout = sys.stdout
     sys.stdout = captured = StringIO()
     try:
-        rc = verify_main(["@old-audit"])
+        rc = contract_main(["@old-audit"])
     finally:
         sys.stdout = old_stdout
     output = captured.getvalue()
@@ -449,8 +449,8 @@ def test_verify_gcd_agent_harness_fallback(tmp_paths: Paths):
     assert "Doc has intro + 2 sections." in output
 
 
-def test_verify_nonexistent_returns_error(tmp_paths: Paths):
-    """verify_main returns 1 when no agent dir or log exists."""
-    from metasphere.cli.agents import verify_main
-    rc = verify_main(["@ghost"])
+def test_contract_nonexistent_returns_error(tmp_paths: Paths):
+    """contract_main returns 1 when no agent dir or log exists."""
+    from metasphere.cli.agents import contract_main
+    rc = contract_main(["@ghost"])
     assert rc == 1

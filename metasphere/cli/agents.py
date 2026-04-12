@@ -5,7 +5,7 @@ Command surface::
     metasphere-spawn @name /scope/ "task" [@parent]
     metasphere-wake  @name ["first task"]
     metasphere-wake  --list | --status
-    metasphere agent verify @name
+    metasphere agent contract @name
     agents list
     agents status
 """
@@ -137,12 +137,12 @@ def spawn_main(argv: list[str] | None = None) -> int:
 
 
 # ---------------------------------------------------------------------------
-# verify entrypoint
+# contract entrypoint (formerly "verify")
 # ---------------------------------------------------------------------------
 
-_VERIFY_USAGE = (
+_CONTRACT_USAGE = (
     "Usage:\n"
-    "  metasphere agent verify @name\n"
+    "  metasphere agent contract @name\n"
     "\n"
     "Print the delegation contract for a spawned agent so the parent\n"
     "can re-read authority/responsibility/accountability before\n"
@@ -252,10 +252,11 @@ def _parse_contract_from_harness(harness_text: str) -> dict[str, str]:
     return result
 
 
-def verify_main(argv: list[str] | None = None) -> int:
+def contract_main(argv: list[str] | None = None) -> int:
+    """Print the delegation contract for a spawned agent."""
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help"):
-        print(_VERIFY_USAGE, file=sys.stderr)
+        print(_CONTRACT_USAGE, file=sys.stderr)
         return 1
     agent_name = argv[0]
     if not agent_name.startswith("@"):

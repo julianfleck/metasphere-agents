@@ -125,6 +125,28 @@ if [[ -f "$HARNESS_HASH_FILE" ]]; then
 fi
 
 # =============================================================================
+# 1c. Directives broadcast — standing orders from Julian/@orchestrator that
+# all project-scoped agents must obey. Read from DIRECTIVES.yaml at the
+# project root. This is the propagation channel for cross-agent directives
+# that don't require a session restart to take effect.
+# =============================================================================
+DIRECTIVES_FILE="$REPO_ROOT/DIRECTIVES.yaml"
+if [[ -f "$DIRECTIVES_FILE" ]]; then
+    dir_output=$(python3 -c "
+from metasphere.directives import render_directives
+from metasphere.paths import resolve
+try:
+    print(render_directives(resolve()), end='')
+except Exception:
+    pass
+" 2>/dev/null || true)
+    if [[ -n "$dir_output" ]]; then
+        echo "$dir_output"
+        echo ""
+    fi
+fi
+
+# =============================================================================
 # 2. Telegram - last few messages (truncated: max 3 msgs, ~1KB)
 # =============================================================================
 if [[ -x "$SCRIPT_DIR/metasphere-telegram-stream" ]]; then

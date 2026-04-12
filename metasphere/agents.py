@@ -366,7 +366,7 @@ def spawn_ephemeral(
     # No initial !task message in scope — the harness already embeds
     # the task in its `Your Task` section, so this would be redundant
     # signaling. The previous version sent one anyway, which polluted
-    # the parent's scope inbox with an orphan SACRED !task per spawn
+    # the parent's scope inbox with an orphan pinned !task per spawn
     # (since parent and child share scope=/, the parent saw every
     # spawn's task message and there was nobody to act on it: the
     # child already had the task via the harness, the parent was the
