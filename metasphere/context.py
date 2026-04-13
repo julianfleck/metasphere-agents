@@ -120,6 +120,96 @@ def _render_status_header(paths: Paths, agent: str) -> str:
     return "\n".join(out)
 
 
+_VOICE_BYTE_CAP = 1500
+_VOICE_LINE_CAP = 40
+
+
+def _render_voice_capsule(paths: Paths, agent: str) -> str:
+    """Inject a compact voice capsule from VOICE.md or SOUL.md.
+
+    Keeps the agent's persona resident in context every turn. Without
+    this, the agent drifts into flat, technical replies between turns.
+    Capped to ~1.5KB / 40 lines (whichever hits first).
+    """
+    agent_dir = paths.agent_dir(agent)
+    voice_file = None
+    for name in ("VOICE.md", "SOUL.md"):
+        p = agent_dir / name
+        if p.is_file():
+            voice_file = p
+            break
+    if voice_file is None:
+        return ""
+    try:
+        lines = voice_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    # Skip the top H1 line; emit up to _VOICE_LINE_CAP lines.
+    body_lines = lines[1 : _VOICE_LINE_CAP + 1]
+    body = "\n".join(body_lines)
+    # Cap at _VOICE_BYTE_CAP bytes.
+    data = body.encode("utf-8")[:_VOICE_BYTE_CAP]
+    body = data.decode("utf-8", errors="ignore").rstrip()
+    if not body:
+        return ""
+    out = [
+        "## Voice (who you are, how you sound)",
+        "",
+        body,
+        "",
+        f"_(Full persona at `{voice_file}` + persona-index.md. Read on demand for deeper context.)_",
+        "",
+    ]
+    return "\n".join(out)
+
+
+_MISSION_BYTE_CAP = 1024
+_MISSION_LINE_CAP = 30
+
+
+def _render_mission_capsule(paths: Paths, agent: str) -> str:
+    """Inject the agent's MISSION.md so persistent agents know their
+    purpose every turn. Capped to ~1KB / 30 lines."""
+    mission_file = paths.agent_dir(agent) / "MISSION.md"
+    if not mission_file.is_file():
+        return ""
+    try:
+        lines = mission_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    body_lines = lines[1 : _MISSION_LINE_CAP + 1]
+    body = "\n".join(body_lines)
+    data = body.encode("utf-8")[:_MISSION_BYTE_CAP]
+    body = data.decode("utf-8", errors="ignore").rstrip()
+    if not body:
+        return ""
+    return f"## Mission\n\n{body}\n"
+
+
+def _render_child_reports(paths: Paths, agent: str) -> str:
+    """Show pending child agent completion reports (max 5)."""
+    reports_dir = paths.agent_dir(agent) / "child_reports"
+    if not reports_dir.is_dir():
+        return ""
+    try:
+        files = sorted(reports_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return ""
+    if not files:
+        return ""
+    out = [f"## Child Agent Reports ({len(files)} pending)", ""]
+    for f in files[:5]:
+        child = f.stem.split("-")[0]
+        try:
+            body = f.read_text(encoding="utf-8").strip()
+        except OSError:
+            body = "(unreadable)"
+        out.append(f"### @{child}")
+        out.append(body)
+        out.append("")
+    return "\n".join(out)
+
+
 def _render_drift_warning(paths: Paths) -> str:
     baseline = _baseline_hash(paths)
     if not baseline:
@@ -362,16 +452,22 @@ def build_context(paths: Paths | None = None, *, budget: int = DEFAULT_SECTION_B
     sections: list[str] = []
 
     sections.append(truncate_section(_render_status_header(paths, agent), budget))
+    voice = _render_voice_capsule(paths, agent)
+    sections.append(truncate_section(voice, budget) if voice else "")
+    mission = _render_mission_capsule(paths, agent)
+    sections.append(truncate_section(mission, budget) if mission else "")
     drift = _render_drift_warning(paths)
     sections.append(truncate_section(drift, budget) if drift else "")
+    directives_block = _render_directives(paths)
+    sections.append(truncate_section(directives_block, budget) if directives_block else "")
     project_block = _render_project(paths)
     sections.append(truncate_section(project_block, budget) if project_block else "")
     sections.append(truncate_section(_render_telegram(paths), budget))
+    child_reports = _render_child_reports(paths, agent)
+    sections.append(truncate_section(child_reports, budget) if child_reports else "")
     sections.append(truncate_section(_render_messages(paths), budget))
     sections.append(truncate_section(_render_tasks(paths), budget))
     sections.append(truncate_section(_render_events(paths), budget))
-    directives_block = _render_directives(paths)
-    sections.append(truncate_section(directives_block, budget) if directives_block else "")
     sections.append(truncate_section(_render_memory_fts(paths, agent), budget))
 
     return "\n".join(s for s in sections if s).rstrip() + "\n"
