@@ -43,24 +43,23 @@ directory by hand on a fresh install).
 
 ### CLI Reference
 
-The `metasphere` command is the unified entry point. Direct script
-names (`messages`, `tasks`, `metasphere-spawn`) still work and are
-equivalent — they route to the same Python backend.
+The `metasphere` command is the single entry point. All subcommands
+route through it — no standalone `messages` or `tasks` binaries.
 
 ```bash
 # ── Messages ─────────────────────────────────────────────
-messages                              # Show unread
-messages all                          # Show all including read
-messages send @target !label "msg"    # Send to target
-messages reply <msg-id> "response"    # Reply
-messages done <msg-id> "note"         # Mark complete
+metasphere msg                              # Show unread
+metasphere msg all                          # Show all including read
+metasphere msg send @target !label "msg"    # Send to target
+metasphere msg reply <msg-id> "response"    # Reply
+metasphere msg done <msg-id> "note"         # Mark complete
 
 # ── Tasks ────────────────────────────────────────────────
-tasks                                 # Show active
-tasks new "title" !priority           # Create task
-tasks start <task-id>                 # Assign to self
-tasks update <task-id> "note"         # Add progress
-tasks done <task-id> "summary"        # Complete
+metasphere task                             # Show active
+metasphere task new "title" !priority       # Create task
+metasphere task start <task-id>             # Assign to self
+metasphere task update <task-id> "note"     # Add progress
+metasphere task done <task-id> "summary"    # Complete
 
 # ── Agents ───────────────────────────────────────────────
 metasphere agent spawn @name /scope/ "task"   # One-shot agent

@@ -23,26 +23,26 @@ the full file once up front is cheap and gives you a solid floor.
 
 ## Communication
 
-You can communicate with other agents and humans using the `messages` command:
+You can communicate with other agents and humans using `metasphere msg`:
 
 ```bash
 # Send to another agent
-messages send @agent-name !info "your message here"
+metasphere msg send @agent-name !info "your message here"
 
 # Send urgent (recipient sees immediately)
-messages send @agent-name !urgent "critical update"
+metasphere msg send @agent-name !urgent "critical update"
 
 # Request task from another agent
-messages send @specialist !task "please analyze X"
+metasphere msg send @specialist !task "please analyze X"
 
 # Escalate to human
-messages send @user !urgent "I need human input on: ..."
+metasphere msg send @user !urgent "I need human input on: ..."
 
 # Check your inbox (happens automatically, but you can also run manually)
-messages
+metasphere msg
 
 # See what other agents are doing
-messages status
+metasphere msg status
 ```
 
 ## Labels
@@ -57,10 +57,10 @@ messages status
 
 Two task systems exist - do not confuse them:
 
-- **metasphere tasks** (`tasks` CLI, `.tasks/active/` files) = canonical, persistent, git-versioned. Use for anything that should outlive this session.
+- **metasphere task** (`.tasks/active/` files) = canonical, persistent, git-versioned. Use for anything that should outlive this session.
 - **Claude Code TaskCreate** = scratch only, dies with the conversation. Use only for breaking down a single turn's work.
 
-Rule: anything cross-session MUST be a metasphere task. When in doubt, use `tasks new "title" !priority`.
+Rule: anything cross-session MUST be a metasphere task. When in doubt, use `metasphere task new "title" !priority`.
 
 ## Your Workflow (SPIRAL)
 
@@ -89,7 +89,7 @@ echo "complete: finished jwt security analysis" > ~/.metasphere/agents/{{AGENT_I
 
 ## Staying alive in the lifecycle system
 
-At every checkpoint, call `tasks update <id> "progress note"` to bump
+At every checkpoint, call `metasphere task update <id> "progress note"` to bump
 `updated_at`. This tells the lifecycle consolidator you're still alive
 on the task. Even a line like "still working on X" counts. If you go
 silent for more than 15 minutes, the consolidation cycle will ping you
@@ -102,7 +102,7 @@ keeps you out of that loop.
 When your task is complete:
 
 1. Update your status: `echo "complete: summary" > ~/.metasphere/agents/{{AGENT_ID}}/status`
-2. Notify your parent: `messages send {{PARENT_AGENT}} !done "task completed: brief summary"`
+2. Notify your parent: `metasphere msg send {{PARENT_AGENT}} !done "task completed: brief summary"`
 3. If you discovered something important, message relevant specialists
 
 ## Current Task

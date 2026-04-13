@@ -219,18 +219,9 @@ SHIM
     fi
     ok "Installed unified metasphere CLI → $BIN_DIR/metasphere"
 
-    # Thin shims for standalone `messages` and `tasks` commands.
-    cat > "$BIN_DIR/messages" << 'SHIM'
-#!/bin/bash
-exec python3 -m metasphere.cli.messages "$@"
-SHIM
-    chmod +x "$BIN_DIR/messages"
-
-    cat > "$BIN_DIR/tasks" << 'SHIM'
-#!/bin/bash
-exec python3 -m metasphere.cli.tasks "$@"
-SHIM
-    chmod +x "$BIN_DIR/tasks"
+    # Clean up legacy standalone shims (messages, tasks) — everything
+    # routes through `metasphere msg` / `metasphere task` now.
+    rm -f "$BIN_DIR/messages" "$BIN_DIR/tasks"
 
     # Remove stale individual metasphere-* symlinks from previous installs.
     for f in "$BIN_DIR"/metasphere-*; do
