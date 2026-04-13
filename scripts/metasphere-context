@@ -185,13 +185,13 @@ fi
 # =============================================================================
 # 3. Messages - inter-agent communication
 # =============================================================================
-"$SCRIPT_DIR/messages" 2>/dev/null || echo "## Messages: Error loading messages"
+python3 -m metasphere.cli.messages 2>/dev/null || echo "## Messages: No messages in scope"
 echo ""
 
 # =============================================================================
 # 4. Tasks - what needs doing
 # =============================================================================
-"$SCRIPT_DIR/tasks" 2>/dev/null || echo "## Tasks: Error loading tasks"
+python3 -m metasphere.cli.tasks 2>/dev/null || echo "## Tasks: No active tasks in scope"
 echo ""
 
 # =============================================================================
