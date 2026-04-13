@@ -406,6 +406,61 @@ def auto_close_finished_task(agent: str, paths: Paths) -> str | None:
     return task_id
 
 
+# ---------- deferred slash-command injection ----------
+
+def _check_deferred_command(agent: str, paths: Paths) -> None:
+    """If the agent left a deferred command marker, inject it into the
+    tmux session as the next user input.
+
+    This lets agents request ``/exit`` (or any slash command) from within
+    their assistant response. The posthook runs *after* the turn is
+    complete, so the injected text becomes a fresh user message.
+
+    Marker: ``state/<agent>_deferred_cmd`` containing the command text.
+    Consumed on read (deleted immediately).
+    """
+    safe_name = agent.lstrip("@") or "orchestrator"
+    marker = paths.state / f"{safe_name}_deferred_cmd"
+    try:
+        if not marker.exists():
+            return
+        cmd = marker.read_text(encoding="utf-8").strip()
+        marker.unlink(missing_ok=True)
+        if not cmd:
+            return
+    except OSError:
+        return
+
+    try:
+        from .tmux import submit_to_tmux
+        from .agents import session_name_for
+
+        session = session_name_for(agent)
+        submit_to_tmux(session, cmd)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def request_deferred_command(cmd: str, paths: Paths | None = None, agent: str | None = None) -> None:
+    """Write a deferred command marker so the next posthook tick injects
+    ``cmd`` into the agent's tmux session.
+
+    Usage from agent code::
+
+        from metasphere.posthook import request_deferred_command
+        request_deferred_command("/exit")
+    """
+    paths = paths or resolve()
+    agent = agent or resolve_agent_id(paths)
+    safe_name = agent.lstrip("@") or "orchestrator"
+    marker = paths.state / f"{safe_name}_deferred_cmd"
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(marker, cmd + "\n")
+    except OSError:
+        pass
+
+
 # ---------- top-level entry ----------
 
 def run_posthook(stdin_bytes: bytes, paths: Paths | None = None) -> int:
@@ -451,6 +506,14 @@ def run_posthook(stdin_bytes: bytes, paths: Paths | None = None) -> int:
                 auto_close_finished_task(agent, paths)
             except Exception:  # noqa: BLE001
                 pass
+
+        # Check for deferred slash commands (/exit, etc.) that the agent
+        # requested during its turn. Must run last — if the command is
+        # /exit, the session will terminate shortly after injection.
+        try:
+            _check_deferred_command(agent, paths)
+        except Exception:  # noqa: BLE001
+            pass
     except Exception:  # noqa: BLE001 — Stop hook must never break the host
         try:
             paths = paths or resolve()
