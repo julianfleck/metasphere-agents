@@ -95,7 +95,13 @@ def should_skip_silent_tick(text: str | None) -> bool:
     """
     if text is None:
         return True
-    return not text.strip()
+    stripped = text.strip()
+    if not stripped:
+        return True
+    # Match the standardized idle token and common variants
+    if _IDLE_PATTERN.match(stripped):
+        return True
+    return False
 
 
 # ---------- telegram routing ----------
@@ -452,3 +458,17 @@ def run_posthook(stdin_bytes: bytes, paths: Paths | None = None) -> int:
         except Exception:  # noqa: BLE001
             pass
     return 0
+
+
+# ---------- CLI entry point ----------
+
+
+def main() -> int:
+    """CLI entry for the Stop hook. Reads the payload from stdin."""
+    import sys
+    stdin_bytes = sys.stdin.buffer.read()
+    return run_posthook(stdin_bytes)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

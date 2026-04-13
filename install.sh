@@ -943,7 +943,7 @@ seed_claude_permissions() {
     # merges settings.json + settings.local.json so hardcoded paths in the
     # committed file would fire on every other machine and error.
     local context_path="$SCRIPT_DIR/scripts/metasphere-context"
-    local posthook_path="$SCRIPT_DIR/scripts/metasphere-posthook"
+    local posthook_path="python3 -m metasphere.posthook"
     local hooks
     hooks=$(jq -n \
         --arg ctx "$context_path" \
