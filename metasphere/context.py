@@ -27,7 +27,6 @@ _HARNESS_FILES = (
     "CLAUDE.md",
     ".claude/settings.json",
     ".claude/settings.local.json",
-    "scripts/metasphere-context",
 )
 
 DEFAULT_SECTION_BUDGET = 2048

@@ -28,11 +28,10 @@ def _write(p: Path, body: str) -> None:
 
 
 def test_harness_hash_matches_bash_recipe(tmp_paths: Paths):
-    # Populate the four harness files with distinct contents.
+    # Populate the three harness files with distinct contents.
     _write(tmp_paths.project_root / "CLAUDE.md", "claude\n")
     _write(tmp_paths.project_root / ".claude" / "settings.json", "{settings}\n")
     _write(tmp_paths.project_root / ".claude" / "settings.local.json", "{local}\n")
-    _write(tmp_paths.project_root / "scripts" / "metasphere-context", "#!/bin/bash\n")
 
     py_hash = ctx.harness_hash(tmp_paths)
 
@@ -44,7 +43,6 @@ def test_harness_hash_matches_bash_recipe(tmp_paths: Paths):
             "CLAUDE.md",
             ".claude/settings.json",
             ".claude/settings.local.json",
-            "scripts/metasphere-context",
         )
     )
     h = hashlib.sha256()

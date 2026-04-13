@@ -2,9 +2,9 @@
 
 Command surface::
 
-    metasphere-spawn @name /scope/ "task" [@parent]
-    metasphere-wake  @name ["first task"]
-    metasphere-wake  --list | --status
+    metasphere agent spawn @name /scope/ "task" [@parent]
+    metasphere agent wake  @name ["first task"]
+    metasphere agent wake  --list | --status
     metasphere agent contract @name
     agents list
     agents status
@@ -342,9 +342,9 @@ def contract_main(argv: list[str] | None = None) -> int:
 
 _WAKE_USAGE = (
     "Usage:\n"
-    "  metasphere-wake @agent [\"first task\"]\n"
-    "  metasphere-wake --list\n"
-    "  metasphere-wake --status\n"
+    "  metasphere agent wake @agent [\"first task\"]\n"
+    "  metasphere agent wake --list\n"
+    "  metasphere agent wake --status\n"
 )
 
 
@@ -366,7 +366,7 @@ def wake_main(argv: list[str] | None = None) -> int:
     try:
         rec = _agents.wake_persistent(agent, first_task=first_task)
     except ValueError as e:
-        print(f"metasphere-wake: {e}", file=sys.stderr)
+        print(f"metasphere agent wake: {e}", file=sys.stderr)
         return 1
     print(f"{rec.name} awake. Attach with: tmux attach -t {rec.session_name}")
     return 0

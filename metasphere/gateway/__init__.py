@@ -16,7 +16,7 @@ Submodules:
 Every loop step is wrapped in try/except so a single failure cannot exit
 the daemon.
 
-Tmux paste-submission shells out to ``scripts/metasphere-tmux-submit``;
+Tmux paste-submission uses ``metasphere.tmux.submit_to_tmux``;
 telegram polling uses ``metasphere.telegram.poller``.
 """
 

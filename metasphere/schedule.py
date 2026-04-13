@@ -235,10 +235,6 @@ def resolve_target_agent(job: Job) -> str:
 
 # ---------- dispatch ----------
 
-def _wake_script(paths: Paths) -> Path:
-    return paths.project_root / "scripts" / "metasphere-wake"
-
-
 def _find_mission(target_agent: str, paths: Paths) -> Path | None:
     """Return the ``MISSION.md`` path for ``target_agent`` if it names a
     persistent agent (global or project-scoped), else None.

@@ -228,7 +228,7 @@ SHIM
         local name
         name=$(basename "$f")
         case "$name" in
-            metasphere-fts|metasphere-spawn) ;; # keep standalone tools
+            metasphere-fts) ;; # keep standalone FTS tool
             *) rm -f "$f" ;;
         esac
     done
