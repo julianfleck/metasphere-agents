@@ -185,43 +185,64 @@ install_scripts() {
     local BIN_DIR="$METASPHERE_DIR/bin"
     mkdir -p "$BIN_DIR"
 
-    # If running from repo, symlink scripts so edits take effect immediately.
-    # (Previously this used `cp`, which silently broke the dev loop — every
-    # repo edit was dead-on-arrival until a reinstall.)
-    if [[ -d "$SCRIPT_DIR/scripts" ]]; then
-        for src in "$SCRIPT_DIR/scripts"/*; do
-            local name
-            name=$(basename "$src")
-            [[ "$name" == *.bak ]] && continue
-            ln -sfn "$src" "$BIN_DIR/$name"
-        done
-        ok "Symlinked scripts from repo ($SCRIPT_DIR/scripts → $BIN_DIR)"
-    else
-        # Download from GitHub
-        local RAW_URL="https://raw.githubusercontent.com/$REPO/main/scripts"
-        local scripts=(
-            "metasphere"
-            "metasphere-gateway"
-            "metasphere-telegram"
-            "metasphere-telegram-stream"
-            "metasphere-heartbeat"
-            "metasphere-context"
-            "metasphere-spawn"
-            "metasphere-schedule"
-            "metasphere-agent"
-            "metasphere-events"
-            "metasphere-project"
-            "metasphere-migrate"
-            "messages"
-            "tasks"
-        )
-
-        for script in "${scripts[@]}"; do
-            curl -fsSL "$RAW_URL/$script" -o "$BIN_DIR/$script" 2>/dev/null || warn "Failed to download $script"
-            chmod +x "$BIN_DIR/$script" 2>/dev/null || true
-        done
-        ok "Downloaded scripts from GitHub"
+    # Install the unified Python CLI entry point.  The single `metasphere`
+    # binary dispatches all subcommands via metasphere.cli.main.  Individual
+    # metasphere-* scripts are no longer symlinked (legacy bash; kept in
+    # scripts/ for reference only).
+    #
+    # Thin shims for `messages` and `tasks` remain so agents can call them
+    # as standalone commands per CLAUDE.md instructions.
+    if command -v pip3 >/dev/null 2>&1 && [[ -d "$SCRIPT_DIR" ]]; then
+        # pip-installed entry point preferred (handles venv, PATH, etc.)
+        pip3 install -e "$SCRIPT_DIR" -q 2>/dev/null || true
     fi
+
+    # Ensure the unified binary exists in BIN_DIR.  If pip installed a
+    # console_script we symlink to it; otherwise fall back to a shim.
+    local pip_bin=""
+    for candidate in \
+        "${VIRTUAL_ENV:-/nonexistent}/bin/metasphere" \
+        "$HOME/.local/bin/metasphere"; do
+        if [[ -x "$candidate" ]]; then
+            pip_bin="$candidate"
+            break
+        fi
+    done
+    if [[ -n "$pip_bin" ]]; then
+        ln -sfn "$pip_bin" "$BIN_DIR/metasphere"
+    else
+        cat > "$BIN_DIR/metasphere" << 'SHIM'
+#!/bin/bash
+exec python3 -m metasphere.cli.main "$@"
+SHIM
+        chmod +x "$BIN_DIR/metasphere"
+    fi
+    ok "Installed unified metasphere CLI → $BIN_DIR/metasphere"
+
+    # Thin shims for standalone `messages` and `tasks` commands.
+    cat > "$BIN_DIR/messages" << 'SHIM'
+#!/bin/bash
+exec python3 -m metasphere.cli.messages "$@"
+SHIM
+    chmod +x "$BIN_DIR/messages"
+
+    cat > "$BIN_DIR/tasks" << 'SHIM'
+#!/bin/bash
+exec python3 -m metasphere.cli.tasks "$@"
+SHIM
+    chmod +x "$BIN_DIR/tasks"
+
+    # Remove stale individual metasphere-* symlinks from previous installs.
+    for f in "$BIN_DIR"/metasphere-*; do
+        local name
+        name=$(basename "$f")
+        case "$name" in
+            metasphere-fts|metasphere-spawn) ;; # keep standalone tools
+            *) rm -f "$f" ;;
+        esac
+    done
+    # Remove stale .bak files.
+    rm -f "$BIN_DIR"/*.bak "$BIN_DIR"/README.md 2>/dev/null || true
 
     # Configure PATH in shell profile
     setup_path "$BIN_DIR"
