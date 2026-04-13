@@ -59,6 +59,15 @@ route_to_telegram() {
 
     [[ -z "$last_text" ]] && return 0
 
+    # Filter standardized idle token — never forward to Telegram.
+    # CLAUDE.md instructs agents to emit exactly "[idle]" on silent ticks.
+    local stripped
+    stripped=$(echo "$last_text" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    case "$stripped" in
+        "[idle]"|"Standing by."|"standing by"|"Standing by"|"quiet"|"Quiet."|"Nothing to report."|"Still here."|"silent tick"|"Silent tick.")
+            return 0 ;;
+    esac
+
     # De-dupe: don't re-send if we already sent this exact text. Stop hooks
     # fire on every turn end, including after we've already routed the
     # response — without de-dupe we'd telegram-spam on every tool call.
