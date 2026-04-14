@@ -19,7 +19,9 @@ import sys
 from typing import List, Optional
 
 from metasphere.io import atomic_write_text
-from metasphere.telegram import api, archiver, attachments, commands, inject, poller
+from metasphere.telegram import (
+    api, archiver, attachments, commands, handler, inject, poller,
+)
 
 # Path order matters: rewrite-specific file first, then the canonical
 # chat-id file. Falling back to the canonical chat id keeps
@@ -67,123 +69,15 @@ def _save_chat_id(chat_id: int) -> None:
 
 
 def _handle_update(u: poller.Update) -> None:
-    # Reaction updates are a distinct shape: no text, no `message` block,
-    # just the reaction payload. Persist via archive_reaction and bail
-    # out — there's nothing to inject into tmux and no slash-command to
-    # dispatch.
-    if u.kind == "reaction":
-        if u.chat_id is None:
-            return
-        archiver.archive_reaction(
-            target_message_id=u.reaction_target_message_id,
-            emojis=u.reaction_emojis,
-            from_username=u.from_username,
-            chat_id=u.chat_id,
-            date=u.date,
-        )
-        return
+    """Thin wrapper over ``handler.handle_update``.
 
-    if u.chat_id is None:
-        attachments.debug_log({
-            "stage": "early_return", "reason": "chat_id is None",
-            "update_id": u.update_id,
-        })
-        return
-
-    msg = u.raw.get("message") or u.raw.get("edited_message") or u.raw
-    refs = attachments.parse_attachments(msg)
-    # Photos/videos/documents carry a ``caption`` instead of ``text``.
-    # Treat the caption as the body when there's no text, so the LLM
-    # sees whatever Julian typed alongside the attachment.
-    caption = msg.get("caption") or ""
-    body = u.text or caption
-
-    # Diagnostic log — fires on every non-reaction update the poller
-    # sees, so we can correlate real Telegram payloads against what
-    # parse_attachments extracted. Answers: did we fail to recognise a
-    # media key, or did we recognise it and fail to download?
-    attachments.debug_log({
-        "stage": "post_parse",
-        "update_id": u.update_id,
-        "summary": attachments.summarize_message_for_debug(msg),
-        "refs": [
-            {"kind": r.kind, "file_id": r.file_id, "file_size": r.file_size,
-             "file_name": r.file_name, "mime_type": r.mime_type}
-            for r in refs
-        ],
-        "body_source": "text" if u.text else ("caption" if caption else None),
-        "body_len": len(body or ""),
-    })
-
-    if not body and not refs:
-        attachments.debug_log({
-            "stage": "early_return", "reason": "no body and no refs",
-            "update_id": u.update_id,
-        })
-        return
-
-    # Save chat id (DMs only — forum threads have thread_id)
-    if not u.thread_id:
-        _save_chat_id(u.chat_id)
-
-    try:
-        archiver.archive_message(msg)
-        archiver.save_latest(msg)
-    except Exception as e:  # noqa: BLE001
-        # Archiver errors must not block injection — log and carry on.
-        attachments.debug_log({
-            "stage": "archive_error",
-            "update_id": u.update_id,
-            "error": f"{type(e).__name__}: {e}",
-        })
-
-    ctx = commands.Context(
-        chat_id=u.chat_id, from_user=u.from_username or "?", thread_id=u.thread_id
-    )
-
-    # Slash-command dispatch keys on ``u.text`` only: a caption that
-    # happens to start with ``/`` is not a command, and attachments are
-    # not relevant to slash-command replies.
-    if u.text and u.text.startswith("/"):
-        reply = commands.dispatch(u.text, ctx)
-        if reply:
-            if isinstance(reply, commands.Reply):
-                api.send_message(
-                    u.chat_id,
-                    reply.text,
-                    parse_mode=reply.parse_mode,
-                    message_thread_id=u.thread_id,
-                )
-            else:
-                api.send_message(u.chat_id, reply, message_thread_id=u.thread_id)
-    else:
-        payload = body or ""
-        downloaded = []
-        if refs:
-            downloaded = attachments.download_attachments(
-                u.message_id or u.update_id, refs,
-            )
-            block = attachments.render_attachment_block(downloaded)
-            payload = f"{payload}\n\n{block}".strip() if payload else block
-        attachments.debug_log({
-            "stage": "pre_inject",
-            "update_id": u.update_id,
-            "downloaded": [
-                {"kind": d.kind,
-                 "path": str(d.path) if d.path else None,
-                 "file_size": d.file_size,
-                 "error": d.error}
-                for d in downloaded
-            ],
-            "payload_preview": payload[:200],
-        })
-        # Inject into orchestrator tmux + acknowledge with reaction
-        inject.submit_to_tmux(f"@{u.from_username}", payload)
-        if u.message_id:
-            try:
-                api.set_message_reaction(u.chat_id, u.message_id, "👀")
-            except api.TelegramAPIError:
-                pass
+    Kept as a named function (not just an alias) so existing tests that
+    monkeypatch ``_cli_tg._handle_update`` still work. The CLI saves chat
+    id via the module-local ``_save_chat_id`` (which writes to the CLI's
+    CHAT_ID_FILE path — redirected in tests) so tests that redirect that
+    constant continue to see their redirection honored.
+    """
+    handler.handle_update(u, save_chat_id=_save_chat_id)
 
 
 def cmd_poll(args: argparse.Namespace) -> int:

@@ -14,71 +14,37 @@ from typing import Callable, Optional
 
 from ..events import log_event
 from ..paths import Paths, resolve
-from ..telegram import poller
-from ..telegram.commands import Context as _CmdContext, dispatch as _dispatch_command
-from ..telegram.api import send_message as _tg_send, set_message_reaction as _tg_react
-from ..telegram.inject import submit_to_tmux
+from ..telegram import handler, poller
 from .session import ensure_session, write_harness_hash_baseline
 from .watchdog import run_watchdog
 
 
 def _poll_once(timeout: int = 1) -> int:
-    """Single getUpdates call. Inject inbound text into the orchestrator
-    session and bump the offset. Returns number of updates processed.
+    """Single getUpdates call. Route each update through the shared
+    handler (attachment-aware, archive-aware, debug-logged) and bump
+    the offset. Returns number of updates processed.
+
+    Previously this function carried its own parallel ``if u.text and
+    u.chat_id is not None`` filter that silently dropped every photo.
+    The shared ``telegram.handler.handle_update`` now owns the full
+    per-update flow — no more drift between CLI and production paths.
     """
     offset = poller.load_offset()
     updates = poller.get_updates(offset=offset, timeout=timeout)
     for u in updates:
-        if u.text and u.chat_id is not None:
-            if u.text.startswith("/"):
-                # Route slash commands through the command dispatcher.
-                # No 👀 reaction here: slash commands bypass the orchestrator
-                # loop, replies are immediate, and the reaction is just noise.
-                try:
-                    ctx = _CmdContext(
-                        chat_id=u.chat_id,
-                        from_user=u.from_username or "user",
-                    )
-                    reply = _dispatch_command(u.text, ctx)
-                    if reply:
-                        # Commands may return either a bare str or a
-                        # ``Reply`` carrying parse_mode (the format module
-                        # emits HTML for bold-rich card output). Unwrap
-                        # so the rich variant doesn't get stringified
-                        # back to legacy plain-text by send_message.
-                        try:
-                            text = getattr(reply, "text", reply)
-                            parse_mode = getattr(reply, "parse_mode", None)
-                            _tg_send(u.chat_id, text, parse_mode=parse_mode)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-            else:
-                # Orchestrator-routed message: acknowledge receipt with an
-                # eye reaction so the user sees the message has been picked
-                # up before the agent's response arrives. Regression-fix:
-                # the legacy bash poller did this and it got dropped in the
-                # python cutover. Best-effort: never let a reaction failure
-                # block injection.
-                if u.message_id is not None:
-                    try:
-                        _tg_react(u.chat_id, u.message_id, "👀")
-                    except Exception:
-                        pass
-                    # Stash (chat_id, message_id) so the posthook can replace
-                    # 👀 → 👍 once @orchestrator's reply lands. Best-effort.
-                    try:
-                        from ..paths import resolve as _resolve_paths
-                        import json as _json
-                        _p = _resolve_paths()
-                        _p.state.mkdir(parents=True, exist_ok=True)
-                        (_p.state / "telegram_pending_ack.json").write_text(
-                            _json.dumps({"chat_id": u.chat_id, "message_id": u.message_id})
-                        )
-                    except Exception:
-                        pass
-                submit_to_tmux(f"@{u.from_username or 'user'}", u.text)
+        try:
+            handler.handle_update(u)
+        except Exception as e:
+            # A per-update failure must NOT block offset advance or the
+            # next update's processing. Log and continue.
+            try:
+                log_event(
+                    "telegram.handle_error",
+                    f"handle_update raised for update {u.update_id}: {e}",
+                    agent="@gateway",
+                )
+            except Exception:
+                pass
         poller.save_offset(u.update_id + 1)
     return len(updates)
 
