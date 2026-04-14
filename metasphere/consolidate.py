@@ -388,7 +388,12 @@ def _is_persistent_agent(agent_id: str, paths: Paths) -> bool:
         return False
     name = agent_id if agent_id.startswith("@") else "@" + agent_id
     agent_dir = paths.agent_dir(name)
-    return (agent_dir / "MISSION.md").exists()
+    # Either marker is sufficient. Bootstrap writes persona-index.md,
+    # SOUL.md, and MISSION.md in sequence, so a mid-bootstrap scope dir
+    # may have only persona-index.md. Treating either as a persistence
+    # signal closes the GC race that reaped 9 newly-created personas
+    # on 2026-04-14.
+    return (agent_dir / "MISSION.md").exists() or (agent_dir / "persona-index.md").exists()
 
 
 def _bump_ping(task: _tasks.Task, project_root: Path) -> _tasks.Task:
@@ -948,8 +953,11 @@ def _gc_ephemeral_agents(
         if not entry.is_dir() or not entry.name.startswith("@"):
             continue
 
-        # Skip persistent agents
-        if (entry / "MISSION.md").is_file():
+        # Skip persistent agents. Either marker is sufficient; bootstrap
+        # writes persona-index.md before MISSION.md, so a partially-
+        # written persona dir must still be exempt (see the 2026-04-14
+        # incident where 9 in-flight bootstraps got reaped as "dead").
+        if (entry / "MISSION.md").is_file() or (entry / "persona-index.md").is_file():
             continue
 
         agent_name = entry.name

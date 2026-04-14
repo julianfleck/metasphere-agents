@@ -880,3 +880,43 @@ def test_gc_skips_persistent_agents(tmp_paths):
     assert results == []
     assert agent_dir.exists()
     assert (agent_dir / "REPORT.md").exists()
+
+
+def test_gc_skips_persistent_agent_mid_bootstrap(tmp_paths):
+    """Regression (2026-04-14): 9 newly-bootstrapped persistent personas
+    were GC'd as dead because their scope dirs only had persona-index.md
+    and SOUL.md — MISSION.md hadn't been written yet. persona-index.md
+    alone must be enough to mark the dir persistent and exempt it from
+    liveness-based GC, even with no tmux session, no pid, and no recent
+    activity.
+    """
+    agent_dir = tmp_paths.agents / "@masked-eng"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "persona-index.md").write_text("# Persona Index — @masked-eng\n")
+    (agent_dir / "SOUL.md").write_text("# Soul\n")
+    # No MISSION.md, no status, no session, no pid — looks dead to the
+    # old heuristic.
+
+    results = _con._gc_ephemeral_agents(tmp_paths, dry_run=False)
+
+    assert results == []
+    assert agent_dir.exists()
+    assert (agent_dir / "persona-index.md").exists()
+
+
+def test_gc_reaps_ephemeral_without_persona_index(tmp_paths):
+    """Sanity check the other half: a true ephemeral (no MISSION.md, no
+    persona-index.md) past its dead window still gets GC'd. The fix
+    widens the skip predicate only for persistent markers — ephemeral
+    behavior is unchanged.
+    """
+    agent_dir = tmp_paths.agents / "@one-shot"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "status").write_text("complete: done")
+    (agent_dir / "harness.md").write_text("# Agent: @one-shot\n")
+
+    results = _con._gc_ephemeral_agents(tmp_paths, dry_run=False)
+
+    assert len(results) == 1
+    assert results[0]["agent"] == "@one-shot"
+    assert not agent_dir.exists()
