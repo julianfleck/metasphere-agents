@@ -29,9 +29,6 @@ shims (see ``metasphere.cli._shims``) and forward into this dispatcher.
 from __future__ import annotations
 
 import importlib
-import os
-import shutil
-import subprocess
 import sys
 from typing import Callable
 
@@ -54,8 +51,8 @@ REGISTRY: dict[str, str] = {
     "gateway":   "metasphere.cli.gateway:main",
     "update":    "metasphere.cli.update:main",
     "consolidate": "metasphere.cli.consolidate:main",
-    "status":    "metasphere.cli.main:_legacy_bash",
-    "ls":        "metasphere.cli.main:_legacy_bash",
+    "status":    "metasphere.cli.main:_status",
+    "ls":        "metasphere.cli.main:_not_ported",
 }
 
 _HELP = """\
@@ -118,28 +115,25 @@ def _hooks_dispatch(argv: list[str]) -> int:
     return _resolve(table[head])(rest) or 0
 
 
-def _legacy_bash(argv: list[str]) -> int:
-    """Delegate ``metasphere status`` / ``metasphere ls`` to the legacy CLI.
+def _status(argv: list[str]) -> int:
+    """``metasphere status`` — pure-Python system status summary."""
+    from metasphere.status import summary
+    sys.stdout.write(summary() + "\n")
+    return 0
 
-    These subcommands live in ``~/.metasphere/bin/metasphere`` and are
-    exec'd with the original args so behaviour is identical.
+
+def _not_ported(argv: list[str]) -> int:
+    """Stub for subcommands whose bash version has been retired without a
+    Python port yet. Prints a clear error and returns 1 (instead of the
+    old behaviour of re-execing the venv-Python ``metasphere`` symlink,
+    which infinite-looped once ``scripts/metasphere`` was deleted).
     """
-    # Recover the head subcommand from sys.argv (the dispatcher consumed it).
-    head = sys._metasphere_head  # type: ignore[attr-defined]
-    bash_path = os.environ.get("METASPHERE_LEGACY_BIN") or os.path.expanduser(
-        "~/.metasphere/bin/metasphere"
+    head = getattr(sys, "_metasphere_head", "?")
+    sys.stderr.write(
+        f"metasphere {head}: this subcommand has not been ported to "
+        "Python yet; see docs/BASH_TO_PY_PARITY.md\n"
     )
-    if not os.path.isfile(bash_path):
-        # Try PATH lookup (avoiding ourselves — only accept a shell script).
-        found = shutil.which("metasphere")
-        if found and found != sys.argv[0]:
-            bash_path = found
-        else:
-            sys.stderr.write(
-                f"metasphere {head}: legacy bash CLI not found at {bash_path}\n"
-            )
-            return 1
-    return subprocess.call([bash_path, head, *argv])
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:

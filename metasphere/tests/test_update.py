@@ -126,6 +126,30 @@ def _mk_runner(responses):
     return runner
 
 
+def _patch_update_helpers(monkeypatch, *, pull_raises=None, sync_calls=None,
+                          restart_calls=None):
+    """Monkeypatch the three module-level side-effect helpers.
+
+    Returns nothing; call sites read the list parameters they passed in.
+    """
+    def fake_pull(repo, branch, runner):
+        if pull_raises is not None:
+            raise pull_raises
+        return None
+
+    def fake_sync(repo, home_dir):
+        if sync_calls is not None:
+            sync_calls.append((repo, home_dir))
+
+    def fake_restart():
+        if restart_calls is not None:
+            restart_calls.append(True)
+
+    monkeypatch.setattr(_update, "_git_pull_or_reset", fake_pull)
+    monkeypatch.setattr(_update, "_sync_claude_integration", fake_sync)
+    monkeypatch.setattr(_update, "_restart_daemons", fake_restart)
+
+
 def test_run_update_happy_path(tmp_paths, monkeypatch):
     head_seq = iter(["aaaa1111", "bbbb2222"])
     responses = {
@@ -142,11 +166,12 @@ def test_run_update_happy_path(tmp_paths, monkeypatch):
 
     sent = []
     pip_calls: list[list[str]] = []
-    bash_calls: list[Path] = []
+    sync_calls: list = []
+    restart_calls: list = []
 
-    def fake_bash(repo):
-        bash_calls.append(repo)
-        return 0
+    _patch_update_helpers(
+        monkeypatch, sync_calls=sync_calls, restart_calls=restart_calls,
+    )
 
     def fake_pip(args):
         pip_calls.append(args)
@@ -160,7 +185,6 @@ def test_run_update_happy_path(tmp_paths, monkeypatch):
         git_runner=fake_runner,
         pip_runner=fake_pip,
         test_runner=lambda: True,
-        bash_update=fake_bash,
         notify_sender=lambda msg: sent.append(msg),
     )
     assert result.ok is True
@@ -170,7 +194,8 @@ def test_run_update_happy_path(tmp_paths, monkeypatch):
     assert result.pip_reinstalled is True
     assert result.tests_passed is True
     assert result.daemons_restarted is True
-    assert bash_calls == [tmp_paths.project_root]
+    assert sync_calls and sync_calls[0][0] == tmp_paths.project_root
+    assert restart_calls == [True]
     assert pip_calls and pip_calls[0][:3] == ["-m", "pip", "install"]
     assert sent and "auto-update" in sent[0]
     assert "bbbb2222"[:10] in sent[0]
@@ -179,11 +204,15 @@ def test_run_update_happy_path(tmp_paths, monkeypatch):
     assert state["last_result"]["ok"] is True
 
 
-def test_run_update_bash_failure_skips_restart_and_notifies(tmp_paths):
+def test_run_update_git_pull_failure_skips_restart_and_notifies(tmp_paths, monkeypatch):
     sent = []
+    restart_calls: list = []
 
-    def fake_bash(_repo):
-        return 2
+    _patch_update_helpers(
+        monkeypatch,
+        pull_raises=RuntimeError("git fetch origin failed (rc=1)"),
+        restart_calls=restart_calls,
+    )
 
     def fake_runner(args):
         import subprocess
@@ -194,16 +223,42 @@ def test_run_update_bash_failure_skips_restart_and_notifies(tmp_paths):
         cfg=AutoUpdateConfig(enabled=True, notify=True),
         quiet=True,
         git_runner=fake_runner,
-        bash_update=fake_bash,
         notify_sender=lambda msg: sent.append(msg),
     )
     assert result.ok is False
-    assert "bash update" in result.reason
+    assert "git pull failed" in result.reason
+    # Daemon restart must NOT have run on a failed pull.
+    assert restart_calls == []
     assert sent and "FAILED" in sent[0]
 
 
-def test_run_update_test_gate_failure(tmp_paths):
+def test_run_update_restart_skipped_when_cfg_disables(tmp_paths, monkeypatch):
     head_seq = iter(["aaaa", "bbbb"])
+    restart_calls: list = []
+
+    _patch_update_helpers(monkeypatch, restart_calls=restart_calls)
+
+    def fake_runner(args):
+        import subprocess
+        if args[0] == "rev-parse":
+            return subprocess.CompletedProcess(args, 0, next(head_seq), "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    result = _update.run_update(
+        paths=tmp_paths,
+        cfg=AutoUpdateConfig(enabled=True, notify=False, restart_daemons=False),
+        quiet=True,
+        git_runner=fake_runner,
+        test_runner=lambda: True,
+    )
+    assert result.ok is True
+    assert result.daemons_restarted is False
+    assert restart_calls == []
+
+
+def test_run_update_test_gate_failure(tmp_paths, monkeypatch):
+    head_seq = iter(["aaaa", "bbbb"])
+    _patch_update_helpers(monkeypatch)
 
     def fake_runner(args):
         import subprocess
@@ -220,7 +275,6 @@ def test_run_update_test_gate_failure(tmp_paths):
         cfg=AutoUpdateConfig(enabled=True, notify=False),
         quiet=True,
         git_runner=fake_runner,
-        bash_update=lambda r: 0,
         test_runner=lambda: False,
     )
     assert result.ok is False
@@ -228,9 +282,10 @@ def test_run_update_test_gate_failure(tmp_paths):
     assert result.tests_passed is False
 
 
-def test_run_update_no_python_changes_skips_pip(tmp_paths):
+def test_run_update_no_python_changes_skips_pip(tmp_paths, monkeypatch):
     head_seq = iter(["aaaa", "bbbb"])
     pip_calls: list[list[str]] = []
+    _patch_update_helpers(monkeypatch)
 
     def fake_runner(args):
         import subprocess
@@ -247,13 +302,91 @@ def test_run_update_no_python_changes_skips_pip(tmp_paths):
         cfg=AutoUpdateConfig(enabled=True, notify=False),
         quiet=True,
         git_runner=fake_runner,
-        bash_update=lambda r: 0,
         pip_runner=lambda args: pip_calls.append(args) or 0,
         test_runner=lambda: True,
     )
     assert result.ok is True
     assert result.pip_reinstalled is False
     assert pip_calls == []
+
+
+# ---------- helper unit tests ----------
+
+def test_git_pull_or_reset_happy_path():
+    import subprocess as _sp
+    calls: list[list[str]] = []
+
+    def runner(args):
+        calls.append(args)
+        return _sp.CompletedProcess(args, 0, "", "")
+
+    _update._git_pull_or_reset(Path("/tmp"), "main", runner)
+    assert calls == [["pull", "--ff-only", "origin", "main"]]
+
+
+def test_git_pull_or_reset_fallback_to_reset():
+    import subprocess as _sp
+
+    def runner(args):
+        if args[0] == "pull":
+            return _sp.CompletedProcess(args, 1, "", "conflict")
+        return _sp.CompletedProcess(args, 0, "", "")
+
+    _update._git_pull_or_reset(Path("/tmp"), "main", runner)
+
+
+def test_git_pull_or_reset_raises_when_reset_fails():
+    import subprocess as _sp
+
+    def runner(args):
+        if args[0] == "pull":
+            return _sp.CompletedProcess(args, 1, "", "")
+        if args[0] == "fetch":
+            return _sp.CompletedProcess(args, 1, "", "network down")
+        return _sp.CompletedProcess(args, 0, "", "")
+
+    with pytest.raises(RuntimeError, match="git fetch"):
+        _update._git_pull_or_reset(Path("/tmp"), "main", runner)
+
+
+def test_sync_claude_integration_creates_symlinks(tmp_path):
+    repo = tmp_path / "repo"
+    home = tmp_path / "home"
+    # Build a fake repo with one skill and one command.
+    skill_dir = repo / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# demo\n")
+    cmd_dir = repo / ".claude" / "commands"
+    cmd_dir.mkdir(parents=True)
+    (cmd_dir / "foo.md").write_text("cmd\n")
+
+    _update._sync_claude_integration(repo, home)
+
+    skill_link = home / ".claude" / "skills" / "demo"
+    cmd_link = home / ".claude" / "commands" / "foo.md"
+    assert skill_link.is_symlink()
+    assert skill_link.resolve() == skill_dir.resolve()
+    assert cmd_link.is_symlink()
+    assert cmd_link.resolve() == (cmd_dir / "foo.md").resolve()
+
+
+def test_sync_claude_integration_respects_user_customized(tmp_path):
+    repo = tmp_path / "repo"
+    home = tmp_path / "home"
+    skill_dir = repo / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# demo\n")
+
+    # Pre-create a real dir with .user-customized marker.
+    user_dir = home / ".claude" / "skills" / "demo"
+    user_dir.mkdir(parents=True)
+    (user_dir / ".user-customized").write_text("keep\n")
+    (user_dir / "SKILL.md").write_text("# customized\n")
+
+    _update._sync_claude_integration(repo, home)
+
+    assert user_dir.is_dir() and not user_dir.is_symlink()
+    assert (user_dir / ".user-customized").is_file()
 
 
 # ---------- status ----------

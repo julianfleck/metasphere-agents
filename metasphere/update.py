@@ -6,13 +6,13 @@ with main without manual intervention. This module owns:
 * parsing ``$METASPHERE_DIR/config/auto-update.env``
 * registering / unregistering the cron job in
   ``$METASPHERE_DIR/schedule/jobs.json``
-* the actual update flow (git pull / daemon restart / re-pip-install /
-  tests / telegram notify)
+* the actual update flow (git pull / claude integration / daemon restart
+  / re-pip-install / tests / telegram notify)
 * status / enable / disable wrappers driven by the CLI
 
-The ``scripts/metasphere`` entry is the authoritative implementation of
-the git/daemon dance — this module shells out to it. Edge cases stay in
-one place.
+All subprocess shelling is contained in module-level helpers so tests can
+monkeypatch them. The legacy ``scripts/metasphere update`` bash path was
+retired; see git history if you need the shell version.
 """
 
 from __future__ import annotations
@@ -22,6 +22,8 @@ import datetime as _dt
 import json
 import logging
 import os
+import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -324,6 +326,139 @@ def _append_log(paths: Paths, line: str) -> None:
         fh.write(f"[{ts}] {line}\n")
 
 
+def _git_pull_or_reset(repo: Path, branch: str, runner: GitRunner) -> None:
+    """Fast-forward ``repo`` to ``origin/<branch>`` with a hard-reset fallback.
+
+    Mirrors the bash ``git pull --ff-only`` → ``git fetch && git reset --hard``
+    chain from the retired ``scripts/metasphere update`` path. Raises
+    ``RuntimeError`` if both strategies fail.
+    """
+    ff = runner(["pull", "--ff-only", "origin", branch])
+    if ff.returncode == 0:
+        return
+    logger.warning("git pull --ff-only failed (rc=%s), retrying via fetch+reset", ff.returncode)
+    fetch = runner(["fetch", "origin"])
+    if fetch.returncode != 0:
+        raise RuntimeError(
+            f"git fetch origin failed (rc={fetch.returncode}): "
+            f"{(fetch.stderr or fetch.stdout or '').strip()}"
+        )
+    reset = runner(["reset", "--hard", f"origin/{branch}"])
+    if reset.returncode != 0:
+        raise RuntimeError(
+            f"git reset --hard origin/{branch} failed (rc={reset.returncode}): "
+            f"{(reset.stderr or reset.stdout or '').strip()}"
+        )
+
+
+def _sync_claude_integration(repo: Path, home_dir: Path) -> None:
+    """Refresh ``~/.claude/{skills,commands}`` symlinks from the repo.
+
+    * Each ``skills/<name>/`` containing ``SKILL.md`` is linked into
+      ``<home>/.claude/skills/<name>``. A pre-existing real directory
+      (not a symlink) with a ``.user-customized`` marker is left alone.
+    * Each ``.claude/commands/*.md`` is linked into
+      ``<home>/.claude/commands/<basename>``.
+    """
+    # Skills
+    src_skills = repo / "skills"
+    if src_skills.is_dir():
+        dst_skills = home_dir / ".claude" / "skills"
+        dst_skills.mkdir(parents=True, exist_ok=True)
+        for child in sorted(src_skills.iterdir()):
+            if not child.is_dir():
+                continue
+            if not (child / "SKILL.md").is_file():
+                continue
+            name = child.name
+            dst = dst_skills / name
+            if (
+                dst.exists()
+                and not dst.is_symlink()
+                and dst.is_dir()
+                and (dst / ".user-customized").is_file()
+            ):
+                continue
+            # Replace any existing symlink / file; leave customized real dirs alone.
+            if dst.is_symlink() or dst.is_file():
+                try:
+                    dst.unlink()
+                except OSError:
+                    pass
+            elif dst.exists() and dst.is_dir():
+                # A real directory without .user-customized — leave it alone
+                # rather than rm -rf (conservative; matches bash behaviour,
+                # which used ln -sfn that fails silently against real dirs).
+                continue
+            try:
+                os.symlink(child.resolve(), dst)
+            except OSError as e:
+                logger.info("skills symlink skipped for %s: %s", name, e)
+
+    # Commands
+    src_cmds = repo / ".claude" / "commands"
+    if src_cmds.is_dir():
+        dst_cmds = home_dir / ".claude" / "commands"
+        dst_cmds.mkdir(parents=True, exist_ok=True)
+        for md in sorted(src_cmds.glob("*.md")):
+            if not md.is_file():
+                continue
+            dst = dst_cmds / md.name
+            if dst.is_symlink() or dst.is_file():
+                try:
+                    dst.unlink()
+                except OSError:
+                    pass
+            try:
+                os.symlink(md.resolve(), dst)
+            except OSError as e:
+                logger.info("command symlink skipped for %s: %s", md.name, e)
+
+
+def _restart_daemons() -> None:
+    """Restart the metasphere gateway/daemon after an update.
+
+    Defensive: if the platform's service manager or unit isn't present,
+    this function logs and returns without raising.
+    """
+    system = platform.system()
+    if system == "Darwin":
+        plist = Path.home() / "Library" / "LaunchAgents" / "com.metasphere.plist"
+        if not plist.is_file() or not shutil.which("launchctl"):
+            logger.info("launchctl/plist not present; skipping daemon restart")
+            return
+        subprocess.run(["launchctl", "unload", str(plist)], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["launchctl", "load", str(plist)], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+
+    # Linux (systemd --user)
+    if not shutil.which("systemctl"):
+        logger.info("systemctl not found; skipping daemon restart")
+        return
+
+    def _sc(*args: str) -> int:
+        proc = subprocess.run(
+            ["systemctl", "--user", *args],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return proc.returncode
+
+    # Gateway owns polling now — stop+disable stale standalone pollers.
+    for stale in ("metasphere-telegram.service", "metasphere-telegram-stream.service"):
+        if _sc("is-enabled", stale) == 0:
+            _sc("stop", stale)
+            _sc("disable", stale)
+
+    if _sc("is-active", "metasphere-gateway") == 0:
+        _sc("restart", "metasphere-gateway")
+    elif _sc("is-active", "metasphere") == 0:
+        _sc("restart", "metasphere")
+
+
 def notify(text: str, *, sender: Callable[[str], None] | None = None) -> None:
     """Send a notification line. Default sender uses telegram.api if a
     chat is configured; otherwise this is a no-op. Tests inject ``sender``.
@@ -349,15 +484,15 @@ def run_update(
     git_runner: GitRunner | None = None,
     pip_runner: Callable[[list[str]], int] | None = None,
     test_runner: Callable[[], bool] | None = None,
-    bash_update: Callable[[Path], int] | None = None,
     notify_sender: Callable[[str], None] | None = None,
 ) -> UpdateResult:
     """Run a one-shot auto-update.
 
     All side-effecting subprocesses are injectable so tests can monkeypatch
-    them. The default ``bash_update`` shells out to
-    ``scripts/metasphere update`` which owns the actual git pull and
-    daemon restart logic.
+    them. The git pull, claude-skills/commands symlink sync, and daemon
+    restart steps are handled by the module-level helpers
+    :func:`_git_pull_or_reset`, :func:`_sync_claude_integration`, and
+    :func:`_restart_daemons` (monkeypatch those directly in tests).
     """
     paths = paths or resolve()
     cfg = cfg or load_config(paths)
@@ -376,34 +511,30 @@ def run_update(
     old = _head_hash(repo, runner)
     log(f"auto-update: HEAD before: {old or '(unknown)'}")
 
-    # Hand off to scripts/metasphere for the git pull + script reinstall +
-    # daemon restart (handles ff vs reset fallback, install_source
-    # discovery, daemon detection).
-    if bash_update is None:
-        def _default_bash_update(_repo: Path) -> int:
-            script = _repo / "scripts" / "metasphere"
-            if not script.exists():
-                return 127
-            env = os.environ.copy()
-            if not cfg.restart_daemons:
-                env["METASPHERE_AUTO_UPDATE_NO_RESTART"] = "1"
-            with _logf(paths).open("a", encoding="utf-8") as fh:
-                proc = subprocess.run(
-                    ["bash", str(script), "update"],
-                    stdout=fh if quiet else None,
-                    stderr=fh if quiet else None,
-                    env=env,
-                )
-            return proc.returncode
-        bash_update = _default_bash_update
-
-    rc = bash_update(repo)
-    if rc != 0:
-        reason = f"bash update exited rc={rc}"
+    # 1. Git pull (with fetch+reset fallback).
+    try:
+        _git_pull_or_reset(repo, cfg.branch, runner)
+    except Exception as e:
+        reason = f"git pull failed: {e}"
         log(f"auto-update: FAILED — {reason}")
         result = UpdateResult(ok=False, old_hash=old, reason=reason)
         _record_result(paths, result, cfg, notify_sender)
         return result
+
+    # 2. Refresh ~/.claude/{skills,commands} symlinks.
+    try:
+        _sync_claude_integration(repo, Path.home())
+    except Exception as e:
+        # Non-fatal: log and continue. The update itself succeeded; a
+        # skills-sync failure shouldn't block pip reinstall / daemon restart.
+        log(f"auto-update: claude integration sync warning: {e}")
+
+    # 3. Daemon restart (skippable via cfg.restart_daemons).
+    if cfg.restart_daemons:
+        try:
+            _restart_daemons()
+        except Exception as e:
+            log(f"auto-update: daemon restart warning: {e}")
 
     new = _head_hash(repo, runner)
     log(f"auto-update: HEAD after: {new or '(unknown)'}")
