@@ -33,7 +33,7 @@ def fake_post(monkeypatch):
 
     monkeypatch.setattr(api, "_http_post", fake)
     # Pretend we have a token so _config() works.
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN_REWRITE", "TEST:TOKEN")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TEST:TOKEN")
     fake.calls = calls  # type: ignore
     fake.queue = queue  # type: ignore
     return fake
@@ -443,3 +443,425 @@ def test_split_chunks_prefers_paragraph_break():
 
 def test_split_chunks_short_text_single_chunk():
     assert api._split_chunks("short") == ["short"]
+
+
+# --- Attachment parsing / download / render ------------------------------
+
+from pathlib import Path
+
+from metasphere.telegram import attachments as _atts
+from metasphere.telegram import inject
+from metasphere.cli import telegram as _cli_tg
+
+
+def test_parse_attachments_photo_picks_largest_size():
+    """``photo`` arrives as a size-ascending array of thumbnails; we
+    must pick exactly one (the largest) and tag it as kind=photo.
+    """
+    msg = {
+        "message_id": 42,
+        "photo": [
+            {"file_id": "thumb", "file_size": 100, "width": 90},
+            {"file_id": "mid", "file_size": 5000, "width": 320},
+            {"file_id": "biggest", "file_size": 50000, "width": 1280},
+        ],
+    }
+    refs = _atts.parse_attachments(msg)
+    assert len(refs) == 1
+    assert refs[0].kind == "photo"
+    assert refs[0].file_id == "biggest"
+    assert refs[0].file_size == 50000
+    assert refs[0].mime_type == "image/jpeg"
+
+
+def test_parse_attachments_document_preserves_filename_and_mime():
+    msg = {
+        "message_id": 7,
+        "document": {
+            "file_id": "doc1",
+            "file_name": "report.pdf",
+            "mime_type": "application/pdf",
+            "file_size": 353024,
+        },
+    }
+    refs = _atts.parse_attachments(msg)
+    assert len(refs) == 1
+    r = refs[0]
+    assert r.kind == "document"
+    assert r.file_name == "report.pdf"
+    assert r.mime_type == "application/pdf"
+
+
+def test_parse_attachments_generic_catches_sticker_and_animation():
+    """Spec amendment: ANY top-level dict with a file_id is an
+    attachment — we don't maintain a whitelist. This protects against
+    future Bot API additions (sticker, animation, video_note, etc.)
+    without a code change.
+    """
+    msg = {
+        "message_id": 9,
+        "sticker": {"file_id": "sticker1", "file_size": 20000, "is_animated": False},
+        "animation": {"file_id": "anim1", "file_name": "funny.mp4", "mime_type": "video/mp4"},
+    }
+    refs = _atts.parse_attachments(msg)
+    kinds = sorted(r.kind for r in refs)
+    assert kinds == ["animation", "sticker"]
+
+
+def test_parse_attachments_empty_on_plain_text():
+    msg = {"message_id": 1, "text": "hello", "from": {"username": "julian"}}
+    assert _atts.parse_attachments(msg) == []
+
+
+def test_parse_attachments_ignores_reply_to_message_nesting():
+    """A reply payload is a nested dict but doesn't carry a top-level
+    ``file_id``, so it must not be treated as an attachment.
+    """
+    msg = {
+        "message_id": 2,
+        "text": "reply",
+        "reply_to_message": {"message_id": 1, "text": "original"},
+    }
+    assert _atts.parse_attachments(msg) == []
+
+
+def test_download_attachment_success_writes_file(tmp_path, monkeypatch):
+    """Given a successful getFile + http_get, the attachment bytes land
+    at ``<dest>/<safe-filename>`` and the returned record points at it.
+    """
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TEST:TOKEN")
+
+    ref = _atts.AttachmentRef(
+        kind="document", file_id="doc1",
+        file_name="report.pdf", mime_type="application/pdf",
+        file_size=12,
+    )
+
+    def fake_call(method, **params):
+        assert method == "getFile"
+        assert params["file_id"] == "doc1"
+        return {"ok": True, "result": {"file_path": "documents/file_99.pdf"}}
+
+    payload = b"%PDF-fake\n\n"
+
+    def fake_http_get(url, timeout):
+        # URL must embed the bot token + the file_path from getFile
+        assert "TEST:TOKEN" in url
+        assert url.endswith("documents/file_99.pdf")
+        return payload
+
+    result = _atts.download_attachment(
+        ref, tmp_path, http_get=fake_http_get, call_fn=fake_call,
+    )
+    assert result.error is None
+    assert result.path == tmp_path / "report.pdf"
+    assert result.path.read_bytes() == payload
+    assert result.kind == "document"
+    assert result.mime_type == "application/pdf"
+
+
+def test_download_attachment_getfile_error_returns_note(tmp_path, monkeypatch):
+    """If ``getFile`` fails (bad file_id, revoked token), we return a
+    record with ``error`` set and ``path=None``. The poller must not
+    crash on this path.
+    """
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TEST:TOKEN")
+
+    def fake_call(method, **params):
+        raise api.TelegramAPIError("getFile", "FILE_REFERENCE_EXPIRED", {})
+
+    ref = _atts.AttachmentRef(kind="photo", file_id="old")
+    result = _atts.download_attachment(
+        ref, tmp_path, http_get=lambda u, t: b"", call_fn=fake_call,
+    )
+    assert result.path is None
+    assert result.error is not None
+    assert "FILE_REFERENCE_EXPIRED" in result.error
+    assert result.kind == "photo"
+
+
+def test_download_attachment_http_error_returns_note(tmp_path, monkeypatch):
+    """A network error during the file download degrades gracefully
+    instead of propagating out of the handler.
+    """
+    import urllib.error as _urle
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TEST:TOKEN")
+
+    def fake_call(method, **params):
+        return {"ok": True, "result": {"file_path": "photos/file_1.jpg"}}
+
+    def failing_http_get(url, timeout):
+        raise _urle.URLError("connection refused")
+
+    ref = _atts.AttachmentRef(kind="photo", file_id="p1")
+    result = _atts.download_attachment(
+        ref, tmp_path, http_get=failing_http_get, call_fn=fake_call,
+    )
+    assert result.path is None
+    assert result.error is not None
+    assert "connection refused" in result.error
+
+
+def test_download_attachment_sanitizes_dangerous_filename(tmp_path, monkeypatch):
+    """A user-supplied document name like ``../../etc/passwd`` must not
+    escape the dest dir. Non-[A-Za-z0-9._-] chars collapse to underscore.
+    """
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TEST:TOKEN")
+
+    def fake_call(method, **params):
+        return {"ok": True, "result": {"file_path": "documents/x"}}
+
+    ref = _atts.AttachmentRef(
+        kind="document", file_id="doc",
+        file_name="../../etc/passwd", file_size=3,
+    )
+    result = _atts.download_attachment(
+        ref, tmp_path, http_get=lambda u, t: b"abc", call_fn=fake_call,
+    )
+    assert result.path is not None
+    # The written file sits inside dest_dir, not in a parent.
+    assert result.path.parent == tmp_path
+    assert ".." not in result.path.name
+
+
+def test_render_attachment_block_formats_paths_and_sizes():
+    items = [
+        _atts.DownloadedAttachment(
+            kind="photo", path=Path("/tmp/att/1/image.jpg"),
+            file_size=1310720,  # 1.25 MB
+            mime_type="image/jpeg",
+        ),
+        _atts.DownloadedAttachment(
+            kind="document", path=Path("/tmp/att/1/report.pdf"),
+            file_size=353024,  # ~344.8 KB
+            mime_type="application/pdf",
+        ),
+    ]
+    block = _atts.render_attachment_block(items)
+    lines = block.splitlines()
+    assert lines[0] == "[attachments]"
+    assert "- photo: /tmp/att/1/image.jpg (1.2 MB, jpeg)" in lines
+    assert any(l.startswith("- document: /tmp/att/1/report.pdf (") and "pdf" in l for l in lines)
+
+
+def test_render_attachment_block_surfaces_failure_note():
+    items = [
+        _atts.DownloadedAttachment(
+            kind="audio", path=None, file_size=None,
+            mime_type=None, error="getFile: FILE_NOT_FOUND",
+        ),
+    ]
+    block = _atts.render_attachment_block(items)
+    assert "audio" in block
+    assert "download failed" in block
+    assert "FILE_NOT_FOUND" in block
+
+
+def test_render_attachment_block_empty_returns_empty_string():
+    assert _atts.render_attachment_block([]) == ""
+
+
+# --- CLI _handle_update integration (mocked getFile + http + tmux) -------
+
+
+def _patch_handle_update(monkeypatch, tmp_path):
+    """Wire a fake getFile + http fetcher + tmux sink for _handle_update.
+
+    Returns ``(http_log, tmux_log)`` so assertions can inspect what was
+    downloaded and what payload got injected.
+    """
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TEST:TOKEN")
+    # Route attachments to a tmp dir so tests don't touch the real
+    # ~/.metasphere/attachments.
+    monkeypatch.setattr(_atts, "ATTACHMENTS_ROOT", tmp_path / "attachments")
+
+    http_log: list = []
+
+    def fake_http_get(url, timeout):
+        http_log.append(url)
+        return b"BYTES:" + url.rsplit("/", 1)[-1].encode()
+
+    monkeypatch.setattr(_atts, "_http_get_default", fake_http_get)
+
+    # Stub api.call for getFile.
+    def fake_api_call(method, **params):
+        if method == "getFile":
+            fid = params["file_id"]
+            return {"ok": True, "result": {"file_path": f"media/{fid}.bin"}}
+        if method == "setMessageReaction":
+            return {"ok": True, "result": True}
+        raise AssertionError(f"unexpected api.call: {method}")
+
+    monkeypatch.setattr(api, "call", fake_api_call)
+
+    # Sink for tmux injection — _cli_tg imports inject directly; patch the
+    # submit_to_tmux re-export on the inject module.
+    tmux_log: list = []
+
+    def fake_submit_to_tmux(from_user, text, session="metasphere-orchestrator"):
+        tmux_log.append({"from": from_user, "text": text, "session": session})
+        return True
+
+    monkeypatch.setattr(inject, "submit_to_tmux", fake_submit_to_tmux)
+
+    # Archiver writes JSONL to ~/.metasphere — redirect to tmp.
+    monkeypatch.setattr(archiver, "DEFAULT_DIR", str(tmp_path / "tg"))
+    # save_latest reads DEFAULT_DIR at call time; archive_message too.
+
+    # Chat-id save goes to ~/.metasphere/config; redirect.
+    monkeypatch.setattr(_cli_tg, "CHAT_ID_FILE", str(tmp_path / "chat_id_rewrite"))
+    monkeypatch.setattr(_cli_tg, "CHAT_ID_FILE_CANONICAL", str(tmp_path / "chat_id"))
+
+    return http_log, tmux_log
+
+
+def test_handle_update_photo_with_caption_injects_attachment_block(tmp_path, monkeypatch):
+    """Simulated trace: Julian sends a photo with caption 'look at this'.
+    The handler must (1) download the largest thumbnail, (2) inject a
+    payload that contains BOTH the caption and the attachment block
+    pointing at the saved path.
+    """
+    http_log, tmux_log = _patch_handle_update(monkeypatch, tmp_path)
+
+    payload = {
+        "update_id": 1000,
+        "message": {
+            "message_id": 555,
+            "chat": {"id": 123, "is_forum": False},
+            "from": {"username": "julian"},
+            "date": 1700000000,
+            "caption": "look at this",
+            "photo": [
+                {"file_id": "thumb", "file_size": 100},
+                {"file_id": "biggest", "file_size": 90000},
+            ],
+        },
+    }
+    u = poller.Update.from_payload(payload)
+
+    _cli_tg._handle_update(u)
+
+    # One file was downloaded — the largest thumbnail.
+    assert len(http_log) == 1
+    assert "biggest" in http_log[0]
+
+    # Exactly one tmux injection happened.
+    assert len(tmux_log) == 1
+    injected = tmux_log[0]["text"]
+    assert tmux_log[0]["from"] == "@julian"
+    # Caption present at the top of the payload.
+    assert injected.startswith("look at this")
+    # Attachment block present, pointing at the saved path under the tmp
+    # attachments root (keyed on message_id=555).
+    assert "[attachments]" in injected
+    assert f"{tmp_path / 'attachments' / '555'}" in injected
+
+    # File exists on disk.
+    saved = list((tmp_path / "attachments" / "555").iterdir())
+    assert len(saved) == 1
+
+
+def test_handle_update_photo_only_no_caption_still_injects_block(tmp_path, monkeypatch):
+    """A bare photo (no text, no caption) used to be dropped by the
+    early return on ``not u.text``. It must now produce an injection
+    containing just the attachment block.
+    """
+    http_log, tmux_log = _patch_handle_update(monkeypatch, tmp_path)
+
+    payload = {
+        "update_id": 1001,
+        "message": {
+            "message_id": 556,
+            "chat": {"id": 123, "is_forum": False},
+            "from": {"username": "julian"},
+            "date": 1700000000,
+            "photo": [{"file_id": "only", "file_size": 10}],
+        },
+    }
+    u = poller.Update.from_payload(payload)
+
+    _cli_tg._handle_update(u)
+
+    assert len(tmux_log) == 1
+    injected = tmux_log[0]["text"]
+    assert injected.startswith("[attachments]")
+    assert "photo" in injected
+
+
+def test_handle_update_download_failure_still_injects_note(tmp_path, monkeypatch):
+    """If getFile fails, the poller must not crash — it must still
+    inject a note so the orchestrator sees that a file was attempted.
+    """
+    _patch_handle_update(monkeypatch, tmp_path)
+
+    # Override api.call to fail on getFile.
+    def failing_call(method, **params):
+        if method == "getFile":
+            raise api.TelegramAPIError("getFile", "FILE_NOT_FOUND", {})
+        if method == "setMessageReaction":
+            return {"ok": True, "result": True}
+        raise AssertionError(f"unexpected: {method}")
+
+    monkeypatch.setattr(api, "call", failing_call)
+
+    tmux_log: list = []
+
+    def fake_submit(from_user, text, session="metasphere-orchestrator"):
+        tmux_log.append({"from": from_user, "text": text})
+        return True
+
+    monkeypatch.setattr(inject, "submit_to_tmux", fake_submit)
+
+    payload = {
+        "update_id": 1002,
+        "message": {
+            "message_id": 557,
+            "chat": {"id": 123, "is_forum": False},
+            "from": {"username": "julian"},
+            "date": 1700000000,
+            "caption": "hello",
+            "document": {"file_id": "stale", "file_name": "x.pdf"},
+        },
+    }
+    u = poller.Update.from_payload(payload)
+
+    # Must not raise.
+    _cli_tg._handle_update(u)
+
+    assert len(tmux_log) == 1
+    injected = tmux_log[0]["text"]
+    assert "hello" in injected
+    assert "[attachments]" in injected
+    assert "download failed" in injected
+    assert "FILE_NOT_FOUND" in injected
+
+
+def test_handle_update_plain_text_unchanged(tmp_path, monkeypatch):
+    """Sanity: a plain-text message (no attachments) behaves exactly as
+    before — no HTTP calls, inject gets the raw text, no attachment block.
+    """
+    http_log, tmux_log = _patch_handle_update(monkeypatch, tmp_path)
+
+    payload = {
+        "update_id": 1003,
+        "message": {
+            "message_id": 558,
+            "chat": {"id": 123, "is_forum": False},
+            "from": {"username": "julian"},
+            "date": 1700000000,
+            "text": "just text",
+        },
+    }
+    u = poller.Update.from_payload(payload)
+
+    _cli_tg._handle_update(u)
+
+    assert http_log == []
+    assert len(tmux_log) == 1
+    assert tmux_log[0]["text"] == "just text"
+
+
+# NOTE: there is no integration test against a real bot token. The
+# poller-side path above covers the download + inject wiring with
+# mocked getFile + http_get. A live end-to-end test would require a
+# valid TELEGRAM_BOT_TOKEN and a controlled chat — out of scope here.
