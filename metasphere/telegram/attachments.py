@@ -247,8 +247,9 @@ def debug_log(event: Dict[str, Any], path: Optional[Path] = None) -> None:
             **event,
         }
         line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
-        # Append under LOCK_EX so concurrent poll workers (gateway +
-        # manual ``telegram once``) can't interleave bytes inside a line.
+        # Append under LOCK_EX so concurrent writers (e.g. tests, the
+        # gateway daemon, ad-hoc scripts) can't interleave bytes inside
+        # a line.
         with open(path, "a", encoding="utf-8") as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:

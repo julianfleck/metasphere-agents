@@ -351,43 +351,16 @@ def heartbeat_daemon(
     paths: Paths | None = None,
     interval_seconds: int = 30,
     invoke_agent: bool = False,
-    with_telegram_poll: bool = False,
 ) -> None:
     """Run :func:`heartbeat_once` forever on ``interval_seconds`` cadence.
 
-    The daemon can optionally combine heartbeat ticks with Telegram
-    inbound long-polling. Single-responsibility is preferred (run
-    ``python -m metasphere.cli.telegram poll`` from a sibling unit), but
-    callers can opt into the combined behaviour with
-    ``with_telegram_poll=True`` to ease cutover from a single systemd
-    unit.
+    Telegram long-poll used to be optionally bolted on here via a
+    ``with_telegram_poll`` thread. That was a cutover-era convenience
+    and a third polling path in the codebase. Removed: the gateway
+    daemon (``metasphere-gateway``) is now the single source of truth
+    for Telegram polling.
     """
     paths = paths or resolve()
-
-    if with_telegram_poll:
-        import threading
-
-        def _poll_loop() -> None:
-            try:
-                from .telegram import poller as _poller
-                from .cli.telegram import _handle_update
-            except Exception:
-                return
-            while True:
-                try:
-                    offset = _poller.load_offset()
-                    updates = _poller.get_updates(offset=offset, timeout=1)
-                    for u in updates:
-                        try:
-                            _handle_update(u)
-                        except Exception:
-                            pass
-                        _poller.save_offset(u.update_id + 1)
-                except Exception:
-                    pass
-                time.sleep(5)
-
-        threading.Thread(target=_poll_loop, name="telegram-poll", daemon=True).start()
 
     while True:
         try:

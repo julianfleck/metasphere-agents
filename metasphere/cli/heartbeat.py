@@ -31,13 +31,6 @@ def main(argv: list[str] | None = None) -> int:
         invoke_agent = True
         args = [a for a in args if a != "--invoke-agent"]
 
-    with_telegram_poll = (
-        os.environ.get("HEARTBEAT_WITH_TELEGRAM_POLL", "").lower() == "true"
-    )
-    if "--with-telegram-poll" in args:
-        with_telegram_poll = True
-        args = [a for a in args if a != "--with-telegram-poll"]
-
     paths = resolve()
 
     if not args or args[0] in ("once", "check"):
@@ -56,7 +49,6 @@ def main(argv: list[str] | None = None) -> int:
             paths,
             interval_seconds=interval,
             invoke_agent=invoke_agent,
-            with_telegram_poll=with_telegram_poll,
         )
         return 0
 

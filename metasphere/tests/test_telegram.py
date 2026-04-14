@@ -450,8 +450,8 @@ def test_split_chunks_short_text_single_chunk():
 from pathlib import Path
 
 from metasphere.telegram import attachments as _atts
+from metasphere.telegram import handler as _handler
 from metasphere.telegram import inject
-from metasphere.cli import telegram as _cli_tg
 
 
 # Autouse guard: redirect ATTACHMENTS_ROOT to a per-test tmp dir for every
@@ -692,14 +692,12 @@ def test_render_attachment_block_empty_returns_empty_string():
 
 
 def _patch_handle_update(monkeypatch, tmp_path):
-    """Wire a fake getFile + http fetcher + tmux sink for _handle_update.
+    """Wire a fake getFile + http fetcher + tmux sink for handle_update.
 
     Returns ``(http_log, tmux_log)`` so assertions can inspect what was
     downloaded and what payload got injected.
     """
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TEST:TOKEN")
-    # Route attachments to a tmp dir so tests don't touch the real
-    # ~/.metasphere/attachments.
     monkeypatch.setattr(_atts, "ATTACHMENTS_ROOT", tmp_path / "attachments")
 
     http_log: list = []
@@ -710,7 +708,6 @@ def _patch_handle_update(monkeypatch, tmp_path):
 
     monkeypatch.setattr(_atts, "_http_get_default", fake_http_get)
 
-    # Stub api.call for getFile.
     def fake_api_call(method, **params):
         if method == "getFile":
             fid = params["file_id"]
@@ -721,8 +718,6 @@ def _patch_handle_update(monkeypatch, tmp_path):
 
     monkeypatch.setattr(api, "call", fake_api_call)
 
-    # Sink for tmux injection — _cli_tg imports inject directly; patch the
-    # submit_to_tmux re-export on the inject module.
     tmux_log: list = []
 
     def fake_submit_to_tmux(from_user, text, session="metasphere-orchestrator"):
@@ -731,13 +726,11 @@ def _patch_handle_update(monkeypatch, tmp_path):
 
     monkeypatch.setattr(inject, "submit_to_tmux", fake_submit_to_tmux)
 
-    # Archiver writes JSONL to ~/.metasphere — redirect to tmp.
+    # Archiver + handler defaults point at ~/.metasphere — redirect all
+    # of them so a test can't accidentally touch the real home dir.
     monkeypatch.setattr(archiver, "DEFAULT_DIR", str(tmp_path / "tg"))
-    # save_latest reads DEFAULT_DIR at call time; archive_message too.
-
-    # Chat-id save goes to ~/.metasphere/config; redirect.
-    monkeypatch.setattr(_cli_tg, "CHAT_ID_FILE", str(tmp_path / "chat_id_rewrite"))
-    monkeypatch.setattr(_cli_tg, "CHAT_ID_FILE_CANONICAL", str(tmp_path / "chat_id"))
+    monkeypatch.setattr(_handler, "_default_save_chat_id", lambda cid: None)
+    monkeypatch.setattr(_handler, "_default_pending_ack_writer", lambda cid, mid: None)
 
     return http_log, tmux_log
 
@@ -766,7 +759,7 @@ def test_handle_update_photo_with_caption_injects_attachment_block(tmp_path, mon
     }
     u = poller.Update.from_payload(payload)
 
-    _cli_tg._handle_update(u)
+    _handler.handle_update(u)
 
     # One file was downloaded — the largest thumbnail.
     assert len(http_log) == 1
@@ -807,7 +800,7 @@ def test_handle_update_photo_only_no_caption_still_injects_block(tmp_path, monke
     }
     u = poller.Update.from_payload(payload)
 
-    _cli_tg._handle_update(u)
+    _handler.handle_update(u)
 
     assert len(tmux_log) == 1
     injected = tmux_log[0]["text"]
@@ -853,7 +846,7 @@ def test_handle_update_download_failure_still_injects_note(tmp_path, monkeypatch
     u = poller.Update.from_payload(payload)
 
     # Must not raise.
-    _cli_tg._handle_update(u)
+    _handler.handle_update(u)
 
     assert len(tmux_log) == 1
     injected = tmux_log[0]["text"]
@@ -881,7 +874,7 @@ def test_handle_update_plain_text_unchanged(tmp_path, monkeypatch):
     }
     u = poller.Update.from_payload(payload)
 
-    _cli_tg._handle_update(u)
+    _handler.handle_update(u)
 
     assert http_log == []
     assert len(tmux_log) == 1
@@ -956,7 +949,7 @@ def test_handle_update_emits_debug_log_on_attachment_path(tmp_path, monkeypatch)
         },
     }
     u = poller.Update.from_payload(payload)
-    _cli_tg._handle_update(u)
+    _handler.handle_update(u)
 
     assert debug_log.exists()
     records = [json.loads(l) for l in debug_log.read_text().strip().splitlines()]
@@ -991,7 +984,7 @@ def test_handle_update_emits_debug_log_when_parse_returns_empty(tmp_path, monkey
         },
     }
     u = poller.Update.from_payload(payload)
-    _cli_tg._handle_update(u)
+    _handler.handle_update(u)
 
     records = [json.loads(l) for l in debug_log.read_text().strip().splitlines()]
     post_parse = next(r for r in records if r["stage"] == "post_parse")
