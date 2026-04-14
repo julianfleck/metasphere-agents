@@ -19,7 +19,7 @@ import sys
 from typing import List, Optional
 
 from metasphere.io import atomic_write_text
-from metasphere.telegram import api, archiver, commands, inject, poller
+from metasphere.telegram import api, archiver, attachments, commands, inject, poller
 
 # Path order matters: rewrite-specific file first, then the canonical
 # chat-id file. Falling back to the canonical chat id keeps
@@ -83,20 +83,35 @@ def _handle_update(u: poller.Update) -> None:
         )
         return
 
-    if not u.text or u.chat_id is None:
+    if u.chat_id is None:
         return
+
+    msg = u.raw.get("message") or u.raw.get("edited_message") or u.raw
+    refs = attachments.parse_attachments(msg)
+    # Photos/videos/documents carry a ``caption`` instead of ``text``.
+    # Treat the caption as the body when there's no text, so the LLM
+    # sees whatever Julian typed alongside the attachment.
+    caption = msg.get("caption") or ""
+    body = u.text or caption
+
+    if not body and not refs:
+        return
+
     # Save chat id (DMs only — forum threads have thread_id)
     if not u.thread_id:
         _save_chat_id(u.chat_id)
 
-    archiver.archive_message(u.raw.get("message") or u.raw)
-    archiver.save_latest(u.raw.get("message") or u.raw)
+    archiver.archive_message(msg)
+    archiver.save_latest(msg)
 
     ctx = commands.Context(
         chat_id=u.chat_id, from_user=u.from_username or "?", thread_id=u.thread_id
     )
 
-    if u.text.startswith("/"):
+    # Slash-command dispatch keys on ``u.text`` only: a caption that
+    # happens to start with ``/`` is not a command, and attachments are
+    # not relevant to slash-command replies.
+    if u.text and u.text.startswith("/"):
         reply = commands.dispatch(u.text, ctx)
         if reply:
             if isinstance(reply, commands.Reply):
@@ -109,8 +124,15 @@ def _handle_update(u: poller.Update) -> None:
             else:
                 api.send_message(u.chat_id, reply, message_thread_id=u.thread_id)
     else:
+        payload = body or ""
+        if refs:
+            downloaded = attachments.download_attachments(
+                u.message_id or u.update_id, refs,
+            )
+            block = attachments.render_attachment_block(downloaded)
+            payload = f"{payload}\n\n{block}".strip() if payload else block
         # Inject into orchestrator tmux + acknowledge with reaction
-        inject.submit_to_tmux(f"@{u.from_username}", u.text)
+        inject.submit_to_tmux(f"@{u.from_username}", payload)
         if u.message_id:
             try:
                 api.set_message_reaction(u.chat_id, u.message_id, "👀")
