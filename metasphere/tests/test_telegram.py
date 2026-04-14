@@ -454,6 +454,33 @@ from metasphere.telegram import inject
 from metasphere.cli import telegram as _cli_tg
 
 
+# Autouse guard: redirect ATTACHMENTS_ROOT to a per-test tmp dir for every
+# test in this module. Prevents the real ~/.metasphere/attachments/ from
+# being written to if a test forgets to monkeypatch the root (which
+# already bit us once — left 555/biggest.bin behind on the prod host).
+@pytest.fixture(autouse=True)
+def _no_real_attachments_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(_atts, "ATTACHMENTS_ROOT", tmp_path / "__attachments_sandbox__")
+    # Also redirect the debug log so tests don't smear diagnostic output
+    # into the real ~/.metasphere/state/telegram_debug.log (which the
+    # live orchestrator tails for the open incident repro).
+    monkeypatch.setattr(_atts, "DEBUG_LOG_PATH", tmp_path / "__telegram_debug_sandbox__.log")
+    yield
+    # Paranoid post-condition: even if a test bypassed the monkeypatch,
+    # detect it so the suite fails loudly instead of silently polluting
+    # the real dir on the next run.
+    real = Path.home() / ".metasphere" / "attachments"
+    if real.exists():
+        # Only fail if the test wrote something during this invocation
+        # that looks like test-fixture data. Any file whose bytes start
+        # with ``BYTES:`` came from the fake_http_get in this module.
+        for p in real.rglob("*"):
+            if p.is_file() and p.read_bytes().startswith(b"BYTES:"):
+                raise AssertionError(
+                    f"test pollution: {p} was written to the real attachments dir"
+                )
+
+
 def test_parse_attachments_photo_picks_largest_size():
     """``photo`` arrives as a size-ascending array of thumbnails; we
     must pick exactly one (the largest) and tag it as kind=photo.
@@ -865,3 +892,111 @@ def test_handle_update_plain_text_unchanged(tmp_path, monkeypatch):
 # poller-side path above covers the download + inject wiring with
 # mocked getFile + http_get. A live end-to-end test would require a
 # valid TELEGRAM_BOT_TOKEN and a controlled chat — out of scope here.
+
+
+# --- Debug logging -------------------------------------------------------
+
+
+def test_debug_log_writes_jsonl_with_timestamp(tmp_path):
+    log = tmp_path / "telegram_debug.log"
+    _atts.debug_log({"stage": "test", "value": 42}, path=log)
+    _atts.debug_log({"stage": "test", "value": 43}, path=log)
+    lines = log.read_text().strip().splitlines()
+    assert len(lines) == 2
+    rec = json.loads(lines[0])
+    assert rec["stage"] == "test"
+    assert rec["value"] == 42
+    assert "ts" in rec and rec["ts"].endswith("Z")
+
+
+def test_debug_log_never_raises_on_filesystem_error(tmp_path):
+    # Path that can't be created (parent is a file, not a dir).
+    bad_parent = tmp_path / "not_a_dir"
+    bad_parent.write_text("blocker")
+    bad_path = bad_parent / "log.jsonl"
+    # Must not raise.
+    _atts.debug_log({"stage": "test"}, path=bad_path)
+
+
+def test_summarize_message_captures_media_keys():
+    msg = {
+        "message_id": 42,
+        "chat": {"id": 1},
+        "photo": [{"file_id": "x"}],
+        "document": {"file_id": "d"},
+        "caption": "note",
+    }
+    summary = _atts.summarize_message_for_debug(msg)
+    assert summary["message_id"] == 42
+    assert summary["chat_id"] == 1
+    assert "photo" in summary["media_keys"]
+    assert "document" in summary["media_keys"]
+    assert summary["has_caption"] is True
+    assert summary["has_text"] is False
+
+
+def test_handle_update_emits_debug_log_on_attachment_path(tmp_path, monkeypatch):
+    """A real-style photo payload produces a post_parse + pre_inject
+    pair in the debug log, even when the download path stubs out to
+    fake bytes. Critical for the open incident: lets us see the raw
+    msg keys + parse result on Julian's next send.
+    """
+    http_log, tmux_log = _patch_handle_update(monkeypatch, tmp_path)
+    debug_log = tmp_path / "telegram_debug.log"
+    monkeypatch.setattr(_atts, "DEBUG_LOG_PATH", debug_log)
+
+    payload = {
+        "update_id": 2001,
+        "message": {
+            "message_id": 900,
+            "chat": {"id": 123},
+            "from": {"username": "julian"},
+            "date": 1700000000,
+            "photo": [{"file_id": "p1", "file_size": 1000}],
+        },
+    }
+    u = poller.Update.from_payload(payload)
+    _cli_tg._handle_update(u)
+
+    assert debug_log.exists()
+    records = [json.loads(l) for l in debug_log.read_text().strip().splitlines()]
+    stages = [r["stage"] for r in records]
+    assert "post_parse" in stages
+    assert "pre_inject" in stages
+    post_parse = next(r for r in records if r["stage"] == "post_parse")
+    assert post_parse["summary"]["media_keys"] == ["photo"]
+    assert post_parse["refs"][0]["kind"] == "photo"
+
+
+def test_handle_update_emits_debug_log_when_parse_returns_empty(tmp_path, monkeypatch):
+    """A message with ONLY a non-file_id media-looking field (e.g. a
+    ``contact`` or a future Bot API key we don't yet recognise) must
+    still produce a post_parse log line with ``refs: []``. That's how
+    we'll catch a schema mismatch in the wild.
+    """
+    _patch_handle_update(monkeypatch, tmp_path)
+    debug_log = tmp_path / "telegram_debug.log"
+    monkeypatch.setattr(_atts, "DEBUG_LOG_PATH", debug_log)
+
+    payload = {
+        "update_id": 2002,
+        "message": {
+            "message_id": 901,
+            "chat": {"id": 123},
+            "from": {"username": "julian"},
+            "date": 1700000000,
+            # No text, no caption, no known media keys — but a contact
+            # payload, which we don't recognise as downloadable.
+            "contact": {"phone_number": "+1", "first_name": "J"},
+        },
+    }
+    u = poller.Update.from_payload(payload)
+    _cli_tg._handle_update(u)
+
+    records = [json.loads(l) for l in debug_log.read_text().strip().splitlines()]
+    post_parse = next(r for r in records if r["stage"] == "post_parse")
+    assert post_parse["refs"] == []
+    assert "contact" in post_parse["summary"]["keys"]
+    # And we should have then early-returned because body=None, refs=[].
+    assert any(r["stage"] == "early_return" and r["reason"] == "no body and no refs"
+               for r in records)
