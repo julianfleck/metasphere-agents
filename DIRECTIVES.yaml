@@ -6,3 +6,11 @@ text: No Gemini, no non-Anthropic provider abstraction layers, no multi-provider
 date: 2026-04-12
 source: @julian
 text: Ephemerals should only work on one singular well-scoped task. Do not give ephemerals multi-step missions or compound goals.
+---
+date: 2026-04-14
+source: @julian
+text: "Orchestrator delegates, it does not implement. Any task that writes state — file edits, tests, commits, migrations, deploys — MUST be delegated to a harness agent via `metasphere agent spawn` (ephemeral) or `metasphere agent wake` (persistent). Do NOT use Claude Code's built-in Agent() tool for implementation: it runs inside the orchestrator's turn, blocks the turn, queues heartbeats, and pollutes the orchestrator's context. Agent() is acceptable only for bounded in-context research reads (codebase lookups, short doc summaries) and MUST be capped with an explicit word limit (e.g. 'report in under 200 words'). If the subtask writes state or would take long enough to trigger a heartbeat, spawn it."
+---
+date: 2026-04-14
+source: @julian
+text: "Scope tests to the change. Do not run the full test suite for small edits. Run the touched module's tests; if a shared util changed, run direct consumers; if a package boundary is crossed, run each affected package. Reach for the full suite only when the change is genuinely cross-cutting (shared config, build tooling, core types) or CI is about to run it anyway. Full-suite runs per iteration waste minutes and train agents to treat 'all green' as the bar for any edit — the real bar is 'tests that could plausibly break from this change still pass'. Spawned agents' Accountability clauses should name the relevant test targets, not 'full suite green'."
