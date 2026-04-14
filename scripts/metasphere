@@ -781,13 +781,15 @@ case "${1:-}" in
             ok "Reset to origin/main"
         fi
 
-        # Reinstall scripts
-        if [[ -d "$install_source/scripts" ]]; then
-            mkdir -p "$METASPHERE_DIR/bin"
-            cp "$install_source/scripts"/* "$METASPHERE_DIR/bin/" 2>/dev/null || true
-            chmod +x "$METASPHERE_DIR/bin"/* 2>/dev/null || true
-            ok "Scripts updated"
-        fi
+        # NOTE: we intentionally no longer copy scripts/* into $METASPHERE_DIR/bin/.
+        # $METASPHERE_DIR/bin/metasphere is a symlink to the venv's pip-installed
+        # Python console script (see install.sh:200-220). A blanket `cp scripts/* bin/`
+        # follows that symlink and clobbers the venv's metasphere entry point with
+        # this legacy bash dispatcher — requires `pip install --force-reinstall`
+        # to recover. Same mechanism clobbers metasphere-* venv scripts.
+        # The canonical CLI is the Python package; scripts/metasphere is only used
+        # as a dispatcher from the repo checkout (via update.py) and does not
+        # need to be in $METASPHERE_DIR/bin/.
 
         # Update skills + commands in ~/.claude/ (symlinks into repo)
         if [[ -d "$install_source/skills" ]]; then
