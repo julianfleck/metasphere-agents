@@ -1,5 +1,11 @@
 # Bash → Python Cutover Parity Matrix
 
+> **Historical document.** As of 2026-04-14 the migration is complete.
+> See [`CLI_PORTING_STATUS.md`](./CLI_PORTING_STATUS.md) for the current
+> snapshot of every subcommand + its handler. The matrix below is kept
+> for git-archaeology context only.
+
+
 Live binaries are in `~/.metasphere/bin/`. The Python entry point
 is the `metasphere` console script (installed via `pyproject.toml`).
 Dispatcher at `metasphere/cli/main.py`.

@@ -105,6 +105,28 @@ When your task is complete:
 2. Notify your parent: `metasphere msg send {{PARENT_AGENT}} !done "task completed: brief summary"`
 3. If you discovered something important, message relevant specialists
 
+## If you need to delegate further
+
+If your task is larger than one well-scoped unit of work, do NOT
+expand your own turn to cover it — spawn a child harness agent:
+
+```bash
+metasphere agent spawn @child /scope/ "one well-scoped task" \
+  --authority "..." --responsibility "..." --accountability "..."
+```
+
+Do NOT use Claude Code's built-in `Agent()` tool to do implementation
+work. That runs inside your current turn, blocks it, and pollutes
+your context. `Agent()` is only for short research reads — and when
+you use it, cap the report explicitly (e.g. "report in under 200
+words") so the subagent doesn't dump a transcript back into your
+context. Anything that writes files, runs tests, commits, or takes
+long enough to trigger a heartbeat belongs in a spawned harness
+agent.
+
+When you run tests, scope them to the files/modules you touched —
+don't default to the full suite.
+
 ## Current Task
 
 {{TASK}}

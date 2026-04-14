@@ -24,6 +24,11 @@ Layout::
 
 The legacy ``metasphere-*`` console scripts remain registered as deprecation
 shims (see ``metasphere.cli._shims``) and forward into this dispatcher.
+
+As of 2026-04-14 every top-level subcommand has a pure-Python handler;
+no entry falls through to a bash shim. The ``_not_ported`` error stub
+that previously covered ``ls`` has been removed — if a future removal
+re-introduces a bash-only subcommand, add a fresh stub explicitly.
 """
 
 from __future__ import annotations
@@ -52,7 +57,7 @@ REGISTRY: dict[str, str] = {
     "update":    "metasphere.cli.update:main",
     "consolidate": "metasphere.cli.consolidate:main",
     "status":    "metasphere.cli.main:_status",
-    "ls":        "metasphere.cli.main:_not_ported",
+    "ls":        "metasphere.cli.ls:main",
 }
 
 _HELP = """\
@@ -61,8 +66,8 @@ metasphere - unified CLI for the Metasphere agent system
 Usage: metasphere <subcommand> [args...]
 
 Subcommands:
-  status                Full system status (legacy bash)
-  ls [path]             Project/task/agent landscape (legacy bash)
+  status                Full system status
+  ls [@agent]           Project/task/agent landscape (or per-agent detail)
   agent spawn|wake|list|status ...
   msg send|list|done|reply|all ...
   task new|start|update|done|list ...
@@ -120,20 +125,6 @@ def _status(argv: list[str]) -> int:
     from metasphere.status import summary
     sys.stdout.write(summary() + "\n")
     return 0
-
-
-def _not_ported(argv: list[str]) -> int:
-    """Stub for subcommands whose bash version has been retired without a
-    Python port yet. Prints a clear error and returns 1 (instead of the
-    old behaviour of re-execing the venv-Python ``metasphere`` symlink,
-    which infinite-looped once ``scripts/metasphere`` was deleted).
-    """
-    head = getattr(sys, "_metasphere_head", "?")
-    sys.stderr.write(
-        f"metasphere {head}: this subcommand has not been ported to "
-        "Python yet; see docs/BASH_TO_PY_PARITY.md\n"
-    )
-    return 1
 
 
 def main(argv: list[str] | None = None) -> int:

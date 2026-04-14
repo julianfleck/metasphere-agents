@@ -292,6 +292,79 @@ This is configured in `.claude/settings.json`:
 
 ## Multi-Agent Coordination
 
+### Orchestrator delegation: spawn/wake, not Agent()
+
+If you are the resident agent at the repo root (conventionally
+`@orchestrator`), your job is to *delegate* implementation work — not
+perform it in the main conversation. Doing implementation inline
+blocks your turn, queues heartbeats, and bloats the orchestrator's
+context with tool output that belongs to a child.
+
+**For anything that writes state — file edits, tests, commits,
+migrations, deploys — spawn a harness agent:**
+
+```bash
+# Ephemeral: one well-scoped task, agent exits on !done
+metasphere agent spawn @name /scope/ "task" --authority ... --responsibility ... --accountability ...
+
+# Persistent: long-lived collaborator you'll message again
+metasphere agent wake @name
+```
+
+Harness agents run in their own tmux session, so they don't block
+your turn, they produce their own telegram updates, and their context
+is isolated from yours. You verify their work via the Accountability
+check on `!done`.
+
+**Do NOT use Claude Code's built-in `Agent()` tool for implementation
+work.** `Agent()` is a Claude-Code-internal subagent call that
+executes *inside* your current turn — it blocks the orchestrator until
+it returns, queues heartbeats, and its full tool-call transcript
+lands in your context. That's the opposite of what delegation is for.
+
+`Agent()` is acceptable only for **bounded research reads**: short
+codebase lookups, "find all callers of X", "summarize this doc".
+When you do use it, always cap the report — e.g. "report in under
+200 words" — so the subagent doesn't dump a transcript into your
+context. Anything that writes to disk, runs tests, makes commits, or
+takes more than a handful of reads should be a `spawn`/`wake`, not
+an `Agent()` call.
+
+| If the task is… | Use |
+|------------------|-----|
+| Edit files, run migrations, write tests | `metasphere agent spawn` (or `wake`) |
+| Commit, push, open a PR | `metasphere agent spawn` |
+| Run the full build / long test suite | `metasphere agent spawn` |
+| "Where is X defined?", "Which files import Y?" | `Agent()` (research, <200-word report) |
+| "Summarize what's in docs/foo.md" | `Agent()` (research, <200-word report) |
+| Anything that needs to survive beyond this turn | metasphere task + spawn |
+
+The rule of thumb: **if the subtask writes state or takes long enough
+that a heartbeat would fire, spawn it.** If it's a short read you
+want back in-context, `Agent()` is fine — with a word cap.
+
+### Testing discipline: scope tests to what changed
+
+When a spawned agent (or you) finishes a code change, **do not run
+the full test suite by default**. Scope tests to the files and
+modules that were touched:
+
+- Changed one module? Run that module's tests.
+- Touched a shared util? Run the tests of direct consumers.
+- Crossing a package boundary? Run each affected package's tests.
+- Only reach for the full suite when the change is genuinely
+  cross-cutting (shared config, build tooling, core types) — or when
+  CI is about to run it for you anyway.
+
+Full-suite runs for small changes waste minutes per iteration and
+train agents to treat "all tests pass" as the bar for *any* edit.
+That's the wrong bar — the bar is "the tests that could plausibly
+break from this change still pass." Scope first, expand only when
+the change's blast radius genuinely warrants it.
+
+This applies inside spawned agents too: their Accountability check
+should name the *relevant* test targets, not "full suite green".
+
 ### Spawning Child Agents
 
 When a task is too complex, spawn specialized children **under a contract**:
