@@ -53,7 +53,9 @@ def test_create_and_read(tmp_paths, monkeypatch):
 
     raw = task.path.read_text()
     # B2: created_by must be in the on-disk frontmatter; slug must NOT be.
-    assert "created_by: @creator" in raw
+    # created_by must be in the frontmatter; as of the YAML-safety fix,
+    # ``@agent`` values are written quoted.
+    assert 'created_by: "@creator"' in raw
     assert "\nslug:" not in raw
 
     reloaded = t.Task.from_text(raw)
@@ -208,7 +210,7 @@ def test_create_autofills_assignee_from_env(tmp_paths, monkeypatch):
     assert task.assignee == "@alice"
     assert task.project == "default"
     raw = task.path.read_text()
-    assert "assigned_to: @alice" in raw
+    assert 'assigned_to: "@alice"' in raw
     assert "project: default" in raw
 
 
@@ -296,3 +298,63 @@ def test_cli_list_filters(tmp_paths, monkeypatch, capsys):
     cli_tasks._cmd_list(["--unassigned"])
     out = capsys.readouterr().out
     assert "gamma" in out and "alpha" not in out
+
+
+def test_cli_list_project_redirect_from_outside_scope(tmp_path, monkeypatch, capsys):
+    """--project <name> must resolve to the registered project's path even
+    when the CWD/scope lives outside that project (the Telegram-gateway
+    case where the gateway's CWD has no ``.tasks/``)."""
+    from metasphere.cli import tasks as cli_tasks
+    from metasphere import tasks as _t
+
+    # Simulate ~/.metasphere (no project here — "gateway CWD"-like).
+    home = tmp_path / "metasphere"
+    home.mkdir()
+    outside_scope = tmp_path / "nowhere"
+    outside_scope.mkdir()
+
+    # Real project lives at a separate path.
+    project_path = tmp_path / "repos" / "worldwire"
+    project_path.mkdir(parents=True)
+
+    # Register it in projects.json.
+    (home / "projects.json").write_text(
+        '[{"name": "worldwire", "path": "' + str(project_path)
+        + '", "registered": "2026-04-14T00:00:00Z"}]'
+    )
+
+    # Seed a task in the project.
+    _t.create_task(
+        "alpha-outside", "!normal", project_path, project_path,
+        project="worldwire", assigned_to="@someone",
+    )
+
+    # Point env at the "outside" scope (no .tasks/ here).
+    monkeypatch.setenv("METASPHERE_DIR", str(home))
+    monkeypatch.setenv("METASPHERE_PROJECT_ROOT", str(outside_scope))
+    monkeypatch.setenv("METASPHERE_SCOPE", str(outside_scope))
+    monkeypatch.chdir(outside_scope)
+    # Clear the project_root resolver cache so the env above takes effect.
+    from metasphere import paths as _paths
+    _paths._project_root_cache.clear()
+
+    capsys.readouterr()
+    rc = cli_tasks._cmd_list(["--project", "worldwire"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "alpha-outside" in out, out
+
+
+def test_cli_list_project_unknown_is_noop(tmp_paths, monkeypatch, capsys):
+    """Unknown --project name falls through to the existing filter branch
+    (tasks from current scope, then filtered by name) — safety net."""
+    from metasphere.cli import tasks as cli_tasks
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@alice")
+    t.create_task("one", "!normal", tmp_paths.scope, tmp_paths.project_root,
+                  project="default", assigned_to="@alice")
+    capsys.readouterr()
+    rc = cli_tasks._cmd_list(["--project", "does-not-exist"])
+    # Prints "no active tasks in scope" rather than crashing.
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "no active tasks" in out

@@ -178,6 +178,12 @@ def _format_scalar(v: Any) -> str:
     # byte-compatible with the legacy bash writers.
     if _ISO8601_RE.match(s):
         return s
+    # YAML-significant leading sigils: bare `@agent` and `!label` parse as
+    # tags/aliases under a strict YAML loader and break the render pipeline
+    # downstream (the tolerant in-repo parser accepts them, but exporters
+    # that feed PyYAML-based tooling do not). Quote them proactively.
+    if s and s[0] in ("@", "!"):
+        return json.dumps(s)
     if any(c in s for c in ":#\n") or s != s.strip():
         return json.dumps(s)
     return s

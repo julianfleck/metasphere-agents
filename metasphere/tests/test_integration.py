@@ -74,9 +74,9 @@ def test_message_roundtrip_two_agents(tmp_path):
     raw = inbox_file.read_text()
     assert raw.startswith("---\n")
     assert f"id: {msg.id}" in raw
-    assert "from: @a" in raw
-    assert "to: @/b/" in raw
-    assert "label: !info" in raw
+    assert 'from: "@a"' in raw
+    assert 'to: "@/b/"' in raw
+    assert 'label: "!info"' in raw
     assert "status: unread" in raw
     assert "hello from A" in raw
 

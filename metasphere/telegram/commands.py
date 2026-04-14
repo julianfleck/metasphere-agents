@@ -101,20 +101,50 @@ def cmd_status(args: str, ctx: Context) -> str:
 
 
 def cmd_tasks(args: str, ctx: Context) -> "Reply | str":
-    """List active tasks with HTML cards."""
+    """List active tasks with HTML cards.
+
+    Usage:
+      /tasks              -- tasks in the gateway's scope (often empty;
+                             prints a project menu when nothing is found)
+      /tasks <project>    -- resolve <project> via the registry and list
+                             tasks from that project's path
+    """
     try:
         from metasphere.tasks import list_tasks
         from metasphere.format import format_task_table
         from metasphere.paths import resolve
+        from metasphere.project import _find_project, list_projects
 
         paths = resolve()
-        tasks = list_tasks(paths.project_root, paths.project_root)
+        project_name = (args or "").strip().split()[0] if args else ""
+
+        scope = paths.project_root
+        repo = paths.project_root
+        if project_name:
+            registered = _find_project(project_name, paths)
+            if registered is None:
+                return (
+                    f"(unknown project: {project_name})\n"
+                    "Known projects: "
+                    + ", ".join(p.name for p in list_projects(paths=paths))
+                )
+            scope = registered
+            repo = registered
+
+        tasks = list_tasks(scope, repo)
         active = [t for t in tasks if t.status in ("pending", "in-progress", "in_progress")]
 
-        return Reply(
-            format_task_table(active, html=True),
-            parse_mode="HTML",
-        )
+        if not active and not project_name:
+            names = [p.name for p in list_projects(paths=paths)]
+            hint = (
+                "No tasks in gateway scope. Try <code>/tasks &lt;project&gt;</code>.\n"
+                "Known projects: " + (", ".join(names) if names else "(none)")
+            )
+            return Reply(hint, parse_mode="HTML")
+
+        header = f"Tasks ({project_name})" if project_name else "Tasks"
+        body = format_task_table(active, html=True)
+        return Reply(f"<b>{header}</b>\n{body}", parse_mode="HTML")
     except Exception as e:
         return f"(tasks error: {e})"
 

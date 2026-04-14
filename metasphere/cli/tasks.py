@@ -26,6 +26,50 @@ def _ctx() -> tuple[Path, Path]:
     return p.scope, p.repo
 
 
+def _project_path_from_registry(name: str) -> Path | None:
+    """Look up a registered project path by name. Returns None if unknown.
+
+    Delegates to ``metasphere.project._find_project`` so we don't duplicate
+    the registry-walk logic. Only the registry lookup branch is relevant
+    here — the CWD-ancestry fallback is filtered out by passing a truthy
+    name.
+    """
+    try:
+        from metasphere.project import _find_project
+    except Exception:
+        return None
+    paths = _paths.resolve()
+    p = _find_project(name, paths)
+    if p is None:
+        return None
+    p = Path(p)
+    # _find_project never returns a non-registry result when ``name`` is
+    # truthy, but double-check the directory exists before trusting it.
+    return p if p.is_dir() else None
+
+
+def _maybe_redirect_to_project(project_filter: str | None,
+                               scope: Path, repo: Path) -> tuple[Path, Path]:
+    """If ``--project`` names a registered project outside the current scope,
+    redirect (scope, repo) to that project so CWD-scoped task I/O reads
+    the right ``.tasks/`` directory. CWD-inside-project is a no-op.
+    """
+    if not project_filter:
+        return scope, repo
+    registered = _project_path_from_registry(project_filter)
+    if registered is None:
+        return scope, repo
+    try:
+        scope_resolved = Path(scope).resolve()
+        reg_resolved = registered.resolve()
+    except OSError:
+        return scope, repo
+    # Already inside the named project — nothing to do.
+    if scope_resolved == reg_resolved or reg_resolved in scope_resolved.parents:
+        return scope, repo
+    return reg_resolved, reg_resolved
+
+
 def _agent() -> str:
     return resolve_agent_id(_paths.resolve())
 
@@ -56,6 +100,12 @@ def _cmd_list(args: list[str]) -> int:
             i += 1
     include_completed = filter_ in ("all", "completed")
     scope, repo = _ctx()
+    # If --project names a registered project and we're running from a CWD
+    # outside that project (e.g. the Telegram gateway's CWD has no .tasks/),
+    # redirect (scope, repo) to the project's path so list_tasks finds its
+    # .tasks/ directory. The post-discovery project filter still runs below
+    # as a safety net.
+    scope, repo = _maybe_redirect_to_project(project_filter, scope, repo)
     items = _tasks.list_tasks(scope, repo, include_completed=include_completed)
     if filter_ == "completed":
         items = [t for t in items if t.status == _tasks.STATUS_COMPLETED]
@@ -105,6 +155,9 @@ def _cmd_new(args: list[str]) -> int:
         return 1
 
     scope, repo = _ctx()
+    # If --project names a registered project and CWD is outside it, resolve
+    # to that project's path so the task file lands in the right .tasks/.
+    scope, repo = _maybe_redirect_to_project(explicit_project, scope, repo)
 
     # Soft enforcement: warn if auto-fill can't determine owner/project.
     auto_project = _tasks._auto_project(scope)

@@ -77,3 +77,50 @@ def test_frontmatter_iso8601_unquoted(tmp_path):
     assert '"2026-04-07T20:43:23Z"' not in raw
     fm2 = io.read_frontmatter_file(p)
     assert fm2.meta["created"] == "2026-04-07T20:43:23Z"
+
+
+def test_format_scalar_quotes_at_sigil():
+    """Bare ``@agent`` must be quoted so strict YAML loaders don't treat it
+    as a tag/alias. Regression: unquoted ``assigned_to: @orchestrator``
+    values broke the render pipeline downstream."""
+    assert io._format_scalar("@orchestrator") == '"@orchestrator"'
+    assert io._format_scalar("@agent_with_underscore") == '"@agent_with_underscore"'
+
+
+def test_format_scalar_quotes_bang_sigil():
+    """Bare ``!label`` / ``!priority`` must also be quoted."""
+    assert io._format_scalar("!high") == '"!high"'
+    assert io._format_scalar("!task") == '"!task"'
+
+
+def test_format_scalar_plain_strings_still_bare():
+    """Regression guard: only sigil-led strings get quoted."""
+    assert io._format_scalar("hello") == "hello"
+    assert io._format_scalar("pending") == "pending"
+
+
+def test_frontmatter_sigil_roundtrip(tmp_path):
+    """Write a task-like frontmatter with @-agent and !-priority and verify
+    that (a) the on-disk file has the values quoted and (b) the parser
+    returns the original strings."""
+    p = tmp_path / "task.md"
+    fm = io.Frontmatter(
+        meta={
+            "id": "t1",
+            "assigned_to": "@orchestrator",
+            "created_by": "@alice",
+            "priority": "!high",
+            "status": "pending",
+        },
+        body="body\n",
+    )
+    io.write_frontmatter_file(p, fm)
+    raw = p.read_text()
+    assert 'assigned_to: "@orchestrator"' in raw
+    assert 'created_by: "@alice"' in raw
+    assert 'priority: "!high"' in raw
+    fm2 = io.read_frontmatter_file(p)
+    assert fm2.meta["assigned_to"] == "@orchestrator"
+    assert fm2.meta["created_by"] == "@alice"
+    assert fm2.meta["priority"] == "!high"
+    assert fm2.meta["status"] == "pending"
