@@ -165,8 +165,23 @@ def interval_to_cron(interval: str) -> str:
 
 # ---------- schedule integration ----------
 
+def _metasphere_binary() -> str:
+    """Absolute path to the ``metasphere`` console script in the venv we're
+    running under. Using an absolute path in the cron payload avoids
+    relying on the systemd unit's PATH (which may resolve ``metasphere``
+    to a bash shim backed by ``/usr/bin/python3``, which in turn can't
+    import the pip-installed ``metasphere`` package and fails silently
+    with ``ModuleNotFoundError``).
+    """
+    candidate = Path(sys.executable).with_name("metasphere")
+    if candidate.is_file():
+        return str(candidate)
+    return "metasphere"  # last-resort fallback
+
+
 def build_job(cfg: AutoUpdateConfig) -> _sched.Job:
     """Construct the auto-update Job for jobs.json."""
+    cmd = f"{_metasphere_binary()} update --quiet"
     return _sched.Job(
         id=JOB_ID,
         source="auto-update",
@@ -178,10 +193,10 @@ def build_job(cfg: AutoUpdateConfig) -> _sched.Job:
         cron_expr=cfg.cron_expr(),
         tz="UTC",
         payload_kind="command",
-        payload_message="metasphere update --quiet",
+        payload_message=cmd,
         imported_at=int(time.time()),
-        command="metasphere update --quiet",
-        full_command="metasphere update --quiet",
+        command=cmd,
+        full_command=cmd,
     )
 
 
