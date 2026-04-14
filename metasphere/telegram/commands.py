@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Dict, Optional
 
 # Telegram-controlled identifiers that get interpolated into filesystem
@@ -104,45 +105,61 @@ def cmd_tasks(args: str, ctx: Context) -> "Reply | str":
     """List active tasks with HTML cards.
 
     Usage:
-      /tasks              -- tasks in the gateway's scope (often empty;
-                             prints a project menu when nothing is found)
+      /tasks              -- condensed one-line-per-task view across every
+                             registered project, grouped by project name
       /tasks <project>    -- resolve <project> via the registry and list
-                             tasks from that project's path
+                             tasks from that project's path (expanded cards)
     """
     try:
         from metasphere.tasks import list_tasks
-        from metasphere.format import format_task_table
+        from metasphere.format import format_task_table, format_task_condensed
         from metasphere.paths import resolve
         from metasphere.project import _find_project, list_projects
 
         paths = resolve()
         project_name = (args or "").strip().split()[0] if args else ""
 
-        scope = paths.project_root
-        repo = paths.project_root
-        if project_name:
-            registered = _find_project(project_name, paths)
-            if registered is None:
-                return (
-                    f"(unknown project: {project_name})\n"
+        if not project_name:
+            # All-projects condensed view. Walk the registry and collect
+            # active tasks from each project's .tasks/active directory.
+            collected: list = []
+            for proj in list_projects(paths=paths):
+                pp = Path(proj.path) if proj.path else None
+                if pp is None or not pp.is_dir():
+                    continue
+                try:
+                    items = list_tasks(pp, pp)
+                except Exception:
+                    continue
+                for t in items:
+                    if not getattr(t, "project", None) or t.project == "default":
+                        t.project = proj.name
+                collected.extend(items)
+            active = [t for t in collected
+                      if t.status in ("pending", "in-progress", "in_progress")]
+            if not active:
+                names = [p.name for p in list_projects(paths=paths)]
+                return Reply(
+                    "No active tasks across any registered project.\n"
                     "Known projects: "
-                    + ", ".join(p.name for p in list_projects(paths=paths))
+                    + (", ".join(names) if names else "(none)"),
+                    parse_mode="HTML",
                 )
-            scope = registered
-            repo = registered
+            body = format_task_condensed(active, html=True)
+            return Reply(body, parse_mode="HTML")
 
+        registered = _find_project(project_name, paths)
+        if registered is None:
+            return (
+                f"(unknown project: {project_name})\n"
+                "Known projects: "
+                + ", ".join(p.name for p in list_projects(paths=paths))
+            )
+        scope = registered
+        repo = registered
         tasks = list_tasks(scope, repo)
         active = [t for t in tasks if t.status in ("pending", "in-progress", "in_progress")]
-
-        if not active and not project_name:
-            names = [p.name for p in list_projects(paths=paths)]
-            hint = (
-                "No tasks in gateway scope. Try <code>/tasks &lt;project&gt;</code>.\n"
-                "Known projects: " + (", ".join(names) if names else "(none)")
-            )
-            return Reply(hint, parse_mode="HTML")
-
-        header = f"Tasks ({project_name})" if project_name else "Tasks"
+        header = f"Tasks ({project_name})"
         body = format_task_table(active, html=True)
         return Reply(f"<b>{header}</b>\n{body}", parse_mode="HTML")
     except Exception as e:

@@ -74,12 +74,76 @@ def _agent() -> str:
     return resolve_agent_id(_paths.resolve())
 
 
+def _scope_is_in_registered_project(scope: Path) -> bool:
+    """Return True iff ``scope`` sits inside a directory with .metasphere/.
+
+    Used to detect "we have no project context" so we can fall through to
+    the all-projects condensed view. We intentionally avoid calling the
+    registry here — all that matters is whether the CWD/scope is itself
+    inside a project. A CWD of ``~/.metasphere`` (the gateway's home)
+    qualifies as "no project context" even though ``.metasphere`` exists
+    within it, because the scaffold under ``$METASPHERE_DIR`` is runtime
+    state, not a project.
+    """
+    try:
+        from metasphere.project import project_for_scope
+        from metasphere import paths as _p
+        paths = _p.resolve()
+        # If scope is inside METASPHERE_DIR, treat as "no project context".
+        try:
+            if Path(scope).resolve() == paths.root.resolve() or \
+               paths.root.resolve() in Path(scope).resolve().parents:
+                return False
+        except OSError:
+            pass
+        return project_for_scope(Path(scope)) is not None
+    except Exception:
+        return False
+
+
+def _all_projects_tasks(include_completed: bool = False) -> list:
+    """Walk the project registry and collect tasks from every project.
+
+    Returns a flat list of :class:`metasphere.tasks.Task` objects. Any
+    project whose ``.tasks/`` directory is missing or unreadable is
+    silently skipped — a condensed view with N-1 projects is vastly
+    preferable to a hard error.
+    """
+    try:
+        from metasphere.project import list_projects
+        from metasphere import paths as _p
+    except Exception:
+        return []
+    paths = _p.resolve()
+    out: list = []
+    try:
+        projects = list_projects(paths=paths)
+    except Exception:
+        return out
+    for proj in projects:
+        pp = Path(proj.path) if proj.path else None
+        if pp is None or not pp.is_dir():
+            continue
+        try:
+            items = _tasks.list_tasks(pp, pp, include_completed=include_completed)
+        except Exception:
+            continue
+        # Tag the project name onto each task in case the frontmatter says
+        # "default" — keeps the condensed view accurate.
+        for t in items:
+            if not getattr(t, "project", None) or t.project == "default":
+                t.project = proj.name
+        out.extend(items)
+    return out
+
+
 def _cmd_list(args: list[str]) -> int:
     # Parse positional filter + long-flag filters
     filter_ = "active"
     unassigned = False
     project_filter: str | None = None
     owner_filter: str | None = None
+    condensed = False
     rest = list(args)
     i = 0
     while i < len(rest):
@@ -93,6 +157,9 @@ def _cmd_list(args: list[str]) -> int:
         elif a == "--owner" and i + 1 < len(rest):
             owner_filter = rest[i + 1]
             i += 2
+        elif a in ("--condensed", "-c"):
+            condensed = True
+            i += 1
         elif a in ("active", "all", "completed"):
             filter_ = a
             i += 1
@@ -100,6 +167,33 @@ def _cmd_list(args: list[str]) -> int:
             i += 1
     include_completed = filter_ in ("all", "completed")
     scope, repo = _ctx()
+
+    # All-projects fallback: no --project, no owner/unassigned filter, and
+    # the CWD isn't inside any registered project. Walk the registry and
+    # render condensed. This is the "bare ``metasphere task list`` from
+    # ~/.metasphere" case that backs Telegram's bare /tasks.
+    all_projects_mode = (
+        project_filter is None
+        and owner_filter is None
+        and not unassigned
+        and not _scope_is_in_registered_project(scope)
+    )
+    if all_projects_mode:
+        items = _all_projects_tasks(include_completed=include_completed)
+        if filter_ == "completed":
+            items = [t for t in items if t.status == _tasks.STATUS_COMPLETED]
+        elif filter_ == "active":
+            items = [t for t in items
+                     if t.status in (_tasks.STATUS_PENDING,
+                                     _tasks.STATUS_IN_PROGRESS,
+                                     _tasks.STATUS_BLOCKED)]
+        if not items:
+            print("Tasks: no active tasks across any registered project")
+            return 0
+        from metasphere.format import format_task_condensed
+        print(format_task_condensed(items))
+        return 0
+
     # If --project names a registered project and we're running from a CWD
     # outside that project (e.g. the Telegram gateway's CWD has no .tasks/),
     # redirect (scope, repo) to the project's path so list_tasks finds its
@@ -118,6 +212,10 @@ def _cmd_list(args: list[str]) -> int:
         items = [t for t in items if t.assignee == owner_norm]
     if not items:
         print(f"Tasks: no {filter_} tasks in scope")
+        return 0
+    if condensed:
+        from metasphere.format import format_task_condensed
+        print(format_task_condensed(items))
         return 0
     from metasphere.format import format_task_table
     print(f"Tasks ({scope}) — {len(items)} {filter_}")

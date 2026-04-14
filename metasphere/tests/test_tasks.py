@@ -358,3 +358,115 @@ def test_cli_list_project_unknown_is_noop(tmp_paths, monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "no active tasks" in out
+
+
+def _make_two_project_registry(tmp_path, monkeypatch):
+    """Build a two-project registry layout and return
+    (home, outside_scope, proj_a_path, proj_b_path)."""
+    from metasphere import tasks as _t
+
+    home = tmp_path / "metasphere"
+    home.mkdir()
+    outside_scope = tmp_path / "gateway-cwd"
+    outside_scope.mkdir()
+
+    proj_a = tmp_path / "repos" / "worldwire"
+    proj_b = tmp_path / "repos" / "metasphere-agents"
+    proj_a.mkdir(parents=True)
+    proj_b.mkdir(parents=True)
+
+    (home / "projects.json").write_text(
+        '[{"name": "worldwire", "path": "' + str(proj_a)
+        + '", "registered": "2026-04-14T00:00:00Z"},'
+        '{"name": "metasphere-agents", "path": "' + str(proj_b)
+        + '", "registered": "2026-04-14T00:00:00Z"}]'
+    )
+
+    # Seed tasks in each project.
+    _t.create_task("alpha-ww", "!high", proj_a, proj_a,
+                   project="worldwire", assigned_to="@alice")
+    _t.create_task("beta-ww", "!normal", proj_a, proj_a,
+                   project="worldwire", assigned_to="@alice")
+    _t.create_task("one-ma", "!normal", proj_b, proj_b,
+                   project="metasphere-agents", assigned_to="@bob")
+
+    monkeypatch.setenv("METASPHERE_DIR", str(home))
+    monkeypatch.setenv("METASPHERE_PROJECT_ROOT", str(outside_scope))
+    monkeypatch.setenv("METASPHERE_SCOPE", str(outside_scope))
+    monkeypatch.chdir(outside_scope)
+    from metasphere import paths as _paths
+    _paths._project_root_cache.clear()
+
+    return home, outside_scope, proj_a, proj_b
+
+
+def test_cli_list_all_projects_fallback(tmp_path, monkeypatch, capsys):
+    """Bare `task list` outside any project walks the registry and renders
+    condensed output grouped by project."""
+    from metasphere.cli import tasks as cli_tasks
+
+    _make_two_project_registry(tmp_path, monkeypatch)
+
+    capsys.readouterr()
+    rc = cli_tasks._cmd_list([])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # All three tasks show up
+    assert "alpha-ww" in out
+    assert "beta-ww" in out
+    assert "one-ma" in out
+    # Grouped under per-project headers with counts
+    assert "worldwire (2)" in out
+    assert "metasphere-agents (1)" in out
+    # Condensed formatting, not card formatting
+    assert "Created:" not in out
+    assert "Owner:" not in out
+
+
+def test_cli_list_condensed_flag_with_project_filter(tmp_path, monkeypatch, capsys):
+    """`--condensed` forces one-line view even with a --project filter."""
+    from metasphere.cli import tasks as cli_tasks
+
+    _make_two_project_registry(tmp_path, monkeypatch)
+
+    capsys.readouterr()
+    rc = cli_tasks._cmd_list(["--project", "worldwire", "--condensed"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "alpha-ww" in out and "beta-ww" in out
+    assert "one-ma" not in out
+    # Condensed, no card metadata lines
+    assert "Created:" not in out
+    assert "Owner:" not in out
+
+
+def test_cli_list_c_shortform_flag(tmp_path, monkeypatch, capsys):
+    """`-c` is the short form of --condensed."""
+    from metasphere.cli import tasks as cli_tasks
+
+    _make_two_project_registry(tmp_path, monkeypatch)
+
+    capsys.readouterr()
+    rc = cli_tasks._cmd_list(["--project", "worldwire", "-c"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "alpha-ww" in out
+    assert "Created:" not in out
+
+
+def test_cli_list_project_scoped_still_expanded(tmp_path, monkeypatch, capsys):
+    """Sanity check: `--project` without `--condensed` still yields the
+    expanded card view. Guards against the fallback accidentally capturing
+    the filtered path."""
+    from metasphere.cli import tasks as cli_tasks
+
+    _make_two_project_registry(tmp_path, monkeypatch)
+
+    capsys.readouterr()
+    rc = cli_tasks._cmd_list(["--project", "worldwire"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "alpha-ww" in out
+    # Expanded card metadata must be present
+    assert "Created:" in out
+    assert "Owner:" in out

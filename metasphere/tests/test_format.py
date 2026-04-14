@@ -115,6 +115,69 @@ def test_escape_html_basic():
     assert fmt.escape_html("&lt;") == "&amp;lt;"
 
 
+def test_format_task_condensed_header_per_project(tmp_paths, monkeypatch):
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@alice")
+    a = _tasks.create_task("alpha", "!high", tmp_paths.scope, tmp_paths.project_root,
+                           project="worldwire", assigned_to="@alice")
+    b = _tasks.create_task("beta", "!normal", tmp_paths.scope, tmp_paths.project_root,
+                           project="worldwire", assigned_to="@alice")
+    c = _tasks.create_task("gamma task with a long title" + "x" * 100,
+                           "!normal", tmp_paths.scope, tmp_paths.project_root,
+                           project="metasphere-agents", assigned_to="@bob")
+    out = fmt.format_task_condensed([a, b, c])
+    # Header line
+    assert out.splitlines()[0] == "Tasks"
+    # Per-project headers with counts
+    assert "worldwire (2)" in out
+    assert "metasphere-agents (1)" in out
+    # One line per task (no em-dash card rule)
+    assert "🔵" in out
+    # Titles present
+    assert "alpha" in out and "beta" in out and "gamma" in out
+    # Long title got truncated with ellipsis
+    assert "…" in out
+    # Priority column
+    assert "!high" in out and "!normal" in out
+    # High-priority sorts first within worldwire
+    ww_idx = out.find("worldwire")
+    ma_idx = out.find("metasphere-agents")
+    # worldwire precedes metasphere-agents lex-sort: 'm' < 'w', actually
+    # metasphere-agents should come first alphabetically
+    assert ma_idx < ww_idx
+    alpha_pos = out.find("alpha")
+    beta_pos = out.find("beta")
+    # !high alpha must come before !normal beta within the same project group
+    assert alpha_pos < beta_pos
+
+
+def test_format_task_condensed_html_mode(tmp_paths, monkeypatch):
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@alice")
+    t = _tasks.create_task("needs escaping < & >", "!high",
+                           tmp_paths.scope, tmp_paths.project_root,
+                           project="p", assigned_to="@alice")
+    out = fmt.format_task_condensed([t], html=True)
+    assert "<b>Tasks</b>" in out
+    assert "&lt;" in out and "&amp;" in out and "&gt;" in out
+
+
+def test_format_task_condensed_empty():
+    out = fmt.format_task_condensed([])
+    assert "(no active tasks)" in out
+
+
+def test_format_task_condensed_title_truncation(tmp_paths, monkeypatch):
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@a")
+    long_title = "z" * 200
+    t = _tasks.create_task(long_title, "!normal", tmp_paths.scope,
+                           tmp_paths.project_root, project="p",
+                           assigned_to="@a")
+    out = fmt.format_task_condensed([t])
+    # Truncated to CONDENSED_TITLE_MAX (70), with ellipsis
+    assert ("z" * 69 + "…") in out
+    # Full 200-char title never appears verbatim
+    assert ("z" * 200) not in out
+
+
 def test_plain_mode_respects_env(monkeypatch):
     monkeypatch.setenv("METASPHERE_PLAIN", "1")
     assert fmt.is_plain_mode() is True

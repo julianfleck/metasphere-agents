@@ -281,6 +281,104 @@ def format_task_table(
     return "\n".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# Condensed (one-line-per-task) task view
+# ---------------------------------------------------------------------------
+
+#: Target width for the per-project header rule.
+CONDENSED_HEADER_WIDTH = 42
+#: Max title width in the condensed one-liner.
+CONDENSED_TITLE_MAX = 70
+
+
+def _condensed_priority_label(priority: str) -> str:
+    """Return a fixed-width priority tag for column alignment.
+
+    ``!high`` / ``!normal`` / ``!low`` render with trailing padding so that
+    titles line up in a column. Unknown/missing priorities render as blanks
+    of the same width so the title column still aligns.
+    """
+    p = (priority or "").strip()
+    # Widest is !normal (7 chars); pad to that.
+    width = 7
+    if p in ("!high", "!normal", "!low"):
+        return p.ljust(width)
+    return " " * width
+
+
+def _condensed_task_line(task, *, html: bool) -> str:
+    emoji = task_status_emoji(task.status, assignee=getattr(task, "assignee", ""))
+    prio = _condensed_priority_label(task.priority or "!normal")
+    title = ellipsize((task.title or "").strip(), CONDENSED_TITLE_MAX)
+    return f"{emoji} {_esc(prio, html)} {_esc(title, html)}"
+
+
+def _condensed_project_header(name: str, count: int, *, html: bool) -> str:
+    label = f" {name} ({count}) "
+    remaining = max(CONDENSED_HEADER_WIDTH - len(label) - 2, 4)
+    left = 2
+    right = remaining - 0
+    head = "─" * left + label + "─" * right
+    return _b(head, html)
+
+
+def format_task_condensed(
+    tasks: Sequence,
+    *,
+    html: bool | None = None,
+    group_by_project: bool = True,
+) -> str:
+    """Render tasks as one line per task, grouped under per-project headers.
+
+    Designed for the all-projects "give me everything active" view — both
+    the ``metasphere task list`` fallback (no project context, no filter)
+    and the Telegram ``/tasks`` bare command. Priority of *what this shows*
+    is total scannable density: one glance tells the user which projects
+    have active work and roughly what it is.
+
+    Each task renders as::
+
+        {status-emoji} {priority-padded} {title-truncated}
+
+    with titles truncated to ``CONDENSED_TITLE_MAX`` characters.
+
+    Ordering within a project: high-priority first, then normal, then low;
+    within a priority bucket, pending before in-progress before everything
+    else, then alphabetical on title for stability. Projects themselves
+    are sorted alphabetically.
+    """
+    html = _resolve_html(html)
+    header = _b("Tasks", html)
+    if not tasks:
+        return f"{header}\n(no active tasks)"
+
+    # Group
+    buckets: dict[str, list] = {}
+    for t in tasks:
+        key = (getattr(t, "project", None) or "default") if group_by_project else "tasks"
+        buckets.setdefault(key, []).append(t)
+
+    # Sort keys + tasks
+    priority_order = {"!high": 0, "!normal": 1, "!low": 2}
+    status_order = {"in-progress": 0, "in_progress": 0, "pending": 1, "blocked": 2}
+
+    def _sort_key(task):
+        return (
+            priority_order.get(task.priority or "!normal", 1),
+            status_order.get(task.status or "pending", 3),
+            (task.title or "").lower(),
+        )
+
+    parts: list[str] = [header]
+    for proj_name in sorted(buckets.keys()):
+        items = sorted(buckets[proj_name], key=_sort_key)
+        parts.append("")
+        parts.append(_condensed_project_header(proj_name, len(items), html=html))
+        for t in items:
+            parts.append(_condensed_task_line(t, html=html))
+    return "\n".join(parts)
+
+
 def _job_card(job, *, html: bool) -> str:
     emoji = sched_status_emoji(bool(getattr(job, "enabled", True)))
     name = ellipsize(job.name or "", TITLE_MAX)
