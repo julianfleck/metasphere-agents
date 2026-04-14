@@ -84,6 +84,10 @@ def _handle_update(u: poller.Update) -> None:
         return
 
     if u.chat_id is None:
+        attachments.debug_log({
+            "stage": "early_return", "reason": "chat_id is None",
+            "update_id": u.update_id,
+        })
         return
 
     msg = u.raw.get("message") or u.raw.get("edited_message") or u.raw
@@ -94,15 +98,44 @@ def _handle_update(u: poller.Update) -> None:
     caption = msg.get("caption") or ""
     body = u.text or caption
 
+    # Diagnostic log — fires on every non-reaction update the poller
+    # sees, so we can correlate real Telegram payloads against what
+    # parse_attachments extracted. Answers: did we fail to recognise a
+    # media key, or did we recognise it and fail to download?
+    attachments.debug_log({
+        "stage": "post_parse",
+        "update_id": u.update_id,
+        "summary": attachments.summarize_message_for_debug(msg),
+        "refs": [
+            {"kind": r.kind, "file_id": r.file_id, "file_size": r.file_size,
+             "file_name": r.file_name, "mime_type": r.mime_type}
+            for r in refs
+        ],
+        "body_source": "text" if u.text else ("caption" if caption else None),
+        "body_len": len(body or ""),
+    })
+
     if not body and not refs:
+        attachments.debug_log({
+            "stage": "early_return", "reason": "no body and no refs",
+            "update_id": u.update_id,
+        })
         return
 
     # Save chat id (DMs only — forum threads have thread_id)
     if not u.thread_id:
         _save_chat_id(u.chat_id)
 
-    archiver.archive_message(msg)
-    archiver.save_latest(msg)
+    try:
+        archiver.archive_message(msg)
+        archiver.save_latest(msg)
+    except Exception as e:  # noqa: BLE001
+        # Archiver errors must not block injection — log and carry on.
+        attachments.debug_log({
+            "stage": "archive_error",
+            "update_id": u.update_id,
+            "error": f"{type(e).__name__}: {e}",
+        })
 
     ctx = commands.Context(
         chat_id=u.chat_id, from_user=u.from_username or "?", thread_id=u.thread_id
@@ -125,12 +158,25 @@ def _handle_update(u: poller.Update) -> None:
                 api.send_message(u.chat_id, reply, message_thread_id=u.thread_id)
     else:
         payload = body or ""
+        downloaded = []
         if refs:
             downloaded = attachments.download_attachments(
                 u.message_id or u.update_id, refs,
             )
             block = attachments.render_attachment_block(downloaded)
             payload = f"{payload}\n\n{block}".strip() if payload else block
+        attachments.debug_log({
+            "stage": "pre_inject",
+            "update_id": u.update_id,
+            "downloaded": [
+                {"kind": d.kind,
+                 "path": str(d.path) if d.path else None,
+                 "file_size": d.file_size,
+                 "error": d.error}
+                for d in downloaded
+            ],
+            "payload_preview": payload[:200],
+        })
         # Inject into orchestrator tmux + acknowledge with reaction
         inject.submit_to_tmux(f"@{u.from_username}", payload)
         if u.message_id:

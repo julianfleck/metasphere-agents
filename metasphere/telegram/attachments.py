@@ -22,16 +22,27 @@ what to do with each file based on its extension / contents.
 
 from __future__ import annotations
 
+import datetime as _dt
+import fcntl
+import json
+import os
 import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Any, Dict, Callable, List, Optional
 
 from . import api
 
 ATTACHMENTS_ROOT = Path.home() / ".metasphere" / "attachments"
+
+#: Diagnostic log for real-Telegram runs where attachments fail silently.
+#: JSONL, one line per inbound update, so ``tail -f`` gives a live view
+#: and ``jq`` can slice fields. Scaffolding for an open incident
+#: (photos sent 2026-04-14T18:55Z not landing on disk) — delete once
+#: root cause is known and fixed.
+DEBUG_LOG_PATH = Path.home() / ".metasphere" / "state" / "telegram_debug.log"
 
 #: ``photo`` arrives as a size-ascending array of thumbnails; every other
 #: media key arrives as a single dict with a ``file_id``. Keeping this in
@@ -218,6 +229,58 @@ def _fmt_size(n: Optional[int]) -> str:
             return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
         size /= 1024
     return f"{size:.1f} TB"
+
+
+def debug_log(event: Dict[str, Any], path: Optional[Path] = None) -> None:
+    """Append a JSONL diagnostic record to the telegram debug log.
+
+    Never raises — a logging failure must not take down the poller. The
+    record is wrapped with a UTC timestamp so ``tail -f | jq`` gives an
+    immediate live view during a real-Telegram repro run.
+    """
+    if path is None:
+        path = DEBUG_LOG_PATH
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            **event,
+        }
+        line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
+        # Append under LOCK_EX so concurrent poll workers (gateway +
+        # manual ``telegram once``) can't interleave bytes inside a line.
+        with open(path, "a", encoding="utf-8") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                f.write(line)
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    except (OSError, TypeError, ValueError):
+        # Logging is best-effort. If we can't write the debug log, the
+        # poller still does the right thing on the main path.
+        pass
+
+
+def summarize_message_for_debug(msg: dict) -> Dict[str, Any]:
+    """Extract just the fields the diagnostic log cares about.
+
+    We deliberately do NOT log the full raw message — it may contain
+    private chat content. We log structural hints (top-level keys,
+    which media kinds were detected, file_ids) that let us diagnose a
+    parse mismatch between what Telegram sends and what we expect.
+    """
+    keys = sorted(msg.keys())
+    media_keys = [k for k in keys if isinstance(msg.get(k), dict) and msg[k].get("file_id")]
+    if isinstance(msg.get("photo"), list):
+        media_keys.append("photo")
+    return {
+        "message_id": msg.get("message_id"),
+        "chat_id": (msg.get("chat") or {}).get("id"),
+        "keys": keys,
+        "media_keys": sorted(set(media_keys)),
+        "has_text": bool(msg.get("text")),
+        "has_caption": bool(msg.get("caption")),
+    }
 
 
 def render_attachment_block(items: List[DownloadedAttachment]) -> str:
