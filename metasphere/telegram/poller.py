@@ -10,10 +10,9 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Iterator, List, Optional
+from typing import List, Optional
 
 from ..io import atomic_write_text, file_lock
 from . import api
@@ -174,35 +173,50 @@ def get_updates(offset: int = 0, timeout: int = 30) -> List[Update]:
     return [Update.from_payload(p) for p in resp.get("result", [])]
 
 
-def poll(
-    timeout: int = 30,
+def run_poll_iteration(
+    timeout: int = 1,
+    *,
     offset_path: str = DEFAULT_OFFSET_PATH,
-    stop: Optional[callable] = None,
-) -> Iterator[Update]:
-    """Yield ``Update``s forever, persisting offset after each update.
+    on_update: Optional[callable] = None,
+    on_error: Optional[callable] = None,
+) -> int:
+    """Run one poll iteration: getUpdates → dispatch each → save offset.
 
-    Pass a ``stop`` callable returning True to break the loop (used in
-    tests). In production this is a daemon: it never returns.
+    Single source of truth for the Telegram poll loop. The gateway
+    daemon's outer ``while True`` calls this every tick. ``on_update``
+    receives each ``Update`` and drives the handler; if it raises,
+    ``on_error(update, exc)`` is called (best-effort) and the offset
+    still advances so the failing update is not re-driven on the next
+    iteration.
+
+    Defaults:
+        ``on_update = metasphere.telegram.handler.handle_update`` — the
+        production per-update flow. Passed as default lazily (imported
+        inside the function) to avoid a circular import at module load.
     """
+    if on_update is None:
+        # Deferred import: handler itself imports from poller (for the
+        # Update type). Importing at module top would create a cycle.
+        from . import handler as _handler
+        on_update = _handler.handle_update
+
     offset = load_offset(offset_path)
-    while True:
-        if stop is not None and stop():
-            return
+    try:
+        updates = get_updates(offset=offset, timeout=timeout)
+    except api.TelegramAPIError as e:
+        # Transient API failure: log, return 0, let the caller's outer
+        # loop back off. Not our job to retry here.
+        print(f"[poller] api error: {e}", flush=True)
+        return 0
+
+    for u in updates:
         try:
-            updates = get_updates(offset=offset, timeout=timeout)
-        except api.TelegramAPIError as e:
-            # Log and back off briefly so we don't hot-loop on a 5xx.
-            print(f"[poller] api error: {e}", flush=True)
-            time.sleep(2)
-            continue
-        for u in updates:
-            try:
-                yield u
-                offset = u.update_id + 1
-                save_offset(offset, offset_path)
-            except (KeyError, TypeError, ValueError) as e:
-                # Malformed payload — log and skip rather than crashing
-                # the poll loop. Without this guard a bad update_id field
-                # would tear down the daemon.
-                print(f"[poller] skipping malformed update: {e}", flush=True)
-                continue
+            on_update(u)
+        except Exception as e:  # noqa: BLE001 — never exit the poller
+            if on_error is not None:
+                try:
+                    on_error(u, e)
+                except Exception:
+                    pass
+        save_offset(u.update_id + 1, offset_path)
+    return len(updates)

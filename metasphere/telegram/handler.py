@@ -1,16 +1,10 @@
 """Single source-of-truth handler for incoming Telegram updates.
 
-Used by BOTH:
-
-- ``metasphere.cli.telegram._handle_update`` (manual / test polling
-  via ``metasphere telegram once|poll``)
-- ``metasphere.gateway.daemon._poll_once`` (production systemd service)
-
-Before this module existed, each call site carried its own per-update
-loop: the CLI grew attachment parsing + debug logging in PR #3/#4,
-the gateway kept a parallel ``if u.text and u.chat_id is not None``
-filter that silently dropped every photo. One module, one behavior —
-no drift.
+Called by ``metasphere.telegram.poller.run_poll_iteration`` on every
+update the gateway daemon sees. There is no other per-update path:
+both the old CLI ``_handle_update`` wrapper and the ``metasphere
+telegram poll/once`` subcommands have been removed (the gateway
+systemd service is the single source of truth for inbound polling).
 """
 
 from __future__ import annotations

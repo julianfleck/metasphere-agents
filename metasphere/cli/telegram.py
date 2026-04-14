@@ -1,13 +1,15 @@
 """``telegram`` CLI entry point.
 
 Subcommands:
-    telegram poll              Run the long-poll loop forever (daemon).
-    telegram once              Single getUpdates call; process and exit.
     telegram send "msg"        Send a message to the saved chat id as
                                the current ``METASPHERE_AGENT_ID``.
     telegram getme             Print bot info (sanity check).
+    telegram register-commands Publish slash-command manifest.
+    telegram send-document     Upload a file via sendDocument.
 
-See metasphere.telegram.api for bot token resolution order.
+Polling lives in the ``metasphere-gateway`` systemd service; there is
+no CLI poller. See ``metasphere.gateway.daemon`` and
+``metasphere.telegram.poller.run_poll_iteration``.
 """
 
 from __future__ import annotations
@@ -19,9 +21,7 @@ import sys
 from typing import List, Optional
 
 from metasphere.io import atomic_write_text
-from metasphere.telegram import (
-    api, archiver, attachments, commands, handler, inject, poller,
-)
+from metasphere.telegram import api, archiver, commands
 
 # Path order matters: rewrite-specific file first, then the canonical
 # chat-id file. Falling back to the canonical chat id keeps
@@ -66,40 +66,6 @@ def _resolve_contact(name: str) -> Optional[int]:
 
 def _save_chat_id(chat_id: int) -> None:
     atomic_write_text(CHAT_ID_FILE, str(chat_id))
-
-
-def _handle_update(u: poller.Update) -> None:
-    """Thin wrapper over ``handler.handle_update``.
-
-    Kept as a named function (not just an alias) so existing tests that
-    monkeypatch ``_cli_tg._handle_update`` still work. The CLI saves chat
-    id via the module-local ``_save_chat_id`` (which writes to the CLI's
-    CHAT_ID_FILE path — redirected in tests) so tests that redirect that
-    constant continue to see their redirection honored.
-    """
-    handler.handle_update(u, save_chat_id=_save_chat_id)
-
-
-def cmd_poll(args: argparse.Namespace) -> int:
-    print(f"[telegram] starting poll loop (timeout={args.timeout}s)", flush=True)
-    for u in poller.poll(timeout=args.timeout):
-        ts = u.date or 0
-        print(f"[telegram] update={u.update_id} from=@{u.from_username}: {u.text!r}", flush=True)
-        try:
-            _handle_update(u)
-        except Exception as e:
-            print(f"[telegram] handler error: {e}", flush=True)
-    return 0
-
-
-def cmd_once(args: argparse.Namespace) -> int:
-    offset = poller.load_offset()
-    updates = poller.get_updates(offset=offset, timeout=1)
-    for u in updates:
-        _handle_update(u)
-        poller.save_offset(u.update_id + 1)
-    print(f"[telegram] processed {len(updates)} update(s)")
-    return 0
 
 
 def cmd_send(args: argparse.Namespace) -> int:
@@ -182,13 +148,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="telegram", description="metasphere telegram CLI (rewrite)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    p_poll = sub.add_parser("poll", help="long-poll forever")
-    p_poll.add_argument("--timeout", type=int, default=30)
-    p_poll.set_defaults(func=cmd_poll)
-
-    p_once = sub.add_parser("once", help="single getUpdates call")
-    p_once.set_defaults(func=cmd_once)
-
+    # ``telegram poll`` and ``telegram once`` were removed. Production
+    # polling is the metasphere-gateway systemd service; ad-hoc
+    # introspection of what the poller is doing goes via the debug log
+    # at ~/.metasphere/state/telegram_debug.log (see poller.py).
     p_send = sub.add_parser("send", help="send a message")
     p_send.add_argument("text")
     p_send.add_argument("--chat-id", type=int, default=None,

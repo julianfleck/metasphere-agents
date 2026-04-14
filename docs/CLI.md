@@ -599,7 +599,7 @@ Proactive monitoring daemon. Checks for urgent unread messages, blocked/waiting 
 
 ```
 metasphere-heartbeat                       # single check (alias: once, check)
-metasphere-heartbeat daemon [interval]     # combined daemon (default 30s heartbeat, 5s telegram poll)
+metasphere-heartbeat daemon [interval]     # heartbeat-only daemon (default 30s); telegram polling is owned by metasphere-gateway
 metasphere-heartbeat notify "MSG"          # send manual Telegram notification
 metasphere-heartbeat help
 ```
@@ -864,11 +864,14 @@ Telegram bot command handler + long-polling daemon. Handles slash commands like 
 ### Subcommands
 
 ```
-metasphere-telegram poll                   # long-poll daemon
-metasphere-telegram process <chat_id> <text>   # dispatch a single slash command (called by gateway)
 metasphere-telegram send "message"         # send to saved chat id
-metasphere-telegram notify "message"       # send with "*Notification from @agent*" header
-metasphere-telegram info                   # getMe JSON
+metasphere-telegram send-document <path>   # upload a file via sendDocument
+metasphere-telegram register-commands      # publish slash-command manifest
+metasphere-telegram getme                  # bot info JSON
+
+# Polling lives in the metasphere-gateway systemd service; there is no
+# CLI poller (neither `poll` nor `once`). The gateway calls
+# `metasphere.telegram.poller.run_poll_iteration` on every tick.
 ```
 
 ### Slash commands routed

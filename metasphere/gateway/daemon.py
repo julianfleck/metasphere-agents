@@ -14,39 +14,31 @@ from typing import Callable, Optional
 
 from ..events import log_event
 from ..paths import Paths, resolve
-from ..telegram import handler, poller
+from ..telegram import poller
 from .session import ensure_session, write_harness_hash_baseline
 from .watchdog import run_watchdog
 
 
 def _poll_once(timeout: int = 1) -> int:
-    """Single getUpdates call. Route each update through the shared
-    handler (attachment-aware, archive-aware, debug-logged) and bump
-    the offset. Returns number of updates processed.
+    """Thin wrapper over ``poller.run_poll_iteration``.
 
-    Previously this function carried its own parallel ``if u.text and
-    u.chat_id is not None`` filter that silently dropped every photo.
-    The shared ``telegram.handler.handle_update`` now owns the full
-    per-update flow — no more drift between CLI and production paths.
+    The poll loop itself (getUpdates → dispatch → save offset) lives in
+    ``telegram.poller.run_poll_iteration``. This wrapper exists only to
+    log handler errors to the event stream under the ``@gateway`` agent
+    — pure bookkeeping. If you need to change polling behavior, change
+    it in the poller module.
     """
-    offset = poller.load_offset()
-    updates = poller.get_updates(offset=offset, timeout=timeout)
-    for u in updates:
+    def _log_handler_error(u, exc):
         try:
-            handler.handle_update(u)
-        except Exception as e:
-            # A per-update failure must NOT block offset advance or the
-            # next update's processing. Log and continue.
-            try:
-                log_event(
-                    "telegram.handle_error",
-                    f"handle_update raised for update {u.update_id}: {e}",
-                    agent="@gateway",
-                )
-            except Exception:
-                pass
-        poller.save_offset(u.update_id + 1)
-    return len(updates)
+            log_event(
+                "telegram.handle_error",
+                f"handle_update raised for update {u.update_id}: {exc}",
+                agent="@gateway",
+            )
+        except Exception:
+            pass
+
+    return poller.run_poll_iteration(timeout=timeout, on_error=_log_handler_error)
 
 
 def run_daemon(
