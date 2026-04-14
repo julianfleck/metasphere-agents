@@ -199,3 +199,190 @@ def test_run_daemon_honors_watchdog_interval(tmp_paths: Paths):
 
     # First call (t=0) and the call after t crossed 5s (t=10) — at most 2 invocations
     assert wd.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# _poll_once — end-to-end attachment routing through the shared handler
+#
+# Regression for 2026-04-14T21:21Z: gateway/daemon.py had its own
+# per-update loop that filtered on ``if u.text and u.chat_id is not
+# None``, so photos (text-less with caption) were silently dropped.
+# The shared ``telegram.handler.handle_update`` now owns the full flow;
+# these tests prove _poll_once actually exercises it end-to-end.
+# ---------------------------------------------------------------------------
+
+import json as _json
+from metasphere.telegram import api as _tg_api, attachments as _atts, inject as _tg_inject, poller as _tg_poller
+
+
+def test_poll_once_routes_photo_through_shared_handler(tmp_path, monkeypatch):
+    """A photo update arrives via getUpdates; _poll_once must:
+    1. Parse the photo attachment (was dropped by the old filter).
+    2. Download it through getFile + http.
+    3. Inject the rendered [attachments] block into tmux.
+    """
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TEST:TOKEN")
+    # Sandbox real paths the handler touches.
+    monkeypatch.setattr(_atts, "ATTACHMENTS_ROOT", tmp_path / "attachments")
+    monkeypatch.setattr(_atts, "DEBUG_LOG_PATH", tmp_path / "debug.log")
+
+    # Fake getUpdates → one photo payload.
+    photo_update = {
+        "update_id": 9000,
+        "message": {
+            "message_id": 777,
+            "chat": {"id": 42, "is_forum": False},
+            "from": {"username": "julian"},
+            "date": 1700000000,
+            "caption": "debug-photo-1",
+            "photo": [{"file_id": "p1", "file_size": 50}],
+        },
+    }
+    monkeypatch.setattr(
+        _tg_poller, "get_updates",
+        lambda offset=0, timeout=30: [_tg_poller.Update.from_payload(photo_update)],
+    )
+    monkeypatch.setattr(_tg_poller, "load_offset", lambda path=None: 0)
+    monkeypatch.setattr(_tg_poller, "save_offset", lambda offset, path=None: None)
+
+    # Stub the api + http layers.
+    http_calls: list = []
+
+    def fake_http_get(url, timeout):
+        http_calls.append(url)
+        return b"BYTES:photo"
+
+    monkeypatch.setattr(_atts, "_http_get_default", fake_http_get)
+
+    def fake_api_call(method, **params):
+        if method == "getFile":
+            return {"ok": True, "result": {"file_path": f"photos/{params['file_id']}.jpg"}}
+        if method == "setMessageReaction":
+            return {"ok": True, "result": True}
+        raise AssertionError(f"unexpected api.call: {method}")
+
+    monkeypatch.setattr(_tg_api, "call", fake_api_call)
+
+    # Capture tmux injection.
+    tmux_calls: list = []
+    monkeypatch.setattr(
+        _tg_inject, "submit_to_tmux",
+        lambda from_user, text, session="metasphere-orchestrator":
+            tmux_calls.append({"from": from_user, "text": text}) or True,
+    )
+
+    # Redirect archiver and pending-ack writes off the real home dir.
+    from metasphere.telegram import archiver as _arch
+    from metasphere.telegram import handler as _handler
+    monkeypatch.setattr(_arch, "DEFAULT_DIR", str(tmp_path / "tg"))
+    monkeypatch.setattr(_handler, "_default_save_chat_id", lambda cid: None)
+    monkeypatch.setattr(_handler, "_default_pending_ack_writer", lambda cid, mid: None)
+
+    processed = gw_daemon._poll_once(timeout=1)
+
+    assert processed == 1
+    # Photo was downloaded through the shared handler (old gateway loop
+    # would never have called getFile).
+    assert len(http_calls) == 1
+    assert "p1" in http_calls[0]
+    # Exactly one tmux submit — with caption + [attachments] block.
+    assert len(tmux_calls) == 1
+    payload = tmux_calls[0]["text"]
+    assert payload.startswith("debug-photo-1")
+    assert "[attachments]" in payload
+    assert str(tmp_path / "attachments" / "777") in payload
+
+
+def test_poll_once_does_not_drop_photo_only_messages(tmp_path, monkeypatch):
+    """Regression for the exact production bug: a photo with no text
+    and no caption used to be silently skipped by the old
+    ``if u.text and u.chat_id is not None`` filter. The shared handler
+    must inject a pure [attachments] block instead.
+    """
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TEST:TOKEN")
+    monkeypatch.setattr(_atts, "ATTACHMENTS_ROOT", tmp_path / "attachments")
+    monkeypatch.setattr(_atts, "DEBUG_LOG_PATH", tmp_path / "debug.log")
+
+    bare_photo = {
+        "update_id": 9001,
+        "message": {
+            "message_id": 778,
+            "chat": {"id": 42, "is_forum": False},
+            "from": {"username": "julian"},
+            "date": 1700000000,
+            "photo": [{"file_id": "p2", "file_size": 50}],
+        },
+    }
+    monkeypatch.setattr(
+        _tg_poller, "get_updates",
+        lambda offset=0, timeout=30: [_tg_poller.Update.from_payload(bare_photo)],
+    )
+    monkeypatch.setattr(_tg_poller, "load_offset", lambda path=None: 0)
+    monkeypatch.setattr(_tg_poller, "save_offset", lambda offset, path=None: None)
+
+    monkeypatch.setattr(_atts, "_http_get_default", lambda url, t: b"BYTES:photo")
+
+    def fake_call(method, **params):
+        if method == "getFile":
+            return {"ok": True, "result": {"file_path": "photos/p2.jpg"}}
+        if method == "setMessageReaction":
+            return {"ok": True, "result": True}
+        raise AssertionError(method)
+
+    monkeypatch.setattr(_tg_api, "call", fake_call)
+
+    tmux_calls: list = []
+    monkeypatch.setattr(
+        _tg_inject, "submit_to_tmux",
+        lambda fu, t, session="metasphere-orchestrator":
+            tmux_calls.append({"from": fu, "text": t}) or True,
+    )
+
+    from metasphere.telegram import archiver as _arch
+    from metasphere.telegram import handler as _handler
+    monkeypatch.setattr(_arch, "DEFAULT_DIR", str(tmp_path / "tg"))
+    monkeypatch.setattr(_handler, "_default_save_chat_id", lambda cid: None)
+    monkeypatch.setattr(_handler, "_default_pending_ack_writer", lambda cid, mid: None)
+
+    gw_daemon._poll_once(timeout=1)
+
+    assert len(tmux_calls) == 1
+    payload = tmux_calls[0]["text"]
+    assert payload.startswith("[attachments]")
+    assert "photo" in payload
+
+
+def test_poll_once_handler_exception_does_not_block_offset_advance(tmp_path, monkeypatch):
+    """If handle_update raises for one update, _poll_once must still
+    advance the offset for that update (so we don't re-process it
+    forever) and return a valid count.
+    """
+    fake_updates = [
+        _tg_poller.Update.from_payload({
+            "update_id": 9002,
+            "message": {
+                "message_id": 800,
+                "chat": {"id": 1, "is_forum": False},
+                "from": {"username": "x"},
+                "text": "hi",
+            },
+        }),
+    ]
+    monkeypatch.setattr(_tg_poller, "get_updates",
+                         lambda offset=0, timeout=30: fake_updates)
+    monkeypatch.setattr(_tg_poller, "load_offset", lambda path=None: 0)
+
+    saved_offsets: list = []
+    monkeypatch.setattr(_tg_poller, "save_offset",
+                         lambda o, path=None: saved_offsets.append(o))
+
+    from metasphere.telegram import handler as _handler
+    def boom(u, **_k):
+        raise RuntimeError("simulated handler failure")
+    monkeypatch.setattr(_handler, "handle_update", boom)
+
+    processed = gw_daemon._poll_once(timeout=1)
+
+    assert processed == 1
+    # Offset advanced past the failing update so we don't re-drive it.
+    assert saved_offsets == [9003]
