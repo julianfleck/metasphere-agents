@@ -62,6 +62,7 @@ REGISTRY: dict[str, str] = {
     "daemon":    "metasphere.cli.daemon:main",
     "logs":      "metasphere.cli.logs:main",
     "config":    "metasphere.cli.config:main",
+    "audit-docs": "metasphere.cli.audit_docs:main",
 }
 
 _HELP = """\
