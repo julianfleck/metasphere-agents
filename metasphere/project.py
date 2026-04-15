@@ -26,6 +26,10 @@ from .paths import Paths, resolve
 
 SCHEMA_VERSION = 2
 
+#: Sentinel name for the "global" / unscoped project — tasks created without
+#: a project context land in ``~/.metasphere/tasks/`` under this label.
+_GLOBAL_PROJECT_NAME = ""
+
 
 @dataclass
 class Member:
@@ -65,6 +69,102 @@ class Project:
 
     # Runtime; not serialized.
     scope: str = ""
+
+    # ---- Canonical per-project paths (under ~/.metasphere/projects/<name>/) ----
+    #
+    # These replace the old ``<repo>/.tasks/``, ``<repo>/.messages/`` layout.
+    # All live under ``paths.projects / self.name``; the only exception is the
+    # "global" sentinel (``Project.global_scope()``) which points tasks_dir at
+    # ``paths.root / "tasks"`` — sibling to ``projects/``, not nested under it.
+    #
+    # These methods take ``paths`` rather than caching a Paths reference so a
+    # ``Project`` instance is safe to serialize / share across env changes.
+
+    def project_dir(self, paths: Paths) -> Path:
+        if self.is_global:
+            # Global tasks/messages live directly under the root, not under
+            # a fake "_global" project dir. Callers that need a meaningful
+            # project_dir for global must check ``is_global`` first.
+            return paths.root
+        return paths.projects / self.name
+
+    def tasks_dir(self, paths: Paths) -> Path:
+        if self.is_global:
+            return paths.root / "tasks"
+        return self.project_dir(paths) / ".tasks"
+
+    def messages_dir(self, paths: Paths) -> Path:
+        if self.is_global:
+            return paths.root / "messages"
+        return self.project_dir(paths) / ".messages"
+
+    def changelog_dir(self, paths: Paths) -> Path:
+        return self.project_dir(paths) / ".changelog"
+
+    def learnings_dir(self, paths: Paths) -> Path:
+        return self.project_dir(paths) / ".learnings"
+
+    @property
+    def is_global(self) -> bool:
+        """True if this represents the global / unscoped sentinel project."""
+        return self.name == _GLOBAL_PROJECT_NAME
+
+    @classmethod
+    def global_scope(cls) -> "Project":
+        """Return the sentinel used when a task/message has no project.
+
+        Its paths resolve to the global roots (``~/.metasphere/tasks/``,
+        ``~/.metasphere/messages/``) rather than under ``projects/<name>/``.
+        """
+        return cls(name=_GLOBAL_PROJECT_NAME, path="")
+
+    @classmethod
+    def for_name(cls, name: str, paths: Optional[Paths] = None) -> Optional["Project"]:
+        """Look up a registered project by name. Returns ``None`` if the name
+        is not in the projects registry.
+
+        Note: this reads the project.json from the registered repo path if
+        one exists. The canonical *data* location (tasks, messages, …) is
+        computed from ``paths.projects / name`` regardless.
+        """
+        paths = paths or resolve()
+        if not name or name == _GLOBAL_PROJECT_NAME:
+            return None
+        for entry in _load_registry(paths):
+            if entry.get("name") == name:
+                repo_path = Path(entry.get("path", "")).expanduser()
+                proj = load_project(repo_path)
+                if proj is not None:
+                    return proj
+                # Registry entry exists but on-disk project.json is missing —
+                # still return a usable Project for path computation.
+                return cls(name=name, path=str(repo_path))
+        return None
+
+    @classmethod
+    def for_cwd(cls, cwd: Optional[Path] = None,
+                 paths: Optional[Paths] = None) -> Optional["Project"]:
+        """Resolve cwd to its registered project, if any.
+
+        Walks the projects registry looking for an entry whose ``path`` is
+        an ancestor of (or equal to) ``cwd``. Falls back to
+        :func:`project_for_scope` for legacy in-repo ``.metasphere/`` markers.
+        """
+        paths = paths or resolve()
+        cwd = (cwd or Path.cwd()).resolve()
+        for entry in _load_registry(paths):
+            entry_path = Path(entry.get("path", "")).expanduser().resolve()
+            try:
+                cwd.relative_to(entry_path)
+                name = entry.get("name", "")
+                proj = load_project(entry_path)
+                if proj is not None:
+                    return proj
+                return cls(name=name, path=str(entry_path))
+            except ValueError:
+                continue
+        # Legacy fallback: walk up looking for ``.metasphere/`` marker.
+        return project_for_scope(cwd, paths)
 
     def to_dict(self) -> dict:
         d: dict[str, Any] = {
