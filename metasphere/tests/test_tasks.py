@@ -127,7 +127,7 @@ def test_find_task_includes_archive_and_legacy_completed(tmp_paths):
     # fresh completion goes to archive/ and is findable
     a = t.create_task("archived one", "!normal", tmp_paths.scope, tmp_paths.project_root)
     t.complete_task(a.id, "done", tmp_paths.project_root)
-    assert t._find_task_file(a.id, tmp_paths.project_root) is not None
+    assert t._find_task_file(a.id) is not None
 
     # legacy completed/ is still findable
     b = t.create_task("legacy one", "!normal", tmp_paths.scope, tmp_paths.project_root)
@@ -136,7 +136,7 @@ def test_find_task_includes_archive_and_legacy_completed(tmp_paths):
     import shutil as _sh
     dest = legacy_dir / b.path.name
     _sh.move(str(b.path), str(dest))
-    assert t._find_task_file(b.id, tmp_paths.project_root) == dest
+    assert t._find_task_file(b.id) == dest
 
 
 def test_list_includes_archive_when_completed_requested(tmp_paths):

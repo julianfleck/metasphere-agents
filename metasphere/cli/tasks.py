@@ -382,7 +382,7 @@ def _cmd_show(args: list[str]) -> int:
         print("Usage: tasks show <task-id>", file=sys.stderr)
         return 1
     _, repo = _ctx()
-    path = _tasks._find_task_file(args[0], repo)
+    path = _tasks._find_task_file(args[0])
     if path is None:
         print(f"Task {args[0]} not found", file=sys.stderr)
         return 1

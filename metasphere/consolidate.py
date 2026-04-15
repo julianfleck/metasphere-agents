@@ -58,6 +58,7 @@ from .paths import Paths, resolve
 VERDICT_ACTIVE = "ACTIVE"
 VERDICT_STALE = "STALE"
 VERDICT_BLOCKED = "BLOCKED"
+VERDICT_PAUSED = "PAUSED"
 VERDICT_UNOWNED = "UNOWNED"
 VERDICT_ABANDONED = "ABANDONED"
 VERDICT_DONE = "DONE"
@@ -66,6 +67,7 @@ VERDICTS = (
     VERDICT_ACTIVE,
     VERDICT_STALE,
     VERDICT_BLOCKED,
+    VERDICT_PAUSED,
     VERDICT_UNOWNED,
     VERDICT_ABANDONED,
     VERDICT_DONE,
@@ -222,16 +224,11 @@ def unregister_job(paths: Paths | None = None) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def scan_active_tasks(project_root: Path) -> list[_tasks.Task]:
+def scan_active_tasks() -> list[_tasks.Task]:
     """Return every task currently in any canonical ``.tasks/active/``.
 
-    Canonical layout walks ``~/.metasphere/projects/*/.tasks/`` and
-    ``~/.metasphere/tasks/`` (see ``tasks._canonical_tasks_dirs``).
-    The ``project_root`` parameter is accepted for backward-compat with
-    existing CLI / test plumbing but ignored here — after the migration
-    subcommand runs, in-repo ``<repo>/.tasks/`` dirs are moved under
-    ``~/.metasphere/projects/<name>/.tasks/`` and there's no second
-    place to look.
+    Walks ``~/.metasphere/projects/*/.tasks/`` and ``~/.metasphere/tasks/``
+    (see ``tasks._canonical_tasks_dirs``).
     """
     out: list[_tasks.Task] = []
     for tasks_dir in _tasks._canonical_tasks_dirs():
@@ -358,6 +355,15 @@ def classify_task(
         return VERDICT_DONE
     if status.startswith("blocked"):
         return VERDICT_BLOCKED
+    # PAUSED is a terminal-ish state: the owner has deliberately put
+    # the task on hold, and the consolidator should stop pinging until
+    # the status is manually changed. Must be checked BEFORE the stale
+    # window so a paused task doesn't get re-escalated every cycle
+    # (the bug Julian flagged 2026-04-15T08:55Z that drove 8
+    # STALE→escalated-user events per 15-min cycle on his worldwire
+    # tasks).
+    if status.startswith("paused"):
+        return VERDICT_PAUSED
 
     updated = _parse_iso(task.updated)
     if updated and (now - updated) < window:
@@ -424,6 +430,39 @@ def _last_update_line(body: str) -> str:
     return lines[-1].lstrip("- ").strip() if lines else ""
 
 
+def _route_ping_target(task: _tasks.Task, paths: Paths) -> str:
+    """Resolve the preferred recipient for a stale-task ``!query``.
+
+    Per Julian 2026-04-15T08:55Z: route to the project's lead first so
+    external collaborators don't spam Julian's view with pings for
+    worldwire tasks he doesn't own. Falls back to the task's
+    ``assigned_to`` only when the project has no lead (or no
+    project at all).
+
+    Order:
+      1. ``@<project>-lead`` if a member with that literal id exists
+      2. first member with role == "lead"
+      3. ``task.assignee`` (pre-PR #11 behavior)
+    """
+    if not task.project:
+        return task.assignee
+    try:
+        from .project import Project
+        proj = Project.for_name(task.project, paths)
+    except Exception:
+        return task.assignee
+    if proj is None:
+        return task.assignee
+    lead_id = f"@{task.project}-lead"
+    for m in proj.members:
+        if m.id == lead_id:
+            return m.id
+    for m in proj.members:
+        if getattr(m, "role", "") == "lead":
+            return m.id
+    return task.assignee
+
+
 def ping_persistent_agent(
     task: _tasks.Task,
     project_root: Path,
@@ -431,21 +470,26 @@ def ping_persistent_agent(
     *,
     sender: Callable[..., object] | None = None,
 ) -> dict:
-    """Send a ``!query`` status-check to the task's assignee."""
+    """Send a ``!query`` status-check.
+
+    Routes to the project's lead when one is registered (see
+    :func:`_route_ping_target`), otherwise the task's assignee.
+    """
     sender = sender or _default_sender()
+    target = _route_ping_target(task, paths)
     body = (
         f"status check on {task.id}: still working, done, blocked, or paused?\n"
         f"title: {task.title}\n"
         f"last update: {_last_update_line(task.body) or '(none)'}"
     )
     try:
-        sender(task.assignee, "!query", body, "@consolidate", paths=paths)
+        sender(target, "!query", body, "@consolidate", paths=paths)
         delivered = True
     except Exception as e:  # pragma: no cover - defensive
         delivered = False
         body = f"error: {e}"
     _bump_ping(task, project_root)
-    return {"action": "pinged", "target": task.assignee, "delivered": delivered}
+    return {"action": "pinged", "target": target, "delivered": delivered}
 
 
 def escalate_to_orchestrator(
@@ -575,8 +619,8 @@ def apply_verdict(
         "dry_run": dry_run,
     }
 
-    if verdict in (VERDICT_ACTIVE, VERDICT_BLOCKED):
-        pass  # no action
+    if verdict in (VERDICT_ACTIVE, VERDICT_BLOCKED, VERDICT_PAUSED):
+        pass  # no action — paused/blocked tasks don't get re-pinged
     elif verdict == VERDICT_DONE:
         if dry_run:
             result["action"] = "would-archive"
@@ -1122,7 +1166,7 @@ def run_pass(
     paths = paths or resolve()
     project_root = Path(project_root) if project_root else paths.project_root
 
-    tasks_found = scan_active_tasks(project_root)
+    tasks_found = scan_active_tasks()
     commits = _git_log(project_root, since)
 
     now = _utcnow()
@@ -1160,7 +1204,7 @@ def run_pass(
         report.results.append(result)
 
     # Message lifecycle pass — same engine, parallel verdict path.
-    msgs_found = _messages.scan_inbox_messages(project_root)
+    msgs_found = _messages.scan_inbox_messages()
     for mm in msgs_found:
         mverdict = classify_message(
             mm, now=now, stale_window_minutes=stale_window_minutes, paths=paths

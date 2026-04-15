@@ -36,9 +36,11 @@ def test_ls_registered_project_shows_counts(tmp_paths, capsys, monkeypatch):
     with the ``(N tasks, M agents)`` suffix, not the ``(missing)`` flag."""
     monkeypatch.setattr("metasphere.agents.session_alive", lambda name: False)
     # Register one project whose path is the test scope (which exists).
+    # Post-PR #11: project.json lives at canonical location only.
     proj_dir = tmp_paths.project_root
     (proj_dir / ".metasphere").mkdir(exist_ok=True)
-    project_json = proj_dir / ".metasphere" / "project.json"
+    project_json = tmp_paths.projects / "demo" / "project.json"
+    project_json.parent.mkdir(parents=True, exist_ok=True)
     project_json.write_text(json.dumps({
         "schema": 2,
         "name": "demo",

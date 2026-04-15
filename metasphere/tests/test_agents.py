@@ -215,13 +215,16 @@ def test_wake_persistent_project_scoped_uses_project_cwd(tmp_paths: Paths, tmp_p
     # .claude/settings.local.json and crashes on startup.
     proj_path = tmp_path / "example-proj"
     proj_path.mkdir(parents=True)
-    # Seed projects.json so get_project() resolves it.
+    # Seed projects.json so get_project() resolves it. Post-PR #11,
+    # load_project reads the canonical location only, so we also seed
+    # ``~/.metasphere/projects/example-proj/project.json``.
     (tmp_paths.root / "projects.json").write_text(json.dumps(
         [{"name": "example-proj", "path": str(proj_path), "registered": "x"}]
     ))
-    # Seed .metasphere/project.json so load_project succeeds.
     (proj_path / ".metasphere").mkdir(parents=True)
-    (proj_path / ".metasphere" / "project.json").write_text(json.dumps(
+    canonical_pf = tmp_paths.projects / "example-proj" / "project.json"
+    canonical_pf.parent.mkdir(parents=True, exist_ok=True)
+    canonical_pf.write_text(json.dumps(
         {"name": "example-proj", "path": str(proj_path), "goal": "", "members": []}
     ))
     # Create the project-scoped agent dir (not in global agents/).

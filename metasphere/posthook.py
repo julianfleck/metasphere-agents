@@ -390,7 +390,7 @@ def auto_close_finished_task(agent: str, paths: Paths) -> str | None:
     # and dodge any potential cycle through the cli shims.
     from . import tasks as _tasks
 
-    active_path = _tasks._find_task_file(task_id, paths.project_root, include_completed=False)
+    active_path = _tasks._find_task_file(task_id, include_completed=False)
     if active_path is None:
         return None
     if active_path.parent.name != "active":
