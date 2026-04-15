@@ -184,6 +184,7 @@ def test_telegram_live_chunked_6kb():
 # 4. Schedule daemon dry-run
 # ---------------------------------------------------------------------------
 
+@pytest.mark.real_corpus
 def test_schedule_load_and_dry_run():
     jobs = S.load_jobs()
     assert len(jobs) >= 1, "expected at least 1 scheduled job"
@@ -200,6 +201,7 @@ def test_schedule_load_and_dry_run():
 # 5. Memory recall
 # ---------------------------------------------------------------------------
 
+@pytest.mark.real_corpus
 def test_memory_recall_real_corpus():
     hits = MEM.recall("polymarket trading")
     assert len(hits) >= 1, "expected ≥1 hit for polymarket recall"
