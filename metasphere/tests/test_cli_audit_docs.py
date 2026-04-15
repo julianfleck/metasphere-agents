@@ -169,3 +169,83 @@ def test_cli_entry_writes_report(tmp_path, tmp_paths, capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "report" in out
     assert "proj-c.md" in out
+
+
+# --- register-cron subcommand ---------------------------------------------
+
+
+def test_register_cron_adds_one_job_per_project(tmp_path, tmp_paths):
+    """Given three registered projects, register-cron adds three
+    audit-docs jobs with the canonical 0 18 * * * expression.
+    """
+    import json as _json
+    from metasphere import schedule as _schedule
+
+    # tmp_paths conftest already seeded "testproj"; add two more.
+    for name in ("alpha", "beta"):
+        _register(tmp_paths, name, _make_repo(tmp_path / name))
+
+    added = A._register_cron(tmp_paths, metasphere_bin="/fake/bin/metasphere")
+    # testproj + alpha + beta = 3
+    assert set(added) == {"audit-docs:testproj", "audit-docs:alpha", "audit-docs:beta"}
+
+    jobs = _schedule.load_jobs(tmp_paths)
+    audit_jobs = [j for j in jobs if j.id.startswith("audit-docs:")]
+    assert len(audit_jobs) == 3
+    for j in audit_jobs:
+        assert j.cron_expr == "0 18 * * *"
+        assert j.enabled is True
+        assert j.kind == "cron"
+        assert j.payload_kind == "command"
+        assert "audit-docs --project" in j.command
+        assert j.agent_id == "audit-docs"
+
+
+def test_register_cron_idempotent(tmp_paths, tmp_path):
+    """Running register-cron twice doesn't duplicate entries."""
+    from metasphere import schedule as _schedule
+    A._register_cron(tmp_paths, metasphere_bin="/x/m")
+    first = len(_schedule.load_jobs(tmp_paths))
+    added = A._register_cron(tmp_paths, metasphere_bin="/x/m")
+    assert added == []
+    second = len(_schedule.load_jobs(tmp_paths))
+    assert first == second
+
+
+def test_register_cron_filter_by_project(tmp_paths, tmp_path):
+    for name in ("alpha", "beta"):
+        _register(tmp_paths, name, _make_repo(tmp_path / name))
+    added = A._register_cron(
+        tmp_paths, only_project="alpha",
+        metasphere_bin="/x/m",
+    )
+    assert added == ["audit-docs:alpha"]
+
+
+def test_register_cron_unknown_project_raises(tmp_paths):
+    with pytest.raises(ValueError):
+        A._register_cron(tmp_paths, only_project="no-such-thing")
+
+
+def test_register_cron_dry_run_does_not_write(tmp_paths, tmp_path):
+    from metasphere import schedule as _schedule
+    for name in ("alpha", "beta"):
+        _register(tmp_paths, name, _make_repo(tmp_path / name))
+    added = A._register_cron(tmp_paths, dry_run=True, metasphere_bin="/x/m")
+    assert set(added) == {"audit-docs:testproj", "audit-docs:alpha", "audit-docs:beta"}
+    # Nothing persisted.
+    jobs = _schedule.load_jobs(tmp_paths)
+    assert not any(j.id.startswith("audit-docs:") for j in jobs)
+
+
+def test_register_cron_cli_entry(tmp_paths, tmp_path, capsys):
+    rc = A.main(["register-cron", "--metasphere-bin", "/x/m", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "would add" in out
+    assert "audit-docs:testproj" in out
+
+
+def test_main_rejects_invocation_without_project_or_subcommand(capsys):
+    with pytest.raises(SystemExit):
+        A.main([])
