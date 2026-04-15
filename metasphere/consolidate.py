@@ -58,6 +58,7 @@ from .paths import Paths, resolve
 VERDICT_ACTIVE = "ACTIVE"
 VERDICT_STALE = "STALE"
 VERDICT_BLOCKED = "BLOCKED"
+VERDICT_PAUSED = "PAUSED"
 VERDICT_UNOWNED = "UNOWNED"
 VERDICT_ABANDONED = "ABANDONED"
 VERDICT_DONE = "DONE"
@@ -66,6 +67,7 @@ VERDICTS = (
     VERDICT_ACTIVE,
     VERDICT_STALE,
     VERDICT_BLOCKED,
+    VERDICT_PAUSED,
     VERDICT_UNOWNED,
     VERDICT_ABANDONED,
     VERDICT_DONE,
@@ -353,6 +355,15 @@ def classify_task(
         return VERDICT_DONE
     if status.startswith("blocked"):
         return VERDICT_BLOCKED
+    # PAUSED is a terminal-ish state: the owner has deliberately put
+    # the task on hold, and the consolidator should stop pinging until
+    # the status is manually changed. Must be checked BEFORE the stale
+    # window so a paused task doesn't get re-escalated every cycle
+    # (the bug Julian flagged 2026-04-15T08:55Z that drove 8
+    # STALE→escalated-user events per 15-min cycle on his worldwire
+    # tasks).
+    if status.startswith("paused"):
+        return VERDICT_PAUSED
 
     updated = _parse_iso(task.updated)
     if updated and (now - updated) < window:
@@ -608,8 +619,8 @@ def apply_verdict(
         "dry_run": dry_run,
     }
 
-    if verdict in (VERDICT_ACTIVE, VERDICT_BLOCKED):
-        pass  # no action
+    if verdict in (VERDICT_ACTIVE, VERDICT_BLOCKED, VERDICT_PAUSED):
+        pass  # no action — paused/blocked tasks don't get re-pinged
     elif verdict == VERDICT_DONE:
         if dry_run:
             result["action"] = "would-archive"

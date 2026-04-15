@@ -248,6 +248,31 @@ def test_ping_routes_to_project_lead_before_assignee(repo, tmp_paths):
     assert sender.calls[0]["target"] == "@worldwire-lead"
 
 
+def test_paused_task_is_terminal_not_stale(repo, tmp_paths):
+    """Julian 2026-04-15T08:55Z: a task with ``status: paused`` +
+    old ``updated_at`` + an assignee set MUST classify as PAUSED, not
+    STALE. Before PR #11 item 5 it came out STALE and re-escalated
+    every 15-min cycle.
+    """
+    _make_persistent(tmp_paths, "@worker")
+    t = _create_task(repo, "paused task")
+    t = _tasks.start_task(t.id, "@worker", repo)
+    _tasks.update_task(t.id, repo, status="paused: waiting on upstream")
+    t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    t = _set_updated(t, _iso(60), repo)
+
+    verdict = _con.classify_task(t, stale_window_minutes=15)
+    assert verdict == _con.VERDICT_PAUSED
+
+    # apply_verdict for PAUSED is a noop — no ping sent, no archive.
+    sender = _FakeSender()
+    result = _con.apply_verdict(
+        t, _con.VERDICT_PAUSED, repo, tmp_paths, sender=sender,
+    )
+    assert result["action"] == "noop"
+    assert sender.calls == []
+
+
 def test_ping_falls_back_to_assignee_when_no_lead(repo, tmp_paths):
     """No project OR no lead member → fall back to task.assignee."""
     _make_persistent(tmp_paths, "@worker")
