@@ -54,17 +54,66 @@ cd metasphere-agents
 ## Quick Start
 
 ```bash
-# Connect your Telegram bot (get a token from @BotFather)
-metasphere config telegram <your-bot-token>
+# Connect your Telegram bot (get a token from @BotFather). Interactive
+# by default — prompts for token, validates via getMe, auto-discovers
+# the chat id from your /start message.
+metasphere config telegram
 
-# Start the agent
+# Start the three daemons (gateway, heartbeat, schedule)
 metasphere daemon start
 
-# Check it's running
+# Check all three are running
+metasphere daemon status
+
+# System overview: projects, agents, active tasks
 metasphere status
 ```
 
 Your agent is now live. Message it on Telegram.
+
+## Architecture
+
+The harness runs three independent systemd services plus an orchestrator REPL running inside a tmux session. User-visible state lives at `~/.metasphere/`; per-project data lives at `~/.metasphere/projects/<name>/`.
+
+### Routing
+
+```mermaid
+flowchart LR
+    U((Julian)) -- message --> TG[Telegram Bot API]
+    TG -- getUpdates --> GW[gateway daemon\n telegram.poller.run_poll_iteration]
+    GW -- parse+download attachments --> ATT[~/.metasphere/attachments/]
+    GW -- inject --> TMUX[tmux: metasphere-orchestrator\n claude REPL]
+    TMUX -- Stop-hook --> POST[posthook]
+    POST -- send --> TG
+    HB[heartbeat daemon] -- wake tick --> TMUX
+    SCH[schedule daemon] -- cron fire --> CON[consolidate]
+    CON -- !query stale --> INBOX[project inbox\n ~/.metasphere/projects/<p>/.messages]
+    INBOX -- read --> TMUX
+    CON -- ping routing --> LEAD[@<project>-lead]
+```
+
+Every inbound Telegram message goes through **one** handler — `metasphere.telegram.handler.handle_update` — whether it came from the production gateway or (historically) a CLI poller. Photos, documents, audio, video, stickers, and any other media payload are downloaded to `~/.metasphere/attachments/<message_id>/` and their paths injected alongside the caption.
+
+### Per-project state
+
+```
+~/.metasphere/
+├── projects/<name>/
+│   ├── project.json       # Project metadata (members, goal, telegram topic)
+│   ├── .tasks/active/     # Task frontmatter files
+│   ├── .tasks/archive/    # Dated completion archive
+│   ├── .messages/inbox/   # Per-project inbox
+│   ├── .messages/outbox/
+│   ├── .changelog/        # Daily rollups
+│   └── .learnings/        # Cross-agent knowledge base
+├── tasks/                 # Global/unscoped tasks (sibling, not nested)
+├── messages/              # Global/unscoped messages
+├── agents/@<name>/        # Per-agent identity + scope
+├── events/events-YYYY-MM-DD.jsonl
+└── logs/{gateway,heartbeat,schedule}.log
+```
+
+Pre-2026-04-15 installs kept `.tasks/` / `.messages/` / `.changelog/` in the repo itself (`<repo>/.tasks/`). Run `metasphere migrate-project-dirs --apply` to collapse them into the canonical layout.
 
 ## How it works
 
