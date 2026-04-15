@@ -36,9 +36,12 @@ def test_send_and_read_roundtrip(tmp_paths):
     assert loaded.status == m.STATUS_UNREAD
     assert "hello there" in loaded.body
 
-    # Outbox copy exists too
-    outbox = tmp_paths.scope / ".messages" / "outbox" / f"{msg.id}.msg"
-    assert outbox.exists()
+    # Outbox copy exists at canonical location (~/.metasphere/projects/
+    # testproj/.messages/outbox/). The tmp_paths fixture registers the
+    # repo as 'testproj' so Project.for_cwd(scope) resolves to it.
+    outbox = (tmp_paths.projects / "testproj" / ".messages" / "outbox"
+              / f"{msg.id}.msg")
+    assert outbox.exists(), f"outbox copy not at {outbox}"
 
 
 # ---------------------------------------------------------------------------
@@ -46,19 +49,18 @@ def test_send_and_read_roundtrip(tmp_paths):
 # ---------------------------------------------------------------------------
 
 
-def test_collect_inbox_walks_parent_scopes(tmp_paths, monkeypatch):
-    repo = tmp_paths.project_root
-    child_scope = repo / "sub" / "deep"
-    child_scope.mkdir(parents=True)
+def test_collect_inbox_returns_project_and_global(tmp_paths):
+    """Canonical layout (PR #10): one ``.messages/inbox/`` per project
+    plus the global bucket. ``collect_inbox`` returns
+    project-for-scope + global; the old per-subdir nested walk doesn't
+    apply because subdirectories no longer carry their own inboxes.
+    """
+    testproj_inbox = (tmp_paths.projects / "testproj" / ".messages" / "inbox")
+    global_inbox = tmp_paths.root / "messages" / "inbox"
+    testproj_inbox.mkdir(parents=True, exist_ok=True)
+    global_inbox.mkdir(parents=True, exist_ok=True)
 
-    # Drop a message at repo root, one at mid, one at deep
-    for scope_dir, label in [
-        (repo, "!root"),
-        (repo / "sub", "!mid"),
-        (child_scope, "!deep"),
-    ]:
-        inbox = scope_dir / ".messages" / "inbox"
-        inbox.mkdir(parents=True, exist_ok=True)
+    for inbox, label in [(testproj_inbox, "!proj"), (global_inbox, "!global")]:
         msg = m.Message(
             id=f"msg-{label.strip('!')}",
             from_="@sender",
@@ -71,20 +73,19 @@ def test_collect_inbox_walks_parent_scopes(tmp_paths, monkeypatch):
         )
         m.write_message(msg, inbox / f"{msg.id}.msg")
 
-    msgs = m.collect_inbox(child_scope, repo)
-    labels = {x.label for x in msgs}
-    assert labels == {"!root", "!mid", "!deep"}
-
-    # Mid scope sees root + mid but NOT deep (upward only)
-    msgs_mid = m.collect_inbox(repo / "sub", repo)
-    assert {x.label for x in msgs_mid} == {"!root", "!mid"}
+    # Collecting from the project scope → sees project + global.
+    msgs = m.collect_inbox(tmp_paths.project_root, tmp_paths.project_root)
+    assert {x.label for x in msgs} == {"!proj", "!global"}
 
 
-def test_send_to_absolute_path_target(tmp_paths, tmp_path):
-    """@/abs/path/ resolves to absolute filesystem path, not repo-joined.
+def test_send_to_absolute_path_target_routes_to_global(tmp_paths, tmp_path):
+    """Canonical layout (PR #10): ``@/abs/path/`` still resolves the
+    target scope to the absolute filesystem path (the doubled-prefix
+    bug is still prevented) but the MESSAGE itself lands in the
+    canonical per-project / global bucket, not at the scope dir.
 
-    Regression: previously ``@/tmp/foo/`` was joined to scope/repo_root,
-    producing ``<repo_root>/tmp/foo`` and doubled-prefix paths.
+    Since the abs path isn't a registered project, the message goes
+    to ``~/.metasphere/messages/inbox/`` (the global sentinel).
     """
     abs_target = tmp_path / "elsewhere" / "scope"
     abs_target.mkdir(parents=True)
@@ -97,9 +98,12 @@ def test_send_to_absolute_path_target(tmp_paths, tmp_path):
         paths=tmp_paths,
         wake=False,
     )
-    expected_inbox = abs_target / ".messages" / "inbox" / f"{msg.id}.msg"
-    assert expected_inbox.exists(), f"message not in abs inbox: {expected_inbox}"
-    # Must NOT have been written under repo_root.
+    # Canonical global inbox, not the abs_target itself.
+    global_inbox = tmp_paths.root / "messages" / "inbox" / f"{msg.id}.msg"
+    assert global_inbox.exists(), f"message not in global inbox: {global_inbox}"
+    # Not in the abs_target scope.
+    assert not (abs_target / ".messages" / "inbox" / f"{msg.id}.msg").exists()
+    # Not in the old doubled-prefix location either.
     doubled = tmp_paths.project_root / str(abs_target).lstrip("/")
     assert not (doubled / ".messages" / "inbox" / f"{msg.id}.msg").exists()
 

@@ -12,8 +12,13 @@ def test_init_creates_marker_and_registers(tmp_paths, tmp_path):
     proj_dir = tmp_path / "alpha"
     proj_dir.mkdir()
     p = init_project(path=proj_dir, paths=tmp_paths)
-    assert (proj_dir / ".metasphere" / "project.json").exists()
-    assert (proj_dir / ".tasks" / "active").is_dir()
+    # In-repo legacy marker + canonical project.json both still created.
+    assert (proj_dir / ".metasphere").is_dir()
+    assert (tmp_paths.projects / "alpha" / "project.json").exists()
+    # Canonical-layout scaffold: .tasks/.messages/.changelog/.learnings
+    # now live under ~/.metasphere/projects/<name>/, not in-repo.
+    assert (tmp_paths.projects / "alpha" / ".tasks" / "active").is_dir()
+    assert (tmp_paths.projects / "alpha" / ".messages" / "inbox").is_dir()
     rows = list_projects(paths=tmp_paths)
     assert any(r.path == str(proj_dir.resolve()) for r in rows)
     assert p.name == "alpha"
@@ -41,11 +46,14 @@ def test_changelog_writes_file(tmp_paths, tmp_path):
 
 
 def test_changelog_walks_completed_tasks(tmp_paths, tmp_path):
-    """Completed tasks come from .tasks/completed/*.task on disk."""
+    """Completed tasks come from canonical .tasks/completed/*.task under
+    ~/.metasphere/projects/<name>/ (not in-repo post-PR #10).
+    """
     proj = tmp_path / "proj2"
     proj.mkdir()
     init_project(path=proj, paths=tmp_paths)
-    completed = proj / ".tasks" / "completed"
+    completed = tmp_paths.projects / "proj2" / ".tasks" / "completed"
+    completed.mkdir(parents=True, exist_ok=True)
     (completed / "task-1.task").write_text("title: Ship widget\nstatus: completed\n")
     (completed / "task-2.task").write_text("title: Refactor frobber\nstatus: completed\n")
     out = project_changelog("proj2", paths=tmp_paths)
