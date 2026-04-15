@@ -136,16 +136,53 @@ class Task:
 # ---------------------------------------------------------------------------
 
 
-def _tasks_dir(scope_dir: Path) -> Path:
-    return scope_dir / ".tasks"
+def _canonical_tasks_dirs(paths: "Paths | None" = None) -> list[Path]:
+    """Return every ``.tasks/`` dir the system owns.
+
+    Canonical layout (Julian 2026-04-14):
+    - ``~/.metasphere/projects/<name>/.tasks/`` for each registered project
+    - ``~/.metasphere/tasks/`` for the global / unscoped bucket
+
+    This is the single source of truth for "where tasks live" — task
+    lookup (``_find_task_file``), consolidator scans, and new-task
+    placement all route through it.
+    """
+    from .paths import resolve as _resolve
+    paths = paths or _resolve()
+    roots: list[Path] = []
+    if paths.projects.is_dir():
+        for entry in sorted(paths.projects.iterdir()):
+            t = entry / ".tasks"
+            if t.is_dir():
+                roots.append(t)
+    global_t = paths.root / "tasks"
+    if global_t.is_dir():
+        roots.append(global_t)
+    return roots
 
 
-def _active_dir(scope_dir: Path) -> Path:
-    return _tasks_dir(scope_dir) / "active"
+def _project_tasks_dir(scope: Path, paths: "Paths | None" = None) -> Path:
+    """Canonical ``.tasks/`` dir for a given scope.
+
+    Walks the projects registry to match ``scope`` to a registered project.
+    If matched: returns ``~/.metasphere/projects/<name>/.tasks/``.
+    If not matched: returns the global ``~/.metasphere/tasks/`` bucket.
+
+    Never returns a legacy ``<repo>/.tasks/`` path — by design. The
+    migration subcommand moves legacy content into the canonical root
+    once; after that, this function is the only path computer.
+    """
+    from .paths import resolve as _resolve
+    from .project import Project
+    paths = paths or _resolve()
+    proj = Project.for_cwd(Path(scope), paths)
+    if proj is not None and proj.name:
+        return proj.tasks_dir(paths)
+    return Project.global_scope().tasks_dir(paths)
 
 
-def _completed_dir(scope_dir: Path) -> Path:
-    return _tasks_dir(scope_dir) / "completed"
+def _active_dir(scope: Path, paths: "Paths | None" = None) -> Path:
+    return _project_tasks_dir(scope, paths) / "active"
 
 
 def _rel_to_repo(path: Path, project_root: Path) -> str:
@@ -211,7 +248,11 @@ def create_task(
 
     scope = Path(scope)
     project_root = Path(project_root)
-    active = _active_dir(scope)
+    # Path computation now goes through ``_project_tasks_dir`` which
+    # resolves scope → registered project → ``~/.metasphere/projects/
+    # <name>/.tasks/`` (or the global bucket). ``scope`` is still used
+    # below for the task's ``scope`` field (the user-visible label).
+    active = _project_tasks_dir(scope) / "active"
     active.mkdir(parents=True, exist_ok=True)
 
     slug = _unique_slug(active, slugify(title))
@@ -351,26 +392,29 @@ def dispatch_task(
     }
 
 
-def _find_task_file(task_id: str, project_root: Path, *, include_completed: bool = True) -> Path | None:
-    """Walk every ``.tasks/`` under ``project_root`` looking for ``<task_id>.md``.
+def _find_task_file(task_id: str, project_root: Path | None = None,
+                      *, include_completed: bool = True) -> Path | None:
+    """Locate ``<task_id>.md`` across every canonical task dir.
 
-    Searches ``active/``, legacy ``completed/``, and dated ``archive/YYYY-MM-DD/``.
+    Searches ``~/.metasphere/projects/*/.tasks/`` and ``~/.metasphere/tasks/``.
+    The ``project_root`` parameter is retained for backward-compat with
+    older callers but is no longer used for path resolution — the
+    migration subcommand collapses in-repo ``<repo>/.tasks/`` into the
+    canonical layout, so there's no second place to look.
+
+    Each ``.tasks/`` is probed in order: ``active/<id>.md``, legacy
+    ``completed/<id>.md``, then dated ``archive/YYYY-MM-DD/<id>.md``
+    (newest-first).
     """
-    project_root = Path(project_root)
-    for tasks_dir in project_root.rglob(".tasks"):
-        if not tasks_dir.is_dir():
-            continue
-        # active/ always
+    for tasks_dir in _canonical_tasks_dirs():
         cand = tasks_dir / "active" / f"{task_id}.md"
         if cand.exists():
             return cand
         if not include_completed:
             continue
-        # legacy completed/
         cand = tasks_dir / "completed" / f"{task_id}.md"
         if cand.exists():
             return cand
-        # dated archive/YYYY-MM-DD/
         archive = tasks_dir / "archive"
         if archive.is_dir():
             for day in sorted(archive.iterdir(), reverse=True):
@@ -576,30 +620,45 @@ def list_tasks(
     project_root: Path,
     include_completed: bool = False,
 ) -> list[Task]:
-    """Collect tasks visible from ``scope`` (scope + parents up to repo root)."""
-    scope = Path(scope).resolve()
-    project_root = Path(project_root).resolve()
+    """Collect tasks visible from ``scope``.
+
+    In the canonical layout each project stores its tasks in exactly one
+    place (``~/.metasphere/projects/<name>/.tasks/``) — the old "walk
+    nested ``.tasks/`` dirs up to project_root" pattern no longer
+    applies, because subdirectories don't carry their own task trees.
+
+    Visibility reduces to "the project that owns this scope, plus the
+    global / unscoped bucket." Scope-level filtering (if a caller wants
+    only tasks whose ``scope`` field matches a path prefix) is the
+    caller's responsibility.
+    """
+    from .paths import resolve as _resolve
+    from .project import Project
+    paths = _resolve()
+
+    candidates: list[Project] = []
+    proj = Project.for_cwd(Path(scope), paths)
+    if proj is not None and proj.name:
+        candidates.append(proj)
+    candidates.append(Project.global_scope())
+
     seen: list[Task] = []
-
-    current = scope
-    while True:
-        td = current / ".tasks"
-        if td.is_dir():
-            dirs: list[Path] = [td / "active"]
-            if include_completed:
-                dirs.append(td / "completed")  # legacy pre-cutover
-                archive = td / "archive"
-                if archive.is_dir():
-                    dirs.extend(sorted(p for p in archive.iterdir() if p.is_dir()))
-            for d in dirs:
-                if d.is_dir():
-                    for f in sorted(d.glob("*.md")):
-                        try:
-                            seen.append(_load(f))
-                        except Exception:
-                            continue
-        if current == project_root or project_root not in current.parents:
-            break
-        current = current.parent
-
+    for p in candidates:
+        td = p.tasks_dir(paths)
+        if not td.is_dir():
+            continue
+        dirs: list[Path] = [td / "active"]
+        if include_completed:
+            dirs.append(td / "completed")  # legacy pre-cutover
+            archive = td / "archive"
+            if archive.is_dir():
+                dirs.extend(sorted(d for d in archive.iterdir() if d.is_dir()))
+        for d in dirs:
+            if not d.is_dir():
+                continue
+            for f in sorted(d.glob("*.md")):
+                try:
+                    seen.append(_load(f))
+                except Exception:
+                    continue
     return seen

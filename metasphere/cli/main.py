@@ -58,6 +58,7 @@ REGISTRY: dict[str, str] = {
     "consolidate": "metasphere.cli.consolidate:main",
     "status":    "metasphere.cli.main:_status",
     "ls":        "metasphere.cli.ls:main",
+    "migrate-project-dirs": "metasphere.cli.migrate:main",
 }
 
 _HELP = """\

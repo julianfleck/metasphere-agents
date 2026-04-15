@@ -46,6 +46,16 @@ def _create_task(repo: Path, title: str) -> _tasks.Task:
     return _tasks.create_task(title, "!normal", repo, repo, created_by="@test")
 
 
+def _canonical_tasks(tmp_paths) -> Path:
+    """Canonical ``.tasks/`` dir for the ``testproj`` registered by the
+    tmp_paths fixture. After the 2026-04-15 project-dirs migration this
+    is where tasks actually land — ``repo/.tasks/`` no longer holds
+    them, so in-repo assertions in pre-migration tests must be swapped
+    to this helper.
+    """
+    return tmp_paths.root / "projects" / "testproj" / ".tasks"
+
+
 def _commit(repo: Path, filename: str, message: str) -> str:
     (repo / filename).write_text("x\n")
     _git(repo, "add", filename)
@@ -308,7 +318,7 @@ def test_apply_abandoned_archives_to_abandoned_bucket(repo, tmp_paths):
     # File moved out of active/
     assert not src.exists()
     # File landed in archive/_abandoned/
-    dest = repo / ".tasks" / "archive" / "_abandoned" / f"{t.id}.md"
+    dest = _canonical_tasks(tmp_paths) / "archive" / "_abandoned" / f"{t.id}.md"
     assert dest.exists()
     # Status flipped to abandoned
     archived = _tasks.Task.from_text(dest.read_text(), path=dest)
@@ -323,7 +333,7 @@ def test_apply_abandoned_dry_run_does_not_move(repo, tmp_paths):
     )
     assert result["action"] == "would-archive-abandoned"
     assert src.exists()
-    assert not (repo / ".tasks" / "archive" / "_abandoned" / f"{t.id}.md").exists()
+    assert not (_canonical_tasks(tmp_paths) / "archive" / "_abandoned" / f"{t.id}.md").exists()
 
 
 def test_apply_abandoned_emits_consolidate_event(repo, tmp_paths):
@@ -359,7 +369,7 @@ def test_run_pass_archives_abandoned_orphan(repo, tmp_paths):
     assert any(res["verdict"] == _con.VERDICT_ABANDONED for res in r.results)
     assert any(res["action"] == "archived-abandoned" for res in r.results)
     assert not src.exists()
-    assert (repo / ".tasks" / "archive" / "_abandoned" / f"{t.id}.md").exists()
+    assert (_canonical_tasks(tmp_paths) / "archive" / "_abandoned" / f"{t.id}.md").exists()
     # No noisy escalation message sent.
     assert sender.calls == []
 
@@ -397,7 +407,7 @@ def test_done_task_is_archived(repo, tmp_paths):
         t, _con.VERDICT_DONE, repo, tmp_paths
     )
     assert result["action"] == "archived"
-    assert not (repo / ".tasks" / "active" / f"{t.id}.md").exists()
+    assert not (_canonical_tasks(tmp_paths) / "active" / f"{t.id}.md").exists()
 
 
 def test_active_noop(repo, tmp_paths):

@@ -106,7 +106,11 @@ def test_task_lifecycle_with_slash_title(tmp_path):
     # Slug must not contain slashes
     assert "/" not in task.slug
     assert task.slug.startswith("fix-scripts-messages")
-    active_file = paths.project_root / ".tasks" / "active" / f"{task.slug}.md"
+    # Canonical layout: unregistered scope → global tasks bucket at
+    # ``paths.root/tasks/active/``. Before the refactor this was
+    # ``paths.project_root/.tasks/active/``.
+    active_file = task.path
+    assert active_file is not None
     assert active_file.exists()
 
     T.start_task(task.id, "@tester-integration", paths.project_root)
