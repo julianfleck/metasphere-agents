@@ -384,4 +384,22 @@ def tmp_paths(tmp_path: Path, monkeypatch) -> Paths:
     monkeypatch.setenv("METASPHERE_PROJECT_ROOT", str(repo))
     monkeypatch.setenv("METASPHERE_SCOPE", str(scope))
     monkeypatch.delenv("METASPHERE_AGENT_ID", raising=False)
+    # Canonical-layout support: register ``tmp_path/repo`` as a project
+    # named "testproj" so ``Project.for_cwd(repo)`` resolves to
+    # ``tmp_path/metasphere/projects/testproj/`` instead of falling
+    # through to the global bucket. Before the canonical refactor, task
+    # fixtures assumed ``<scope>/.tasks/`` was in-repo and skipped the
+    # registry step entirely.
+    import json as _json
+    registry_file = root / "projects.json"
+    registry_file.write_text(_json.dumps([
+        {"name": "testproj", "path": str(repo),
+         "registered": "1970-01-01T00:00:00Z"},
+    ]))
+    pdir = root / "projects" / "testproj"
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "project.json").write_text(_json.dumps({
+        "schema": 2, "name": "testproj", "path": str(repo),
+        "created": "1970-01-01T00:00:00Z", "status": "active",
+    }))
     return Paths(root=root, project_root=repo, scope=scope)

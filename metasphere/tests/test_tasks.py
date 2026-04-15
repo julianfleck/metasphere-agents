@@ -167,24 +167,29 @@ def test_start_bumps_updated(tmp_paths):
 # ---------------------------------------------------------------------------
 
 
-def test_list_tasks_nested_scopes(tmp_paths):
+def test_list_tasks_project_scoped_sees_all(tmp_paths):
+    """Under the canonical layout every project owns exactly one
+    ``.tasks/`` dir, regardless of which subdirectory of the repo the
+    task was created from. So both a task made at the repo root and a
+    task made from a subsystem/ child dir land in the same project
+    ``.tasks/`` and show up in ``list_tasks`` from either scope.
+
+    This replaces the old ``nested_scopes`` visibility test, whose
+    premise (per-subdir ``.tasks/`` trees) no longer applies.
+    """
     root_scope = tmp_paths.project_root
     child_scope = tmp_paths.project_root / "subsystem"
     child_scope.mkdir(parents=True)
 
-    root_task = t.create_task("root task", "!normal", root_scope, tmp_paths.project_root)
-    child_task = t.create_task("child task", "!high", child_scope, tmp_paths.project_root)
+    t.create_task("root task", "!normal", root_scope, tmp_paths.project_root)
+    t.create_task("child task", "!high", child_scope, tmp_paths.project_root)
 
-    # From child scope: see both (upward visibility)
-    visible = t.list_tasks(child_scope, tmp_paths.project_root)
-    titles = {x.title for x in visible}
-    assert {"root task", "child task"} <= titles
-
-    # From root scope: only root task
-    visible_root = t.list_tasks(root_scope, tmp_paths.project_root)
-    titles_root = {x.title for x in visible_root}
-    assert "root task" in titles_root
-    assert "child task" not in titles_root
+    for view_from in (root_scope, child_scope):
+        visible = t.list_tasks(view_from, tmp_paths.project_root)
+        titles = {x.title for x in visible}
+        assert {"root task", "child task"} <= titles, (
+            f"expected both tasks visible from {view_from}, got {titles}"
+        )
 
 
 def test_list_tasks_excludes_completed_by_default(tmp_paths):
@@ -323,20 +328,21 @@ def test_cli_list_project_redirect_from_outside_scope(tmp_path, monkeypatch, cap
         + '", "registered": "2026-04-14T00:00:00Z"}]'
     )
 
-    # Seed a task in the project.
-    _t.create_task(
-        "alpha-outside", "!normal", project_path, project_path,
-        project="worldwire", assigned_to="@someone",
-    )
-
-    # Point env at the "outside" scope (no .tasks/ here).
+    # Point env at the "outside" scope (no .tasks/ here). Must precede
+    # create_task so the canonical-layout lookup resolves against the
+    # right METASPHERE_DIR / registry.
     monkeypatch.setenv("METASPHERE_DIR", str(home))
     monkeypatch.setenv("METASPHERE_PROJECT_ROOT", str(outside_scope))
     monkeypatch.setenv("METASPHERE_SCOPE", str(outside_scope))
     monkeypatch.chdir(outside_scope)
-    # Clear the project_root resolver cache so the env above takes effect.
     from metasphere import paths as _paths
     _paths._project_root_cache.clear()
+
+    # Seed a task in the project; routes to home/projects/worldwire/.tasks/.
+    _t.create_task(
+        "alpha-outside", "!normal", project_path, project_path,
+        project="worldwire", assigned_to="@someone",
+    )
 
     capsys.readouterr()
     rc = cli_tasks._cmd_list(["--project", "worldwire"])
@@ -382,20 +388,24 @@ def _make_two_project_registry(tmp_path, monkeypatch):
         + '", "registered": "2026-04-14T00:00:00Z"}]'
     )
 
-    # Seed tasks in each project.
-    _t.create_task("alpha-ww", "!high", proj_a, proj_a,
-                   project="worldwire", assigned_to="@alice")
-    _t.create_task("beta-ww", "!normal", proj_a, proj_a,
-                   project="worldwire", assigned_to="@alice")
-    _t.create_task("one-ma", "!normal", proj_b, proj_b,
-                   project="metasphere-agents", assigned_to="@bob")
-
+    # Env must be set BEFORE create_task so ``_project_tasks_dir`` sees
+    # the right METASPHERE_DIR when looking up registry entries. Prior
+    # to the canonical-layout refactor, tasks wrote to ``<scope>/.tasks/``
+    # regardless of env, so ordering didn't matter.
     monkeypatch.setenv("METASPHERE_DIR", str(home))
     monkeypatch.setenv("METASPHERE_PROJECT_ROOT", str(outside_scope))
     monkeypatch.setenv("METASPHERE_SCOPE", str(outside_scope))
     monkeypatch.chdir(outside_scope)
     from metasphere import paths as _paths
     _paths._project_root_cache.clear()
+
+    # Seed tasks in each project; routes to ``home/projects/<name>/.tasks/``.
+    _t.create_task("alpha-ww", "!high", proj_a, proj_a,
+                   project="worldwire", assigned_to="@alice")
+    _t.create_task("beta-ww", "!normal", proj_a, proj_a,
+                   project="worldwire", assigned_to="@alice")
+    _t.create_task("one-ma", "!normal", proj_b, proj_b,
+                   project="metasphere-agents", assigned_to="@bob")
 
     return home, outside_scope, proj_a, proj_b
 

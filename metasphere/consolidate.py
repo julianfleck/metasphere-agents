@@ -223,10 +223,18 @@ def unregister_job(paths: Paths | None = None) -> bool:
 
 
 def scan_active_tasks(project_root: Path) -> list[_tasks.Task]:
-    """Return every task currently in any ``.tasks/active/`` under the repo."""
-    project_root = Path(project_root).resolve()
+    """Return every task currently in any canonical ``.tasks/active/``.
+
+    Canonical layout walks ``~/.metasphere/projects/*/.tasks/`` and
+    ``~/.metasphere/tasks/`` (see ``tasks._canonical_tasks_dirs``).
+    The ``project_root`` parameter is accepted for backward-compat with
+    existing CLI / test plumbing but ignored here — after the migration
+    subcommand runs, in-repo ``<repo>/.tasks/`` dirs are moved under
+    ``~/.metasphere/projects/<name>/.tasks/`` and there's no second
+    place to look.
+    """
     out: list[_tasks.Task] = []
-    for tasks_dir in project_root.rglob(".tasks"):
+    for tasks_dir in _tasks._canonical_tasks_dirs():
         active = tasks_dir / "active"
         if not active.is_dir():
             continue
