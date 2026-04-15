@@ -240,68 +240,47 @@ def _canonical_project_file(project_name: str, paths: Optional[Paths] = None) ->
 
 
 def load_project(project_path: Path, *, paths: Optional[Paths] = None) -> Optional[Project]:
-    """Load a project by repo path.
+    """Load a project by repo path from the canonical location.
 
-    Resolution order, in line with the PR #10 migration bridge:
-    1. Registry reverse-lookup → canonical
-       ``~/.metasphere/projects/<name>/project.json``
-    2. Legacy in-repo ``<project_path>/.metasphere/project.json``
-       (pre-migration backstop; drops out when the migration
-       subcommand has moved every project.json to canonical.)
+    Resolution:
+    1. Registry reverse-lookup path → name → canonical
+       ``~/.metasphere/projects/<name>/project.json``.
+    2. Fall back to ``project_path.name`` as the project name (matches
+       ``init_project``'s default). Covers projects created before they
+       were registered, e.g. mid-test setup.
 
-    The legacy leg stays until the migration is known to have run
-    everywhere. ``save_project`` already writes only canonical, so new
-    data can't regress.
+    Returns ``None`` if neither lookup finds a canonical file.
+
+    The pre-canonical in-repo ``<project_path>/.metasphere/project.json``
+    read-fallback from PR #10 is gone — every prod project has been
+    migrated.
     """
     paths = paths or resolve()
     project_path = Path(project_path)
-    name = _project_name_for_path(project_path, paths)
-    if name:
-        pf = _canonical_project_file(name, paths)
-        if pf.is_file():
-            data = read_json(pf, default=None)
-            if data:
-                proj = Project.from_dict(data)
-                proj.path = proj.path or str(project_path.resolve())
-                return proj
-    # Legacy fallback: in-repo project.json. Still honored for tests
-    # that stub a project without touching the registry, and for any
-    # pre-migration prod project.
-    legacy_pf = _project_file(project_path)
-    if legacy_pf.is_file():
-        data = read_json(legacy_pf, default=None)
-        if data:
-            proj = Project.from_dict(data)
-            proj.path = proj.path or str(project_path.resolve())
-            return proj
-    return None
+    name = _project_name_for_path(project_path, paths) or project_path.name
+    pf = _canonical_project_file(name, paths)
+    if not pf.is_file():
+        return None
+    data = read_json(pf, default=None)
+    if not data:
+        return None
+    proj = Project.from_dict(data)
+    proj.path = proj.path or str(project_path.resolve())
+    return proj
 
 
 def save_project(project: Project, *, paths: Optional[Paths] = None) -> Path:
     """Serialize a project to the canonical location and bump schema.
 
-    During the PR #10 migration window, we also write an in-repo
-    ``<project.path>/.metasphere/project.json`` copy so ``load_project``
-    calls against a path that isn't yet registered still resolve. This
-    second write is the pair for ``load_project``'s legacy fallback leg;
-    they come out together once every project is migrated.
+    Single write: ``~/.metasphere/projects/<name>/project.json``. The
+    in-repo dual-write from PR #10 (compat bridge for the migration
+    window) is gone.
     """
     paths = paths or resolve()
     project.schema = SCHEMA_VERSION
-    payload = json.dumps(project.to_dict(), indent=2) + "\n"
-    # Canonical write — single source of truth for post-migration reads.
     pf = _canonical_project_file(project.name, paths)
     pf.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(pf, payload)
-    # Legacy in-repo write for pre-registration / transitional compat.
-    if project.path:
-        legacy_pf = _project_file(Path(project.path))
-        try:
-            legacy_pf.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(legacy_pf, payload)
-        except OSError:
-            # Non-fatal: the canonical write is the actual contract.
-            pass
+    atomic_write_text(pf, json.dumps(project.to_dict(), indent=2) + "\n")
     return pf
 
 
@@ -713,12 +692,20 @@ def wake_members(name_or_path: str | Path, *,
 
 def project_for_scope(scope: Path,
                       paths: Optional[Paths] = None) -> Optional[Project]:
-    """Walk upward from ``scope`` looking for ``.metasphere/project.json``."""
+    """Walk upward from ``scope`` looking for a ``.metasphere/`` marker dir.
+
+    Post-PR #11 the actual project.json lives at the canonical
+    ``~/.metasphere/projects/<name>/project.json``; the in-repo
+    ``.metasphere/`` dir is just a lightweight "is this a metasphere
+    project?" flag. ``load_project`` handles the canonical lookup.
+    """
     scope = Path(scope).resolve()
     cur = scope
     while True:
-        if (cur / ".metasphere" / "project.json").is_file():
-            return load_project(cur)
+        if (cur / ".metasphere").is_dir():
+            proj = load_project(cur, paths=paths)
+            if proj is not None:
+                return proj
         if cur.parent == cur:
             return None
         cur = cur.parent

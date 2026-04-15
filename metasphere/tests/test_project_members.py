@@ -85,7 +85,10 @@ def test_new_project_defaults_path_to_cwd_slash_name(tmp_paths, tmp_path, monkey
     monkeypatch.chdir(tmp_path)
     proj = new_project("alpha", paths=tmp_paths)
     assert Path(proj.path) == (tmp_path / "alpha").resolve()
-    assert (tmp_path / "alpha" / ".metasphere" / "project.json").is_file()
+    # Post-PR #11: project.json lives at canonical location only; the
+    # in-repo ``.metasphere/`` is just a marker dir.
+    assert (tmp_path / "alpha" / ".metasphere").is_dir()
+    assert (tmp_paths.projects / "alpha" / "project.json").is_file()
 
 
 def test_new_project_with_goal_and_members(tmp_paths, tmp_path):

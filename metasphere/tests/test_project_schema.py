@@ -13,10 +13,22 @@ from metasphere.project import (
 )
 
 
-def _v1_project(proj_dir: Path, name: str = "legacy") -> None:
-    """Write a pre-schema-v2 project.json by hand."""
+def _v1_project(proj_dir: Path, name: str = "legacy", *, paths=None) -> None:
+    """Write a pre-schema-v2 project.json by hand at the canonical location.
+
+    Post-PR #11 there's no in-repo ``.metasphere/project.json`` read
+    path — canonical is ``paths.projects/<name>/project.json``. Helper
+    seeds both the canonical file and the (empty) in-repo marker dir
+    for tests that check "is this a project dir?".
+    """
     (proj_dir / ".metasphere").mkdir(parents=True, exist_ok=True)
-    (proj_dir / ".metasphere" / "project.json").write_text(
+    # Canonical location. ``load_project`` resolves via
+    # registry-reverse-lookup OR basename of project_path — we use
+    # ``proj_dir.name`` to match the basename fallback.
+    assert paths is not None, "_v1_project needs paths for canonical write"
+    cf = paths.projects / proj_dir.name / "project.json"
+    cf.parent.mkdir(parents=True, exist_ok=True)
+    cf.write_text(
         json.dumps({
             "name": name,
             "path": str(proj_dir),
@@ -29,7 +41,7 @@ def _v1_project(proj_dir: Path, name: str = "legacy") -> None:
 def test_v1_loads_with_empty_members(tmp_paths, tmp_path):
     proj_dir = tmp_path / "legacy"
     proj_dir.mkdir()
-    _v1_project(proj_dir)
+    _v1_project(proj_dir, paths=tmp_paths)
     proj = load_project(proj_dir)
     assert proj is not None
     assert proj.name == "legacy"
@@ -43,12 +55,14 @@ def test_v1_loads_with_empty_members(tmp_paths, tmp_path):
 def test_v1_to_v2_migration_on_save(tmp_paths, tmp_path):
     proj_dir = tmp_path / "legacy"
     proj_dir.mkdir()
-    _v1_project(proj_dir)
+    _v1_project(proj_dir, paths=tmp_paths)
     proj = load_project(proj_dir)
     assert proj is not None
     proj.goal = "do the thing"
     save_project(proj)
-    raw = json.loads((proj_dir / ".metasphere" / "project.json").read_text())
+    # Post-PR #11: canonical location is the only write target.
+    canonical = tmp_paths.projects / "legacy" / "project.json"
+    raw = json.loads(canonical.read_text())
     assert raw["schema"] == SCHEMA_VERSION
     assert raw["goal"] == "do the thing"
     assert raw["members"] == []
@@ -67,7 +81,6 @@ def test_v2_roundtrip(tmp_paths, tmp_path):
         members=[Member(id="@lead", role="lead", persistent=True)],
         links={"github_issues": "https://gh/x/y/issues"},
     )
-    (p / ".metasphere").mkdir()
     save_project(proj)
     loaded = load_project(p)
     assert loaded is not None
