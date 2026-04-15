@@ -296,21 +296,150 @@ def _run_audit(project_name: str, *, paths: Paths,
     return (1 if stale else 0), out_path
 
 
+#: Default cron expression for the daily audit. 18:00 local per
+#: @orchestrator's brief. Operators who want a different slot edit
+#: ``jobs.json`` or pass ``--cron-expr`` to ``register-cron``.
+_DEFAULT_CRON_EXPR = "0 18 * * *"
+
+
+def _audit_job_id(project_name: str) -> str:
+    return f"audit-docs:{project_name}"
+
+
+def _metasphere_bin() -> str:
+    """Best-effort locate a ``metasphere`` binary for the cron command.
+
+    Falls back to the literal ``metasphere`` string so PATH resolution
+    happens at fire time. Operators on editable installs (most of us)
+    can override with ``--metasphere-bin /abs/path``.
+    """
+    import shutil as _sh
+    found = _sh.which("metasphere")
+    return found or "metasphere"
+
+
+def _register_cron(paths: Paths, *,
+                    only_project: Optional[str] = None,
+                    cron_expr: str = _DEFAULT_CRON_EXPR,
+                    metasphere_bin: Optional[str] = None,
+                    dry_run: bool = False) -> list[str]:
+    """Add one ``audit-docs:<name>`` job per registered project.
+
+    Idempotent: if a job with the same ``id`` already exists, it's
+    left alone (no second entry, no overwrite). Returns the list of
+    ids ADDED (empty list on no-op).
+    """
+    from .. import schedule as _schedule
+
+    bin_path = metasphere_bin or _metasphere_bin()
+    registry = _project._load_registry(paths)
+    if only_project:
+        registry = [e for e in registry if e.get("name") == only_project]
+        if not registry:
+            raise ValueError(f"no registered project: {only_project}")
+
+    added: list[str] = []
+    if dry_run:
+        for entry in registry:
+            jid = _audit_job_id(entry.get("name", ""))
+            added.append(jid)
+        return added
+
+    with _schedule.with_locked_jobs(paths) as jobs:
+        existing_ids = {j.id for j in jobs}
+        before_count = len(jobs)
+        for entry in registry:
+            name = entry.get("name", "")
+            if not name:
+                continue
+            jid = _audit_job_id(name)
+            if jid in existing_ids:
+                continue
+            cmd = f"{bin_path} audit-docs --project {name}"
+            jobs.append(_schedule.Job(
+                id=jid,
+                source="audit-docs",
+                source_id=jid,
+                agent_id="audit-docs",
+                name=jid,
+                enabled=True,
+                kind="cron",
+                cron_expr=cron_expr,
+                tz="UTC",
+                payload_kind="command",
+                payload_message=cmd,
+                command=cmd,
+                full_command=cmd,
+                session_target="isolated",
+                wake_mode="next-heartbeat",
+            ))
+            added.append(jid)
+        _schedule.save_jobs(jobs, paths, _input_count=before_count)
+    return added
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="metasphere audit-docs",
         description="Scan commits since the last CHANGELOG entry and "
         "produce a draft stanza + README-staleness flags.",
     )
-    parser.add_argument("--project", required=True,
+    sub = parser.add_subparsers(dest="cmd")
+
+    # ``register-cron`` is a subcommand; the default (no subcommand)
+    # behavior remains the audit run so existing cron entries keep
+    # working after this PR.
+    p_reg = sub.add_parser(
+        "register-cron",
+        help="Register daily audit-docs cron jobs (one per project).",
+    )
+    p_reg.add_argument("--project", default=None,
+                        help="Only register for one project (default: all).")
+    p_reg.add_argument("--cron-expr", default=_DEFAULT_CRON_EXPR,
+                        help=f"Cron expression (default: {_DEFAULT_CRON_EXPR!r}).")
+    p_reg.add_argument("--metasphere-bin", default=None,
+                        help="Absolute path to the metasphere binary "
+                        "(default: PATH lookup at registration time).")
+    p_reg.add_argument("--dry-run", action="store_true",
+                        help="List the jobs that WOULD be added.")
+
+    # Default audit flags (hoisted to both the top-level parser and a
+    # ``run`` subcommand so legacy invocations keep working).
+    parser.add_argument("--project", default=None,
                         help="Registered project name to audit.")
     parser.add_argument("--output", type=Path, default=None,
                         help=f"Report dir (default: {REPORTS_ROOT}).")
     parser.add_argument("--no-notify", action="store_true",
                         help="Skip the !info message to @orchestrator.")
-    args = parser.parse_args(argv)
 
+    args = parser.parse_args(argv)
     paths = resolve()
+
+    if args.cmd == "register-cron":
+        try:
+            added = _register_cron(
+                paths,
+                only_project=args.project,
+                cron_expr=args.cron_expr,
+                metasphere_bin=args.metasphere_bin,
+                dry_run=args.dry_run,
+            )
+        except ValueError as e:
+            print(f"audit-docs: {e}", file=sys.stderr)
+            return 2
+        verb = "would add" if args.dry_run else "added"
+        if added:
+            print(f"audit-docs: {verb} {len(added)} job(s):")
+            for jid in added:
+                print(f"  - {jid}")
+        else:
+            print("audit-docs: no new jobs (all projects already registered)")
+        return 0
+
+    # Default: run an audit.
+    if not args.project:
+        parser.error("either run an audit (--project NAME) or use a subcommand "
+                     "(register-cron).")
     rc, path = _run_audit(
         args.project, paths=paths,
         output_dir=args.output,
