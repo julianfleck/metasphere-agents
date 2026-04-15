@@ -216,8 +216,8 @@ def _lock_path(task_path: Path) -> Path:
 def _auto_project(scope: Path) -> str:
     """Determine project slug from scope via project_for_scope, else 'default'."""
     try:
-        from .project import project_for_scope
-        proj = project_for_scope(Path(scope))
+        from .project import Project
+        proj = Project.for_cwd(Path(scope))
         if proj is not None and proj.name:
             return proj.name
     except Exception:

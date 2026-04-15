@@ -1,13 +1,19 @@
 """Fractal inter-agent messaging.
 
 Atomic read-modify-write under flock (see :mod:`metasphere.io`).
-Every message
-is a YAML-frontmatter file at ``<scope>/.messages/inbox/<id>.msg``;
-sender keeps a copy in ``<scope>/.messages/outbox/<id>.msg``.
+Every message is a YAML-frontmatter file at
+``~/.metasphere/projects/<name>/.messages/inbox/<id>.msg``; sender
+keeps a copy at ``.messages/outbox/<id>.msg`` in the same project
+dir. For messages whose scope resolves to no registered project the
+canonical location is ``~/.metasphere/messages/inbox/<id>.msg`` (the
+global sentinel bucket).
 
-Visibility is upward-fractal: an agent at ``/a/b/`` sees messages in
-``/a/b/.messages/inbox`` AND every parent ``.messages/inbox`` up to
-the repo root.
+Visibility is per-project: an agent looking at its inbox sees every
+message in its project's ``.messages/inbox/`` plus the global bucket.
+Pre-PR #10 the layout was per-scope nested (``<scope>/.messages/inbox``
+walked up to the repo root); the migration subcommand moved those
+into the canonical per-project tree and the walk collapsed to a
+two-bucket lookup.
 """
 
 from __future__ import annotations
@@ -213,24 +219,68 @@ def update_status(msg_path: Path, field: str, value: str) -> Message:
 # ---------------------------------------------------------------------------
 
 
+def _canonical_inbox_dirs(paths_obj: Paths | None = None) -> list[Path]:
+    """Every ``.messages/inbox/`` dir on the canonical layout.
+
+    One per registered project plus the global bucket at
+    ``~/.metasphere/messages/inbox/``. Replaces the pre-PR #10
+    per-scope nested walk.
+    """
+    paths_obj = paths_obj or resolve()
+    out: list[Path] = []
+    if paths_obj.projects.is_dir():
+        for entry in sorted(paths_obj.projects.iterdir()):
+            inbox = entry / ".messages" / "inbox"
+            if inbox.is_dir():
+                out.append(inbox)
+    global_inbox = paths_obj.root / "messages" / "inbox"
+    if global_inbox.is_dir():
+        out.append(global_inbox)
+    return out
+
+
+def _canonical_messages_dir(scope: Path, paths_obj: Paths) -> Path:
+    """Resolve an arbitrary scope to its canonical ``.messages/`` dir.
+
+    Scope → registered project → ``paths.projects/<name>/.messages``.
+    Scope outside any registered project → the global bucket at
+    ``paths.root/messages``.
+    """
+    from .project import Project
+    proj = Project.for_cwd(Path(scope), paths_obj)
+    if proj is not None and proj.name:
+        return proj.messages_dir(paths_obj)
+    return Project.global_scope().messages_dir(paths_obj)
+
+
 def collect_inbox(scope: Path, project_root: Path, *, view: bool = False) -> list[Message]:
-    """Walk ``scope`` and every parent up to ``project_root``, returning all
-    messages found in their ``.messages/inbox`` directories. Newest first
-    (sorted by filename descending)."""
+    """Return every message visible from ``scope``, newest first.
+
+    Under the canonical layout (PR #10): the project that owns
+    ``scope`` has exactly one ``.messages/inbox/``, plus there is a
+    global bucket. Visibility = project + global. The old per-scope
+    nested walk doesn't apply — subdirectories no longer carry their
+    own inboxes.
+    """
+    paths_obj = resolve()
     scope = Path(scope).resolve()
-    project_root = Path(project_root).resolve()
-    paths: list[Path] = []
-    current = scope
-    while True:
-        inbox = current / ".messages" / "inbox"
+    project_root = Path(project_root).resolve()  # accepted for signature compat
+
+    msg_paths: list[Path] = []
+    from .project import Project
+    proj = Project.for_cwd(scope, paths_obj)
+    candidates: list[Project] = []
+    if proj is not None and proj.name:
+        candidates.append(proj)
+    candidates.append(Project.global_scope())
+    for c in candidates:
+        inbox = c.messages_dir(paths_obj) / "inbox"
         if inbox.is_dir():
-            paths.extend(p for p in inbox.glob("*.msg") if p.is_file())
-        if current == project_root or project_root not in current.parents:
-            break
-        current = current.parent
-    paths.sort(key=lambda p: p.name, reverse=True)
+            msg_paths.extend(p for p in inbox.glob("*.msg") if p.is_file())
+
+    msg_paths.sort(key=lambda p: p.name, reverse=True)
     out: list[Message] = []
-    for p in paths:
+    for p in msg_paths:
         try:
             out.append(read_message(p, view=view))
         except Exception:
@@ -423,8 +473,13 @@ def send_message(
     """Write a new message to ``target``'s inbox + sender's outbox."""
     paths = paths or resolve()
     target_path = resolve_target(target, paths.scope, paths.project_root, paths=paths)
-    target_inbox = target_path / ".messages" / "inbox"
-    my_outbox = paths.scope / ".messages" / "outbox"
+    # Canonical routing (PR #10): both target inbox and sender outbox
+    # land under ``~/.metasphere/projects/<name>/.messages/`` (or the
+    # global bucket if the scope doesn't resolve to a registered
+    # project). The pre-refactor in-repo ``<scope>/.messages/`` tree
+    # has been migrated by ``metasphere migrate-project-dirs --what messages``.
+    target_inbox = _canonical_messages_dir(target_path, paths) / "inbox"
+    my_outbox = _canonical_messages_dir(paths.scope, paths) / "outbox"
     _ensure_dirs(target_inbox, my_outbox)
 
     msg_id = _gen_msg_id()
@@ -486,9 +541,11 @@ def _find_inbox_msg(
         hit = _index_lookup(msg_id, paths)
         if hit is not None:
             return hit
-    # Slow path: walk the repo for messages not present in the index.
-    project_root = Path(project_root)
-    for inbox in project_root.rglob(".messages/inbox"):
+    # Slow path: walk the canonical per-project inboxes. The
+    # ``project_root`` argument is retained for signature compat but
+    # no longer used for path lookup — one inbox per project + a
+    # global bucket is the full universe to check.
+    for inbox in _canonical_inbox_dirs(paths):
         cand = inbox / f"{msg_id}.msg"
         if cand.exists():
             if paths is not None:
@@ -545,17 +602,16 @@ def mark_done(
 
 
 def scan_inbox_messages(project_root: Path) -> list[Message]:
-    """Return every message currently in any ``.messages/inbox/`` under the repo.
+    """Return every message in any canonical ``.messages/inbox/``.
 
-    Mirrors :func:`metasphere.consolidate.scan_active_tasks`: used by
-    the lifecycle consolidator to drive verdict classification.
+    Mirrors :func:`metasphere.consolidate.scan_active_tasks` —
+    used by the lifecycle consolidator. ``project_root`` is retained
+    for signature compat but the walk iterates
+    ``~/.metasphere/projects/*/.messages/inbox/`` plus the global
+    bucket (see ``_canonical_inbox_dirs``).
     """
-    project_root = Path(project_root).resolve()
     out: list[Message] = []
-    for msg_dir in project_root.rglob(".messages"):
-        inbox = msg_dir / "inbox"
-        if not inbox.is_dir():
-            continue
+    for inbox in _canonical_inbox_dirs():
         for f in sorted(inbox.glob("*.msg")):
             try:
                 out.append(read_message(f))

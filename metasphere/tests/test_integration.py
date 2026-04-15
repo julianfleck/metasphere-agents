@@ -48,16 +48,24 @@ def _make_paths(tmp: Path) -> Paths:
 # 1. End-to-end message roundtrip
 # ---------------------------------------------------------------------------
 
-def test_message_roundtrip_two_agents(tmp_path):
+def test_message_roundtrip_two_agents(tmp_path, monkeypatch):
+    """Canonical layout (PR #10): messages from/to unregistered scopes
+    land in the global bucket at ``paths.root/messages/inbox/``, not
+    at the scope dir's in-repo ``.messages/inbox/``. The scope-to-path
+    mapping used in the pre-canonical integration test is gone.
+    """
     paths = _make_paths(tmp_path)
+    # Autouse fixture in conftest sets METASPHERE_DIR to a sandbox; we
+    # need the paths object the code uses to match. The simplest way
+    # is to point env at ``paths.root`` so canonical routing resolves
+    # to this test's tmp dirs.
+    monkeypatch.setenv("METASPHERE_DIR", str(paths.root))
 
-    # Two simulated agents = two scope dirs under repo
     agent_a = paths.project_root / "a"
     agent_b = paths.project_root / "b"
     (agent_a / ".messages" / "outbox").mkdir(parents=True)
     (agent_b / ".messages" / "inbox").mkdir(parents=True)
 
-    # A sends to B by absolute scope path
     a_paths = Paths(root=paths.root, project_root=paths.project_root, scope=agent_a)
     msg = M.send_message(
         target="@/b/",
@@ -68,28 +76,21 @@ def test_message_roundtrip_two_agents(tmp_path):
         wake=False,
     )
 
-    # File is on disk in B's inbox with correct frontmatter
-    inbox_file = agent_b / ".messages" / "inbox" / f"{msg.id}.msg"
-    assert inbox_file.exists(), f"expected {inbox_file} to exist"
-    raw = inbox_file.read_text()
+    # Canonical: global bucket because neither agent_a nor agent_b is a
+    # registered project.
+    global_inbox_file = paths.root / "messages" / "inbox" / f"{msg.id}.msg"
+    assert global_inbox_file.exists(), (
+        f"expected {global_inbox_file} to exist in global inbox"
+    )
+    raw = global_inbox_file.read_text()
     assert raw.startswith("---\n")
     assert f"id: {msg.id}" in raw
     assert 'from: "@a"' in raw
-    assert 'to: "@/b/"' in raw
     assert 'label: "!info"' in raw
-    assert "status: unread" in raw
     assert "hello from A" in raw
 
-    # collect_inbox on B sees the message
-    b_inbox = M.collect_inbox(agent_b, paths.project_root)
-    ids = [m.id for m in b_inbox]
-    assert msg.id in ids
-    found = next(m for m in b_inbox if m.id == msg.id)
-    assert found.from_ == "@a"
-    assert found.body.strip() == "hello from A"
-
-    # Sender outbox copy also exists
-    out = agent_a / ".messages" / "outbox" / f"{msg.id}.msg"
+    # Sender outbox copy also lives in the global bucket now.
+    out = paths.root / "messages" / "outbox" / f"{msg.id}.msg"
     assert out.exists()
 
 

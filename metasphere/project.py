@@ -146,23 +146,32 @@ class Project:
                  paths: Optional[Paths] = None) -> Optional["Project"]:
         """Resolve cwd to its registered project, if any.
 
-        Walks the projects registry looking for an entry whose ``path`` is
-        an ancestor of (or equal to) ``cwd``. Falls back to
-        :func:`project_for_scope` for legacy in-repo ``.metasphere/`` markers.
+        Walks the projects registry looking for the *longest* entry
+        path that is an ancestor of (or equal to) ``cwd``. Longest-
+        match wins so a sub-project at ``<repo>/recurse/`` is picked
+        over a parent ``<repo>/`` registration. Falls back to
+        :func:`project_for_scope` for legacy in-repo ``.metasphere/``
+        markers.
         """
         paths = paths or resolve()
         cwd = (cwd or Path.cwd()).resolve()
+        best: Optional[tuple[int, dict, Path]] = None
         for entry in _load_registry(paths):
             entry_path = Path(entry.get("path", "")).expanduser().resolve()
             try:
                 cwd.relative_to(entry_path)
-                name = entry.get("name", "")
-                proj = load_project(entry_path)
-                if proj is not None:
-                    return proj
-                return cls(name=name, path=str(entry_path))
             except ValueError:
                 continue
+            depth = len(entry_path.parts)
+            if best is None or depth > best[0]:
+                best = (depth, entry, entry_path)
+        if best is not None:
+            _, entry, entry_path = best
+            name = entry.get("name", "")
+            proj = load_project(entry_path, paths=paths)
+            if proj is not None:
+                return proj
+            return cls(name=name, path=str(entry_path))
         # Legacy fallback: walk up looking for ``.metasphere/`` marker.
         return project_for_scope(cwd, paths)
 
@@ -216,45 +225,119 @@ def _load_registry(paths: Paths) -> list[dict]:
 
 
 def _project_file(project_path: Path) -> Path:
+    """Legacy in-repo project.json path. Pre-PR #10 location.
+
+    Still computed so ``project_for_scope`` can use ``.metasphere/``
+    as a walk-up marker without needing registry access. Data reads
+    and writes go to ``_canonical_project_file`` now.
+    """
     return project_path / ".metasphere" / "project.json"
 
 
-def load_project(project_path: Path) -> Optional[Project]:
-    """Load a project from its directory. Returns None if not present."""
-    pf = _project_file(Path(project_path))
-    if not pf.is_file():
-        return None
-    data = read_json(pf, default=None)
-    if not data:
-        return None
-    proj = Project.from_dict(data)
-    # v1 → v2 defaults are supplied by Project.from_dict (members empty,
-    # goal/repo None, schema stays 1). Callers that want a save to upgrade
-    # just call save_project.
-    proj.path = proj.path or str(Path(project_path).resolve())
-    return proj
+def _canonical_project_file(project_name: str, paths: Optional[Paths] = None) -> Path:
+    paths = paths or resolve()
+    return paths.projects / project_name / "project.json"
 
 
-def save_project(project: Project) -> Path:
-    """Serialize a project to disk, bumping the schema to current."""
+def load_project(project_path: Path, *, paths: Optional[Paths] = None) -> Optional[Project]:
+    """Load a project by repo path.
+
+    Resolution order, in line with the PR #10 migration bridge:
+    1. Registry reverse-lookup → canonical
+       ``~/.metasphere/projects/<name>/project.json``
+    2. Legacy in-repo ``<project_path>/.metasphere/project.json``
+       (pre-migration backstop; drops out when the migration
+       subcommand has moved every project.json to canonical.)
+
+    The legacy leg stays until the migration is known to have run
+    everywhere. ``save_project`` already writes only canonical, so new
+    data can't regress.
+    """
+    paths = paths or resolve()
+    project_path = Path(project_path)
+    name = _project_name_for_path(project_path, paths)
+    if name:
+        pf = _canonical_project_file(name, paths)
+        if pf.is_file():
+            data = read_json(pf, default=None)
+            if data:
+                proj = Project.from_dict(data)
+                proj.path = proj.path or str(project_path.resolve())
+                return proj
+    # Legacy fallback: in-repo project.json. Still honored for tests
+    # that stub a project without touching the registry, and for any
+    # pre-migration prod project.
+    legacy_pf = _project_file(project_path)
+    if legacy_pf.is_file():
+        data = read_json(legacy_pf, default=None)
+        if data:
+            proj = Project.from_dict(data)
+            proj.path = proj.path or str(project_path.resolve())
+            return proj
+    return None
+
+
+def save_project(project: Project, *, paths: Optional[Paths] = None) -> Path:
+    """Serialize a project to the canonical location and bump schema.
+
+    During the PR #10 migration window, we also write an in-repo
+    ``<project.path>/.metasphere/project.json`` copy so ``load_project``
+    calls against a path that isn't yet registered still resolve. This
+    second write is the pair for ``load_project``'s legacy fallback leg;
+    they come out together once every project is migrated.
+    """
+    paths = paths or resolve()
     project.schema = SCHEMA_VERSION
-    pf = _project_file(Path(project.path))
+    payload = json.dumps(project.to_dict(), indent=2) + "\n"
+    # Canonical write — single source of truth for post-migration reads.
+    pf = _canonical_project_file(project.name, paths)
     pf.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(pf, json.dumps(project.to_dict(), indent=2) + "\n")
+    atomic_write_text(pf, payload)
+    # Legacy in-repo write for pre-registration / transitional compat.
+    if project.path:
+        legacy_pf = _project_file(Path(project.path))
+        try:
+            legacy_pf.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(legacy_pf, payload)
+        except OSError:
+            # Non-fatal: the canonical write is the actual contract.
+            pass
     return pf
 
 
-def _ensure_scaffold(p: Path) -> None:
+def _ensure_scaffold(p: Path, *, paths: Optional[Paths] = None,
+                      project_name: Optional[str] = None) -> None:
+    """Create the per-project data dirs at their canonical location.
+
+    Canonical layout (Julian 2026-04-14): everything project-scoped
+    lives under ``~/.metasphere/projects/<name>/``. Before PR #10 this
+    function created ``.tasks/`` / ``.messages/`` / ``.changelog/`` /
+    ``.learnings/`` in the repo itself (``p / ".tasks/active"`` etc.);
+    those are legacy on-disk layouts that the migration subcommand
+    moves into the canonical root.
+
+    ``p`` is still the repo path (used for the in-repo ``.metasphere/``
+    backstop marker directory some older tools probe). ``project_name``
+    defaults to ``p.name``; passed explicitly when the caller already
+    knows the canonical name.
+    """
+    paths = paths or resolve()
+    name = project_name or Path(p).name
+    project_dir = paths.projects / name
     for sub in (
-        ".metasphere",
         ".tasks/active",
-        ".tasks/completed",
+        ".tasks/archive",
         ".messages/inbox",
         ".messages/outbox",
         ".changelog",
         ".learnings",
     ):
-        (p / sub).mkdir(parents=True, exist_ok=True)
+        (project_dir / sub).mkdir(parents=True, exist_ok=True)
+    # Legacy marker — some tooling still probes ``<repo>/.metasphere/``
+    # to detect "is this a metasphere project dir?" The directory is
+    # created empty; canonical project.json lives at
+    # ``paths.projects / name / project.json``.
+    (Path(p) / ".metasphere").mkdir(parents=True, exist_ok=True)
 
 
 def _register(paths: Paths, project: Project) -> None:
@@ -286,10 +369,10 @@ def init_project(
     p = Path(path).resolve() if path else Path.cwd().resolve()
     name = name or p.name
 
-    _ensure_scaffold(p)
+    _ensure_scaffold(p, paths=paths, project_name=name)
 
     # Prefer updating an existing on-disk project rather than clobbering.
-    existing = load_project(p)
+    existing = load_project(p, paths=paths)
     if existing is not None:
         if goal and not existing.goal:
             existing.goal = goal
@@ -365,7 +448,7 @@ def new_project(
         p.parent.mkdir(parents=True, exist_ok=True)
         cloner(repo, p)
 
-    _ensure_scaffold(p)
+    _ensure_scaffold(p, paths=paths, project_name=name)
     proj = Project(
         name=name,
         path=str(p),
@@ -683,6 +766,13 @@ def list_projects(*, paths: Optional[Paths] = None) -> list[Project]:
 
 
 def _find_project(name_or_none: Optional[str], paths: Paths) -> Optional[Path]:
+    """Legacy helper: resolve a name or cwd to a repo path.
+
+    Returns the registered repo path, not the canonical project dir.
+    Used only as an identity anchor by ``project_changelog`` +
+    ``project_learnings``; all data reads go via the canonical
+    ``~/.metasphere/projects/<name>/`` tree.
+    """
     if name_or_none:
         for entry in _load_registry(paths):
             if entry.get("name") == name_or_none:
@@ -695,22 +785,37 @@ def _find_project(name_or_none: Optional[str], paths: Paths) -> Optional[Path]:
     return None
 
 
+def _project_name_for_path(repo_path: Path, paths: Paths) -> Optional[str]:
+    """Reverse the registry: repo path → registered project name."""
+    target = repo_path.resolve()
+    for entry in _load_registry(paths):
+        if Path(entry.get("path", "")).resolve() == target:
+            return entry.get("name")
+    return None
+
+
 def project_changelog(name: Optional[str] = None, *, since: str = "1 day ago",
                       paths: Optional[Paths] = None) -> Path:
     paths = paths or resolve()
-    proj = _find_project(name, paths)
-    if proj is None:
+    repo = _find_project(name, paths)
+    if repo is None:
         raise FileNotFoundError("project not found")
+    proj_name = name or _project_name_for_path(repo, paths) or repo.name
+    # Canonical per-project dirs (PR #10): changelog + completed tasks
+    # live under ``~/.metasphere/projects/<name>/`` now, not in-repo.
+    changelog_dir = paths.projects / proj_name / ".changelog"
+    completed_dir = paths.projects / proj_name / ".tasks" / "completed"
+    changelog_dir.mkdir(parents=True, exist_ok=True)
     today = _dt.date.today().isoformat()
-    out_file = proj / ".changelog" / f"{today}.md"
+    out_file = changelog_dir / f"{today}.md"
 
-    lines: list[str] = [f"# Changelog - {today}", "", f"Project: {proj.name}", ""]
+    lines: list[str] = [f"# Changelog - {today}", "", f"Project: {proj_name}", ""]
 
-    if (proj / ".git").exists():
+    if (repo / ".git").exists():
         lines += ["## Commits", ""]
         try:
             log = subprocess.run(
-                ["git", "-C", str(proj), "log", "--oneline", f"--since={since}"],
+                ["git", "-C", str(repo), "log", "--oneline", f"--since={since}"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 text=True, check=False,
             ).stdout.strip().splitlines()
@@ -721,7 +826,6 @@ def project_changelog(name: Optional[str] = None, *, since: str = "1 day ago",
         lines.append("")
 
     lines += ["## Tasks Completed", ""]
-    completed_dir = proj / ".tasks" / "completed"
     seen_titles: set[str] = set()
     if completed_dir.is_dir():
         for tf in sorted(completed_dir.glob("*.task")):
@@ -747,7 +851,7 @@ def project_changelog(name: Optional[str] = None, *, since: str = "1 day ago",
                 continue
             if e.get("type") == "task.complete":
                 scope = (e.get("meta") or {}).get("scope", "")
-                if isinstance(scope, str) and scope.startswith(str(proj)):
+                if isinstance(scope, str) and scope.startswith(str(repo)):
                     msg = e.get("message", "")
                     if msg and msg not in seen_titles:
                         seen_titles.add(msg)
@@ -762,7 +866,7 @@ def project_changelog(name: Optional[str] = None, *, since: str = "1 day ago",
                 continue
             scope_path = (ad / "scope")
             scope = scope_path.read_text().strip() if scope_path.exists() else ""
-            if scope.startswith(str(proj)):
+            if scope.startswith(str(repo)):
                 status_path = ad / "status"
                 status = status_path.read_text().strip() if status_path.exists() else "?"
                 lines.append(f"- {ad.name}: {status}")
@@ -775,14 +879,17 @@ def project_changelog(name: Optional[str] = None, *, since: str = "1 day ago",
 def project_learnings(name: Optional[str] = None, *,
                       paths: Optional[Paths] = None) -> Path:
     paths = paths or resolve()
-    proj = _find_project(name, paths)
-    if proj is None:
+    repo = _find_project(name, paths)
+    if repo is None:
         raise FileNotFoundError("project not found")
+    proj_name = name or _project_name_for_path(repo, paths) or repo.name
+    learnings_dir_out = paths.projects / proj_name / ".learnings"
+    learnings_dir_out.mkdir(parents=True, exist_ok=True)
     today = _dt.date.today().isoformat()
-    out_file = proj / ".learnings" / f"aggregated-{today}.md"
+    out_file = learnings_dir_out / f"aggregated-{today}.md"
 
     lines: list[str] = [
-        f"# Learnings - {proj.name}",
+        f"# Learnings - {proj_name}",
         f"Generated: {_now_iso()}",
         "",
     ]
@@ -793,10 +900,10 @@ def project_learnings(name: Optional[str] = None, *,
                 continue
             scope_path = ad / "scope"
             scope = scope_path.read_text().strip() if scope_path.exists() else ""
-            learnings_dir = ad / "learnings"
-            if not (scope.startswith(str(proj)) and learnings_dir.is_dir()):
+            agent_learnings = ad / "learnings"
+            if not (scope.startswith(str(repo)) and agent_learnings.is_dir()):
                 continue
-            agent_files = sorted(learnings_dir.glob("*.md"))
+            agent_files = sorted(agent_learnings.glob("*.md"))
             if not agent_files:
                 continue
             lines += [f"## {ad.name}", ""]
@@ -806,9 +913,8 @@ def project_learnings(name: Optional[str] = None, *,
                 lines.append(f.read_text(errors="replace").rstrip())
                 lines.append("")
 
-    proj_learnings = proj / ".learnings"
-    if proj_learnings.is_dir():
-        proj_files = [f for f in sorted(proj_learnings.glob("*.md"))
+    if learnings_dir_out.is_dir():
+        proj_files = [f for f in sorted(learnings_dir_out.glob("*.md"))
                       if "aggregated" not in f.name]
         if proj_files:
             lines += ["## Project-level", ""]

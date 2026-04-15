@@ -43,9 +43,14 @@ def test_full_lifecycle(tmp_paths, tmp_path, capsys):
     assert proj.schema == 2
     assert proj.goal.startswith("sense-making")
     assert [m.id for m in proj.members] == ["@orchestrator", "@researcher"]
-    assert proj_dir.joinpath(".metasphere/project.json").is_file()
-    assert proj_dir.joinpath(".tasks/active").is_dir()
-    assert proj_dir.joinpath(".messages/inbox").is_dir()
+    # Canonical layout (PR #10): project.json + per-project dirs live
+    # under ~/.metasphere/projects/<name>/. In-repo ``.metasphere/``
+    # stays as a lightweight marker dir for legacy tooling that
+    # probes "is this a metasphere project?".
+    assert proj_dir.joinpath(".metasphere").is_dir()
+    assert (tmp_paths.projects / "recurse" / "project.json").is_file()
+    assert (tmp_paths.projects / "recurse" / ".tasks" / "active").is_dir()
+    assert (tmp_paths.projects / "recurse" / ".messages" / "inbox").is_dir()
 
     # ---- persistent members got stub MISSION.md ----
     orch_mission = tmp_paths.agents / "@orchestrator" / "MISSION.md"
@@ -70,7 +75,10 @@ def test_full_lifecycle(tmp_paths, tmp_path, capsys):
         "ship v0", priority="!high",
         scope=proj_dir, project_root=tmp_paths.project_root,
     )
-    assert (proj_dir / ".tasks" / "active").glob("*.task")
+    # Canonical-layout tasks live under ~/.metasphere/projects/<name>/
+    # .tasks/active/, not in-repo.
+    active_dir = tmp_paths.projects / "recurse" / ".tasks" / "active"
+    assert any(active_dir.glob("*.md")), f"no task in {active_dir}"
     assert t.title == "ship v0"
 
     # ---- send a message in the project scope (no real wake, no real telegram) ----

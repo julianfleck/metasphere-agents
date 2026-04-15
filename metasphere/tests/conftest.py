@@ -40,11 +40,13 @@ _GUARDED_SUBDIRS = (
 )
 
 #: File extensions we treat as "pollution if new" under the guarded
-#: dirs. ``.md`` = task/message/doc fixtures, ``.msg`` = agent inbox
-#: messages, ``.lock`` = task-lock sidecars from fixture writes,
-#: ``.jsonl`` = new-day stream files that would only appear mid-test
-#: via a fixture (live daemons append to an existing day's file).
-_POLLUTION_EXTS = (".md", ".msg", ".lock", ".jsonl", ".bin")
+#: dirs. Dropped ``.msg`` post-PR #10 because live daemons (consolidator,
+#: heartbeat, explicit sends from any running agent) routinely write
+#: new .msg files into ``~/.metasphere/projects/*/.messages/inbox/``
+#: — indistinguishable from a test fixture by extension alone. The
+#: original 2026-04-15 leak was ``.md`` task files; that signal
+#: stays. ``.lock`` is handled in the paired pass below.
+_POLLUTION_EXTS = (".md", ".jsonl", ".bin")
 
 #: Real production chat id for Julian — the only chat that legitimately
 #: appears in ``~/.metasphere/telegram/stream/*.jsonl``. Anything else
@@ -132,6 +134,15 @@ def pytest_sessionfinish(session, exitstatus):
     # with a pollution-shaped extension is almost certainly a test
     # fixture — the Fix 1 2026-04-15 incident caught 41 ``.md`` task
     # files this way.
+    #
+    # Two-pass inner structure to avoid false-positives on ``.lock``
+    # sidecars that live daemons (consolidator, heartbeat) create while
+    # running against legitimate pre-existing ``.md`` content during
+    # the test session. A standalone new ``.lock`` is harmless daemon
+    # activity; a ``.lock`` next to a new ``.md`` is pollution. First
+    # we find every new content file, then we only flag new ``.lock``
+    # files whose underlying ``.md`` is also new.
+    new_content_files: set[str] = set()
     try:
         for p in _REAL_METASPHERE.rglob("*"):
             if not p.is_file():
@@ -141,7 +152,31 @@ def pytest_sessionfinish(session, exitstatus):
                 continue
             if not _under_guarded_subdir(p):
                 continue
-            if p.suffix.lower() in _POLLUTION_EXTS:
+            ext = p.suffix.lower()
+            if ext == ".lock":
+                continue  # handled in the second pass
+            # ``archive/<date>/`` sub-trees are written by live daemons
+            # (consolidator archiving messages, tasks moving to done)
+            # during any test run that happens to coincide with a cron
+            # fire. These are legitimate prod activity, not pollution.
+            # Tests that create fixtures land in ``active/`` or
+            # ``inbox/`` / ``outbox/``; the archive tree is daemon-only.
+            if "/archive/" in s or s.endswith("/archive"):
+                continue
+            if ext in _POLLUTION_EXTS:
+                leaked.append(f"{s} (new file under guarded subdir)")
+                new_content_files.add(s)
+        for p in _REAL_METASPHERE.rglob("*.lock"):
+            if not p.is_file():
+                continue
+            s = str(p)
+            if s in snapshot:
+                continue
+            if not _under_guarded_subdir(p):
+                continue
+            # Matching content file is ``foo.md`` for ``foo.md.lock``.
+            underlying = s[: -len(".lock")]
+            if underlying in new_content_files:
                 leaked.append(f"{s} (new file under guarded subdir)")
     except OSError:
         pass

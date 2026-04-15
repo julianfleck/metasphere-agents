@@ -213,10 +213,12 @@ def test_create_autofills_assignee_from_env(tmp_paths, monkeypatch):
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@alice")
     task = t.create_task("owned", "!normal", tmp_paths.scope, tmp_paths.project_root)
     assert task.assignee == "@alice"
-    assert task.project == "default"
+    # The tmp_paths fixture registers the scope as project "testproj",
+    # so auto-resolution now fills ``project`` from the registry.
+    assert task.project == "testproj"
     raw = task.path.read_text()
     assert 'assigned_to: "@alice"' in raw
-    assert "project: default" in raw
+    assert "project: testproj" in raw
 
 
 def test_create_explicit_project_and_assignee(tmp_paths, monkeypatch):
@@ -233,12 +235,36 @@ def test_create_autofills_project_from_scope(tmp_paths, monkeypatch):
     # Create a fake project at scope
     from metasphere import project as _project
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@carol")
-    (tmp_paths.scope / ".metasphere").mkdir(parents=True, exist_ok=True)
-    (tmp_paths.scope / ".metasphere" / "project.json").write_text(
-        '{"schema": 2, "name": "demoproj", "path": "'
-        + str(tmp_paths.scope) + '", "created": "", "status": "active"}'
-    )
-    task = t.create_task("inproj", "!normal", tmp_paths.scope, tmp_paths.project_root)
+    # Canonical layout (PR #10): project.json lives at
+    # ~/.metasphere/projects/<name>/project.json, and the registry
+    # maps the repo path to the name. Write both.
+    import json as _json
+    pdir = tmp_paths.projects / "demoproj"
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "project.json").write_text(_json.dumps({
+        "schema": 2, "name": "demoproj", "path": str(tmp_paths.scope),
+        "created": "", "status": "active",
+    }))
+    # Append demoproj to the registry (conftest already created it with
+    # testproj; for this test we want demoproj to be the project the
+    # scope resolves to, so use a deeper path to make longest-match win).
+    reg_file = tmp_paths.root / "projects.json"
+    reg = _json.loads(reg_file.read_text())
+    # Use a subdirectory so Project.for_cwd picks demoproj over testproj
+    # via longest-path match.
+    demo_scope = tmp_paths.scope / "demoproj-sub"
+    demo_scope.mkdir(parents=True, exist_ok=True)
+    reg.append({
+        "name": "demoproj", "path": str(demo_scope),
+        "registered": "1970-01-01T00:00:00Z",
+    })
+    reg_file.write_text(_json.dumps(reg))
+    # Canonical project.json path for demoproj references demo_scope.
+    (pdir / "project.json").write_text(_json.dumps({
+        "schema": 2, "name": "demoproj", "path": str(demo_scope),
+        "created": "", "status": "active",
+    }))
+    task = t.create_task("inproj", "!normal", demo_scope, tmp_paths.project_root)
     assert task.project == "demoproj"
 
 
@@ -255,7 +281,8 @@ def test_assign_task_updates_assignee(tmp_paths, monkeypatch):
 def test_move_task_project(tmp_paths, monkeypatch):
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@owner")
     task = t.create_task("a", "!normal", tmp_paths.scope, tmp_paths.project_root)
-    assert task.project == "default"
+    # tmp_paths fixture auto-registers scope as "testproj".
+    assert task.project == "testproj"
     moved = t.move_task_project(task.id, "recurse", tmp_paths.project_root)
     assert moved.project == "recurse"
 
@@ -277,6 +304,10 @@ def test_legacy_task_without_project_field_loads_as_default(tmp_paths):
 def test_cli_new_warns_and_defaults(tmp_paths, monkeypatch, capsys):
     from metasphere.cli import tasks as cli_tasks
     monkeypatch.delenv("METASPHERE_AGENT_ID", raising=False)
+    # Clear the tmp_paths-auto-registered ``testproj`` so auto_project
+    # really does return "default" — the warning fires only when the
+    # scope doesn't match any registered project.
+    (tmp_paths.root / "projects.json").write_text("[]")
     rc = cli_tasks._cmd_new(["write docs"])
     assert rc == 0
     err = capsys.readouterr().err
