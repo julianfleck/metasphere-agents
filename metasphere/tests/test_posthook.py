@@ -283,9 +283,9 @@ def test_auto_close_finished_task_archives_on_complete_status(tmp_paths: Paths):
     assert closed == task_id
 
     from metasphere import tasks as _tasks
-    p = _tasks._find_task_file(task_id, tmp_paths.project_root, include_completed=False)
+    p = _tasks._find_task_file(task_id, include_completed=False)
     assert p is None  # not in active anymore
-    p2 = _tasks._find_task_file(task_id, tmp_paths.project_root, include_completed=True)
+    p2 = _tasks._find_task_file(task_id, include_completed=True)
     assert p2 is not None and "archive" in str(p2)
 
 
@@ -299,7 +299,7 @@ def test_auto_close_skips_when_status_not_complete(tmp_paths: Paths):
     assert posthook.auto_close_finished_task("@child", tmp_paths) is None
 
     from metasphere import tasks as _tasks
-    p = _tasks._find_task_file(task_id, tmp_paths.project_root, include_completed=False)
+    p = _tasks._find_task_file(task_id, include_completed=False)
     assert p is not None  # still active
 
 
@@ -335,7 +335,7 @@ def test_run_posthook_auto_closes_for_subagent(tmp_paths: Paths, monkeypatch):
     assert rc == 0
 
     from metasphere import tasks as _tasks
-    assert _tasks._find_task_file(task_id, tmp_paths.project_root, include_completed=False) is None
+    assert _tasks._find_task_file(task_id, include_completed=False) is None
 
 
 def test_run_posthook_does_not_auto_close_orchestrator(tmp_paths: Paths, monkeypatch):
@@ -352,7 +352,7 @@ def test_run_posthook_does_not_auto_close_orchestrator(tmp_paths: Paths, monkeyp
 
     from metasphere import tasks as _tasks
     # Orchestrator never auto-closes — it's persistent, not ephemeral.
-    assert _tasks._find_task_file(task_id, tmp_paths.project_root, include_completed=False) is not None
+    assert _tasks._find_task_file(task_id, include_completed=False) is not None
 
 
 # ---------- cli --dry-run / --help ----------

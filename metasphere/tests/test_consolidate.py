@@ -99,7 +99,7 @@ def _iso_days(days_ago: int) -> str:
 def test_scan_active_tasks_returns_only_active(repo, tmp_paths):
     _create_task(repo, "alpha task")
     _create_task(repo, "beta task")
-    found = _con.scan_active_tasks(repo)
+    found = _con.scan_active_tasks()
     assert {t.title for t in found} == {"alpha task", "beta task"}
 
 

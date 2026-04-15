@@ -222,16 +222,11 @@ def unregister_job(paths: Paths | None = None) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def scan_active_tasks(project_root: Path) -> list[_tasks.Task]:
+def scan_active_tasks() -> list[_tasks.Task]:
     """Return every task currently in any canonical ``.tasks/active/``.
 
-    Canonical layout walks ``~/.metasphere/projects/*/.tasks/`` and
-    ``~/.metasphere/tasks/`` (see ``tasks._canonical_tasks_dirs``).
-    The ``project_root`` parameter is accepted for backward-compat with
-    existing CLI / test plumbing but ignored here — after the migration
-    subcommand runs, in-repo ``<repo>/.tasks/`` dirs are moved under
-    ``~/.metasphere/projects/<name>/.tasks/`` and there's no second
-    place to look.
+    Walks ``~/.metasphere/projects/*/.tasks/`` and ``~/.metasphere/tasks/``
+    (see ``tasks._canonical_tasks_dirs``).
     """
     out: list[_tasks.Task] = []
     for tasks_dir in _tasks._canonical_tasks_dirs():
@@ -1122,7 +1117,7 @@ def run_pass(
     paths = paths or resolve()
     project_root = Path(project_root) if project_root else paths.project_root
 
-    tasks_found = scan_active_tasks(project_root)
+    tasks_found = scan_active_tasks()
     commits = _git_log(project_root, since)
 
     now = _utcnow()
@@ -1160,7 +1155,7 @@ def run_pass(
         report.results.append(result)
 
     # Message lifecycle pass — same engine, parallel verdict path.
-    msgs_found = _messages.scan_inbox_messages(project_root)
+    msgs_found = _messages.scan_inbox_messages()
     for mm in msgs_found:
         mverdict = classify_message(
             mm, now=now, stale_window_minutes=stale_window_minutes, paths=paths

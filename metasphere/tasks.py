@@ -392,15 +392,10 @@ def dispatch_task(
     }
 
 
-def _find_task_file(task_id: str, project_root: Path | None = None,
-                      *, include_completed: bool = True) -> Path | None:
+def _find_task_file(task_id: str, *, include_completed: bool = True) -> Path | None:
     """Locate ``<task_id>.md`` across every canonical task dir.
 
     Searches ``~/.metasphere/projects/*/.tasks/`` and ``~/.metasphere/tasks/``.
-    The ``project_root`` parameter is retained for backward-compat with
-    older callers but is no longer used for path resolution — the
-    migration subcommand collapses in-repo ``<repo>/.tasks/`` into the
-    canonical layout, so there's no second place to look.
 
     Each ``.tasks/`` is probed in order: ``active/<id>.md``, legacy
     ``completed/<id>.md``, then dated ``archive/YYYY-MM-DD/<id>.md``
@@ -436,7 +431,7 @@ def update_task(
     **fields: str,
 ) -> Task:
     """Atomically rewrite frontmatter fields on a task file."""
-    path = _find_task_file(task_id, project_root)
+    path = _find_task_file(task_id)
     if path is None:
         raise FileNotFoundError(f"task {task_id} not found under {project_root}")
 
@@ -473,7 +468,7 @@ def _append_update(body: str, note: str) -> str:
 
 
 def add_update(task_id: str, note: str, project_root: Path) -> Task:
-    path = _find_task_file(task_id, project_root)
+    path = _find_task_file(task_id)
     if path is None:
         raise FileNotFoundError(f"task {task_id} not found")
     with file_lock(_lock_path(path)):
@@ -513,7 +508,7 @@ def _replace_description(body: str, text: str) -> str:
 
 def set_description(task_id: str, text: str, project_root: Path) -> Task:
     """Replace the ``## Description`` section of a task with ``text``."""
-    path = _find_task_file(task_id, project_root)
+    path = _find_task_file(task_id)
     if path is None:
         raise FileNotFoundError(f"task {task_id} not found")
     with file_lock(_lock_path(path)):
@@ -525,7 +520,7 @@ def set_description(task_id: str, text: str, project_root: Path) -> Task:
 
 
 def start_task(task_id: str, agent: str, project_root: Path) -> Task:
-    path = _find_task_file(task_id, project_root)
+    path = _find_task_file(task_id)
     if path is None:
         raise FileNotFoundError(f"task {task_id} not found")
     with file_lock(_lock_path(path)):
@@ -542,7 +537,7 @@ def start_task(task_id: str, agent: str, project_root: Path) -> Task:
 
 def complete_task(task_id: str, summary: str, project_root: Path) -> Task:
     """Mark task complete and move file from ``active/`` → ``completed/``."""
-    path = _find_task_file(task_id, project_root)
+    path = _find_task_file(task_id)
     if path is None:
         raise FileNotFoundError(f"task {task_id} not found")
 
@@ -586,7 +581,7 @@ def abandon_task(task_id: str, reason: str, project_root: Path) -> Task:
     but uses a flat ``_abandoned`` bucket (no daily date dir) so the
     archive doesn't get noisy with one-task-per-day folders.
     """
-    path = _find_task_file(task_id, project_root)
+    path = _find_task_file(task_id)
     if path is None:
         raise FileNotFoundError(f"task {task_id} not found")
 

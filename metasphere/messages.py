@@ -601,12 +601,11 @@ def mark_done(
     return None
 
 
-def scan_inbox_messages(project_root: Path) -> list[Message]:
+def scan_inbox_messages() -> list[Message]:
     """Return every message in any canonical ``.messages/inbox/``.
 
-    Mirrors :func:`metasphere.consolidate.scan_active_tasks` —
-    used by the lifecycle consolidator. ``project_root`` is retained
-    for signature compat but the walk iterates
+    Mirrors :func:`metasphere.consolidate.scan_active_tasks` — used by
+    the lifecycle consolidator. Walks
     ``~/.metasphere/projects/*/.messages/inbox/`` plus the global
     bucket (see ``_canonical_inbox_dirs``).
     """
