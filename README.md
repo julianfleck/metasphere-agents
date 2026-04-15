@@ -54,17 +54,66 @@ cd metasphere-agents
 ## Quick Start
 
 ```bash
-# Connect your Telegram bot (get a token from @BotFather)
-metasphere config telegram <your-bot-token>
+# Connect your Telegram bot (get a token from @BotFather). Interactive
+# by default — prompts for token, validates via getMe, auto-discovers
+# the chat id from your /start message.
+metasphere config telegram
 
-# Start the agent
+# Start the three daemons (gateway, heartbeat, schedule)
 metasphere daemon start
 
-# Check it's running
+# Check all three are running
+metasphere daemon status
+
+# System overview: projects, agents, active tasks
 metasphere status
 ```
 
 Your agent is now live. Message it on Telegram.
+
+## Architecture
+
+The harness runs three independent systemd services plus an orchestrator REPL running inside a tmux session. User-visible state lives at `~/.metasphere/`; per-project data lives at `~/.metasphere/projects/<name>/`.
+
+### Routing
+
+```mermaid
+flowchart LR
+    U((Julian)) -- message --> TG[Telegram Bot API]
+    TG -- getUpdates --> GW[gateway daemon\n telegram.poller.run_poll_iteration]
+    GW -- parse+download attachments --> ATT[~/.metasphere/attachments/]
+    GW -- inject --> TMUX[tmux: metasphere-orchestrator\n claude REPL]
+    TMUX -- Stop-hook --> POST[posthook]
+    POST -- send --> TG
+    HB[heartbeat daemon] -- wake tick --> TMUX
+    SCH[schedule daemon] -- cron fire --> CON[consolidate]
+    CON -- !query stale --> INBOX[project inbox\n ~/.metasphere/projects/<p>/.messages]
+    INBOX -- read --> TMUX
+    CON -- ping routing --> LEAD[@<project>-lead]
+```
+
+Every inbound Telegram message goes through **one** handler — `metasphere.telegram.handler.handle_update` — whether it came from the production gateway or (historically) a CLI poller. Photos, documents, audio, video, stickers, and any other media payload are downloaded to `~/.metasphere/attachments/<message_id>/` and their paths injected alongside the caption.
+
+### Per-project state
+
+```
+~/.metasphere/
+├── projects/<name>/
+│   ├── project.json       # Project metadata (members, goal, telegram topic)
+│   ├── .tasks/active/     # Task frontmatter files
+│   ├── .tasks/archive/    # Dated completion archive
+│   ├── .messages/inbox/   # Per-project inbox
+│   ├── .messages/outbox/
+│   ├── .changelog/        # Daily rollups
+│   └── .learnings/        # Cross-agent knowledge base
+├── tasks/                 # Global/unscoped tasks (sibling, not nested)
+├── messages/              # Global/unscoped messages
+├── agents/@<name>/        # Per-agent identity + scope
+├── events/events-YYYY-MM-DD.jsonl
+└── logs/{gateway,heartbeat,schedule}.log
+```
+
+Pre-2026-04-15 installs kept `.tasks/` / `.messages/` / `.changelog/` in the repo itself (`<repo>/.tasks/`). Run `metasphere migrate-project-dirs --apply` to collapse them into the canonical layout.
 
 ## How it works
 
@@ -91,12 +140,14 @@ This means you always see what the agent is doing without having to SSH in and a
 Every task is a markdown file in the project's `.tasks/active/` directory — a full briefing with title, priority, status, owner, acceptance criteria, and a running log of updates. When a task is completed, it moves to the archive with a dated folder.
 
 ```bash
-tasks                              # Show active tasks
-tasks new "title" !priority        # Create (!urgent, !high, !normal, !low)
-tasks start <task-id>              # Assign to self
-tasks update <task-id> "note"      # Add progress
-tasks done <task-id> "summary"     # Complete and archive
+metasphere task list                        # Show active tasks
+metasphere task new "title" [!priority]     # Create (!urgent, !high, !normal, !low)
+metasphere task start <task-id>             # Assign to self
+metasphere task update <task-id> "note"     # Add progress
+metasphere task done <task-id> "summary"    # Complete and archive
 ```
+
+Tasks live at `~/.metasphere/projects/<name>/.tasks/active/` — canonical per-project storage (see [Architecture](#architecture)). Older installs that kept tasks in-repo can migrate with `metasphere migrate-project-dirs --apply`.
 
 Why markdown files? Because they're transparent — you can read them in your editor, grep across them, version them with git. The agent sees the same files you do.
 
@@ -105,10 +156,10 @@ Why markdown files? Because they're transparent — you can read them in your ed
 Tasks and messages work together. When you send a `!task` message to an agent, it creates both a message (which the agent sees on its next turn) and a backing task file (which tracks progress). When the agent finishes, it sends `!done` back, and the task is archived. This means task delegation has a full paper trail — who asked for what, when it was picked up, what updates were logged, and how it was resolved.
 
 ```bash
-messages                           # Show unread
-messages send @agent !task "do X"  # Delegate work (creates task + message)
-messages reply <msg-id> "text"     # Reply to a message
-messages done <msg-id> "note"      # Mark a task-message as complete
+metasphere msg                          # Show unread
+metasphere msg send @agent !task "do X" # Delegate work (creates task + message)
+metasphere msg reply <msg-id> "text"    # Reply to a message
+metasphere msg done <msg-id> "note"     # Mark a task-message as complete
 ```
 
 ## Projects
@@ -116,13 +167,15 @@ messages done <msg-id> "note"      # Mark a task-message as complete
 Projects group agents, tasks, and goals. Each project has its own agent team, task backlog, and optionally a Telegram topic for discussion.
 
 ```bash
-metasphere project new <name> [--path P] [--goal "..."] [--member @agent:role]
+metasphere project new <name> [--path P] [--goal "..."] [--member @agent:role:persistent]
 metasphere project list              # List all projects
 metasphere project show [name]       # Project details
 metasphere project member add <name> @agent [--role R] [--persistent]
 metasphere project wake [name]       # Wake all persistent members
 metasphere project chat <name> "msg" # Send to project Telegram topic
 ```
+
+`--member @name:role:persistent` is colon-separated: the agent id (auto-prefixed with `@`), an optional role (defaults to `contributor`), and an optional persistence flag (`persistent`, `true`, `1`, `yes`, `y`). Repeat the flag to add more members.
 
 ## Agent Management
 
@@ -196,23 +249,24 @@ metasphere config                      # Show configuration
 
 ## Telegram Bot Commands
 
-All slash commands available in your Telegram chat:
+All slash commands available in your Telegram chat (exact set from `BOT_COMMANDS_MANIFEST`):
 
 ```
-/status              System overview
-/tasks               Active tasks (card format)
-/messages            Inbox messages
-/agents              All agents across projects
-/projects            Project list (card format)
-/projects show <n>   Project details
-/schedule            Scheduled jobs
-/schedule run <n>    Trigger a job
-/team                Team management
+/status              Show orchestrator status
+/tasks               List active tasks
+/messages            Show inbox messages
+/agents              List all agents across projects
+/team                Project teams: /team [status|specs|seed|wake]
+/specs               List available agent specs
 /send @agent !label msg
+/projects            Projects: /projects [list|show|new|wake|chat ...]
+/schedule            Inspect schedule: /schedule [list|show|run ...]
 /memory <query>      Search agent memory
-/events              Recent events
-/session             Restart agent REPL
+/events              Tail recent events
+/spot                Show remote host status
+/session             Restart orchestrator REPL
 /help                Show help
+/ping                Ping the bot
 ```
 
 You can also send plain text — it goes directly into the agent's session as a new message, and the agent will see it on its very next turn.
@@ -243,14 +297,17 @@ Each agent has persona files that define its voice, knowledge, and objectives:
 
 The orchestrator reads `SOUL.md` and `USER.md` at session start to establish its voice. Everything else is loaded on demand.
 
-## Migration from OpenClaw
+## Migration
 
 ```bash
-metasphere migrate detect          # Check what will be migrated
-metasphere migrate run             # Migrate everything
+metasphere migrate-project-dirs                  # Dry-run: show the plan
+metasphere migrate-project-dirs --apply          # Move all per-project dirs
+metasphere migrate-project-dirs --what tasks --apply       # Tasks only
+metasphere migrate-project-dirs --what messages --apply    # Messages only
+metasphere migrate-project-dirs --project <name> --apply   # One project
 ```
 
-Migrates: Telegram bot token, SOUL.md, memory files, and session history.
+The migration moves legacy in-repo per-project state — `<repo>/.tasks/`, `<repo>/.messages/`, `<repo>/.changelog/`, `<repo>/.learnings/` — into the canonical per-project home at `~/.metasphere/projects/<name>/`. Idempotent; refuses on conflict (both legacy and canonical non-empty) so you can resolve manually. See [Architecture](#architecture) for the full canonical layout.
 
 ## License
 
