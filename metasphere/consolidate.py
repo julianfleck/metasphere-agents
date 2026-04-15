@@ -419,6 +419,39 @@ def _last_update_line(body: str) -> str:
     return lines[-1].lstrip("- ").strip() if lines else ""
 
 
+def _route_ping_target(task: _tasks.Task, paths: Paths) -> str:
+    """Resolve the preferred recipient for a stale-task ``!query``.
+
+    Per Julian 2026-04-15T08:55Z: route to the project's lead first so
+    external collaborators don't spam Julian's view with pings for
+    worldwire tasks he doesn't own. Falls back to the task's
+    ``assigned_to`` only when the project has no lead (or no
+    project at all).
+
+    Order:
+      1. ``@<project>-lead`` if a member with that literal id exists
+      2. first member with role == "lead"
+      3. ``task.assignee`` (pre-PR #11 behavior)
+    """
+    if not task.project:
+        return task.assignee
+    try:
+        from .project import Project
+        proj = Project.for_name(task.project, paths)
+    except Exception:
+        return task.assignee
+    if proj is None:
+        return task.assignee
+    lead_id = f"@{task.project}-lead"
+    for m in proj.members:
+        if m.id == lead_id:
+            return m.id
+    for m in proj.members:
+        if getattr(m, "role", "") == "lead":
+            return m.id
+    return task.assignee
+
+
 def ping_persistent_agent(
     task: _tasks.Task,
     project_root: Path,
@@ -426,21 +459,26 @@ def ping_persistent_agent(
     *,
     sender: Callable[..., object] | None = None,
 ) -> dict:
-    """Send a ``!query`` status-check to the task's assignee."""
+    """Send a ``!query`` status-check.
+
+    Routes to the project's lead when one is registered (see
+    :func:`_route_ping_target`), otherwise the task's assignee.
+    """
     sender = sender or _default_sender()
+    target = _route_ping_target(task, paths)
     body = (
         f"status check on {task.id}: still working, done, blocked, or paused?\n"
         f"title: {task.title}\n"
         f"last update: {_last_update_line(task.body) or '(none)'}"
     )
     try:
-        sender(task.assignee, "!query", body, "@consolidate", paths=paths)
+        sender(target, "!query", body, "@consolidate", paths=paths)
         delivered = True
     except Exception as e:  # pragma: no cover - defensive
         delivered = False
         body = f"error: {e}"
     _bump_ping(task, project_root)
-    return {"action": "pinged", "target": task.assignee, "delivered": delivered}
+    return {"action": "pinged", "target": target, "delivered": delivered}
 
 
 def escalate_to_orchestrator(

@@ -206,6 +206,64 @@ def test_ping_persistent_agent_sends_query(repo, tmp_paths):
     assert sender.calls[0]["label"] == "!query"
     assert t.id in sender.calls[0]["body"]
 
+
+def test_ping_routes_to_project_lead_before_assignee(repo, tmp_paths):
+    """Julian 2026-04-15T08:55Z: when a task's project has a registered
+    lead, the stale-task !query routes to that lead, not the task's
+    ``assigned_to``. Otherwise external collaborators' tasks spam the
+    project owner.
+    """
+    import json as _json
+    _make_persistent(tmp_paths, "@julian")
+    _make_persistent(tmp_paths, "@worldwire-lead")
+
+    # Register "worldwire" with a lead member.
+    reg = _json.loads((tmp_paths.root / "projects.json").read_text())
+    reg.append({
+        "name": "worldwire", "path": str(repo) + "/ww",
+        "registered": "1970-01-01T00:00:00Z",
+    })
+    (tmp_paths.root / "projects.json").write_text(_json.dumps(reg))
+    pdir = tmp_paths.projects / "worldwire"
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "project.json").write_text(_json.dumps({
+        "schema": 2, "name": "worldwire", "path": str(repo) + "/ww",
+        "members": [{"id": "@worldwire-lead", "role": "lead", "persistent": True}],
+    }))
+
+    t = _create_task(repo, "ww task")
+    t = _tasks.start_task(t.id, "@julian", repo)
+    # Manually set project field on the task.
+    _tasks.update_task(t.id, repo, project="worldwire")
+    t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    t = _set_updated(t, _iso(60), repo)
+
+    sender = _FakeSender()
+    result = _con.apply_verdict(
+        t, _con.VERDICT_STALE, repo, tmp_paths, sender=sender
+    )
+    assert result["action"] == "pinged"
+    # Routed to lead, NOT @julian (the assignee).
+    assert result["target"] == "@worldwire-lead"
+    assert sender.calls[0]["target"] == "@worldwire-lead"
+
+
+def test_ping_falls_back_to_assignee_when_no_lead(repo, tmp_paths):
+    """No project OR no lead member → fall back to task.assignee."""
+    _make_persistent(tmp_paths, "@worker")
+    # No project registered with lead.
+    t = _create_task(repo, "leadless")
+    t = _tasks.start_task(t.id, "@worker", repo)
+    _tasks.update_task(t.id, repo, project="nonexistent-project")
+    t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    t = _set_updated(t, _iso(60), repo)
+
+    sender = _FakeSender()
+    result = _con.apply_verdict(
+        t, _con.VERDICT_STALE, repo, tmp_paths, sender=sender
+    )
+    assert result["target"] == "@worker"
+
     # ping_count bumped + last_pinged_at set
     reloaded = _tasks.Task.from_text(t.path.read_text(), path=t.path)
     assert reloaded.ping_count == 1
