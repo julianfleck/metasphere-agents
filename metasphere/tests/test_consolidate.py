@@ -684,9 +684,82 @@ def test_msg_classify_info_read_recent_is_active(repo, tmp_paths):
 
 
 def test_msg_classify_done_auto_archive(repo, tmp_paths):
+    """``!done`` notifications: terminal once aged past the auto-archive
+    window regardless of read status. Previously required STATUS_READ +
+    read_at — an unread !done would loop UNREAD-OLD→STALE forever.
+    Post-P2 → MSG_VERDICT_DONE (distinct terminal verdict).
+    """
     m_ = _send_msg(tmp_paths, "!done")
     m_ = _age_msg(m_, read_min_ago=120)
-    assert _con.classify_message(m_) == _con.MSG_VERDICT_INFO_AUTO_ARCHIVE
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_DONE
+
+
+def test_msg_classify_done_unread_still_terminal_after_window(repo, tmp_paths):
+    """Regression for the 2026-04-15 self-audit gap: an unread !done
+    notification — e.g. spawned by ``msg done`` when the original
+    sender never opens their inbox — must still terminate. Before P2,
+    it hit UNREAD-OLD → stale-pinged forever.
+    """
+    import datetime as _dt
+    m_ = _send_msg(tmp_paths, "!done")
+    # Crucially: NO read_at. Created 2 hours ago, never viewed.
+    old = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=120))
+    m_.created = old.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Write back so re-read gets the aged timestamp.
+    from metasphere.io import write_frontmatter_file
+    write_frontmatter_file(m_.path, m_.to_frontmatter())
+    m_ = _msgs.read_message(m_.path)
+    assert m_.status == _msgs.STATUS_UNREAD
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_DONE
+
+
+def test_msg_apply_done_verdict_archives(repo, tmp_paths):
+    """MSG-DONE handler archives like INFO-AUTO-ARCHIVE but with a
+    distinct 'done-auto-archive' reason in the event log.
+    """
+    m_ = _send_msg(tmp_paths, "!done")
+    m_ = _age_msg(m_, read_min_ago=120)
+    result = _con.apply_message_verdict(
+        m_, _con.MSG_VERDICT_DONE, tmp_paths,
+    )
+    assert result["action"].startswith("archived")
+    # Source file no longer in inbox/
+    assert not m_.path.exists()
+
+
+def test_msg_done_does_not_compound_over_simulated_24h(repo, tmp_paths):
+    """24h @ 5min cadence = 288 consolidate ticks. A single !done
+    notification must classify terminal ONCE and archive ONCE — not
+    spawn new escalation messages on every tick.
+
+    Before P2: every tick classified the unread !done as UNREAD-OLD
+    → generated a new escalation !query → that query itself became
+    stale → compounding. Now: first tick → MSG-DONE → archived,
+    zero follow-ups.
+    """
+    import datetime as _dt
+    m_ = _send_msg(tmp_paths, "!done")
+    old = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=120)
+    m_.created = old.strftime("%Y-%m-%dT%H:%M:%SZ")
+    from metasphere.io import write_frontmatter_file
+    write_frontmatter_file(m_.path, m_.to_frontmatter())
+
+    sender = _FakeSender()
+    archived_count = 0
+    for _ in range(288):  # simulated 24h @ 5min cadence
+        if not m_.path.exists():
+            break
+        m_ = _msgs.read_message(m_.path)
+        verdict = _con.classify_message(m_)
+        result = _con.apply_message_verdict(
+            m_, verdict, tmp_paths, sender=sender,
+        )
+        if result["action"].startswith("archived"):
+            archived_count += 1
+    assert archived_count == 1, "!done must terminate in exactly one tick"
+    assert sender.calls == [], (
+        f"!done must not spawn follow-up pings; got {len(sender.calls)} calls"
+    )
 
 
 def test_msg_classify_stale_nonpinned(repo, tmp_paths):
