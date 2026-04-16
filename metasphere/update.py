@@ -589,8 +589,15 @@ def run_update(
     pip_reinstalled = False
     if _has_python_changes(repo, old, new, runner):
         log("auto-update: python changes detected, re-installing package")
+        # --no-warn-script-location: pip prints a noisy warning when
+        # console_scripts land in a user-site bin dir that isn't on
+        # PATH. For metasphere that's expected — only the symlinked
+        # `metasphere` in `$METASPHERE_DIR/bin` needs to be on PATH
+        # (install.sh sets that up); the other pip-installed scripts
+        # are harmless. Suppress the noise.
         rc = (pip_runner or _default_pip_runner)([
             "-m", "pip", "install", "-e", str(repo), "--quiet",
+            "--no-warn-script-location",
         ])
         if rc != 0:
             reason = f"pip install -e exited rc={rc}"
