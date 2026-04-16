@@ -129,7 +129,22 @@ def _parse_scalar(v: str) -> Any:
         if not inner:
             return []
         return [_parse_scalar(p) for p in inner.split(",")]
-    if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+    # Double-quoted strings: decode via json.loads so escapes written by
+    # ``_format_scalar``'s json.dumps round-trip cleanly. Without this,
+    # read was asymmetric with write and each cycle doubled every
+    # backslash in the value (2026-04-16 P0: a task title containing a
+    # single ``\n`` grew to 2.6MB of backslashes after ~30 consolidate
+    # ticks because write kept escaping while read never un-escaped).
+    # Falls back to the old strip-quotes behavior for values that are
+    # json-invalid (e.g. bash-writer legacy output that predates this
+    # module's own serializer).
+    if v.startswith('"') and v.endswith('"'):
+        try:
+            return json.loads(v)
+        except (json.JSONDecodeError, ValueError):
+            return v[1:-1]
+    # Single-quoted strings: no escape semantics — strip quotes literally.
+    if v.startswith("'") and v.endswith("'"):
         return v[1:-1]
     if v.lower() in ("true", "false"):
         return v.lower() == "true"
