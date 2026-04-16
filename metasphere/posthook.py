@@ -454,7 +454,13 @@ def _check_deferred_command(agent: str, paths: Paths) -> None:
         from .agents import session_name_for
 
         session = session_name_for(agent)
-        submit_to_tmux(session, cmd)
+        # defer_if_busy=True: deferred-cmd injection is automatic;
+        # the marker stays around if we skip — next posthook tick
+        # re-checks. Wait, marker is unlinked above. So losing this
+        # tick drops the deferred-cmd. Acceptable: the cmd was already
+        # "deferred", and the human attached to the pane is the higher
+        # priority. Silent drop is fine.
+        submit_to_tmux(session, cmd, defer_if_busy=True)
     except Exception:  # noqa: BLE001
         pass
 

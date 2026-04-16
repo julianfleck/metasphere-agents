@@ -237,7 +237,11 @@ def _check_restart_marker(
         f"[session restarted] agent: {agent}, reason: {reason}. "
         "Check messages and tasks, resume where you left off."
     )
-    success = _submit("system", wake_msg, session=target_session)
+    # defer_if_busy=True: post-restart wakes are auto-fired. If a
+    # human is at the freshly-respawned pane and typing, drop this
+    # restart-wake — the next heartbeat will inject context anyway,
+    # so the agent still resumes; only the wake-msg phrasing is lost.
+    success = _submit("system", wake_msg, session=target_session, defer_if_busy=True)
 
     try:
         log_event(

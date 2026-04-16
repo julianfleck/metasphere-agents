@@ -267,7 +267,7 @@ def test_poll_once_routes_photo_through_shared_handler(tmp_path, monkeypatch):
     tmux_calls: list = []
     monkeypatch.setattr(
         _tg_inject, "submit_to_tmux",
-        lambda from_user, text, session="metasphere-orchestrator":
+        lambda from_user, text, session="metasphere-orchestrator", **kw:
             tmux_calls.append({"from": from_user, "text": text}) or True,
     )
 
@@ -334,7 +334,7 @@ def test_poll_once_does_not_drop_photo_only_messages(tmp_path, monkeypatch):
     tmux_calls: list = []
     monkeypatch.setattr(
         _tg_inject, "submit_to_tmux",
-        lambda fu, t, session="metasphere-orchestrator":
+        lambda fu, t, session="metasphere-orchestrator", **kw:
             tmux_calls.append({"from": fu, "text": t}) or True,
     )
 

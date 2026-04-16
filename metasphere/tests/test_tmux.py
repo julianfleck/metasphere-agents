@@ -138,3 +138,185 @@ def test_submit_to_tmux_never_raises(monkeypatch):
     assert T.submit_to_tmux("sess", "hello") is False
 
 
+# --- Layer 1: attach-aware injection ---------------------------------------
+#
+# 2026-04-16: Julian was typing into the attached orchestrator pane while a
+# heartbeat fired ``submit_to_tmux``; the heartbeat's send-keys interleaved
+# with his keystrokes and submitted the garbled mess. A fcntl lock cannot
+# help here — human keystrokes go via the tty, bypassing in-process locks.
+# Fix is upstream: detect attachment, defer auto-injections.
+
+
+def test_pane_has_human_client_true_when_clients_listed(monkeypatch):
+    def fake_run(argv, **kw):
+        if "list-clients" in argv:
+            return _fake_cp(stdout="/dev/pts/8\n")
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+    assert T.pane_has_human_client("sess") is True
+
+
+def test_pane_has_human_client_false_when_no_clients(monkeypatch):
+    def fake_run(argv, **kw):
+        if "list-clients" in argv:
+            return _fake_cp(stdout="")
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+    assert T.pane_has_human_client("sess") is False
+
+
+def test_pane_has_human_client_fails_open_on_tmux_error(monkeypatch):
+    """If tmux list-clients errors, return False (proceed). Better to
+    occasionally interleave than to silently drop every heartbeat when
+    tmux misbehaves."""
+    def fake_run(argv, **kw):
+        if "list-clients" in argv:
+            return _fake_cp(returncode=1, stdout="")
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+    assert T.pane_has_human_client("sess") is False
+
+
+def test_input_line_has_typing_detects_typed_content(monkeypatch):
+    def fake_run(argv, **kw):
+        if "capture-pane" in argv:
+            return _fake_cp(stdout="some output\n> the orchest\n")
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert T._input_line_has_typing("/usr/bin/tmux", "sess") is True
+
+
+def test_input_line_has_typing_false_for_bare_prompt(monkeypatch):
+    def fake_run(argv, **kw):
+        if "capture-pane" in argv:
+            return _fake_cp(stdout="some output\n>\n")
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert T._input_line_has_typing("/usr/bin/tmux", "sess") is False
+
+
+def test_input_line_has_typing_false_for_paste_placeholder(monkeypatch):
+    """A pre-existing ``[Pasted text #`` placeholder is something the
+    Escape×2 pre-clear handles — not typing. Must not abort."""
+    def fake_run(argv, **kw):
+        if "capture-pane" in argv:
+            return _fake_cp(stdout="> [Pasted text #4 +18 lines]\n")
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert T._input_line_has_typing("/usr/bin/tmux", "sess") is False
+
+
+def test_input_line_has_typing_strips_box_drawing_chars(monkeypatch):
+    """Claude TUI renders the input box with ``│`` borders; the prompt
+    detection must look inside the box, not at the border."""
+    def fake_run(argv, **kw):
+        if "capture-pane" in argv:
+            return _fake_cp(stdout="│ > some typing │\n")
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert T._input_line_has_typing("/usr/bin/tmux", "sess") is True
+
+
+def test_submit_defer_if_busy_skips_when_human_attached(monkeypatch):
+    """When ``defer_if_busy=True`` and a tty client is attached, abort
+    BEFORE firing any send-keys (no Escape, no typing, no Enter)."""
+    def fake_run(argv, **kw):
+        if "has-session" in argv:
+            return _fake_cp(returncode=0)
+        if "list-clients" in argv:
+            return _fake_cp(stdout="/dev/pts/8\n")
+        if "capture-pane" in argv:
+            return _fake_cp(stdout="")
+        return _fake_cp(returncode=0)
+
+    calls: list[list[str]] = []
+    orig = fake_run
+
+    def recording(argv, **kw):
+        calls.append(list(argv))
+        return orig(argv, **kw)
+
+    monkeypatch.setattr("subprocess.run", recording)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+    assert T.submit_to_tmux("sess", "hello", defer_if_busy=True) is False
+
+    sendkeys = [c for c in calls if "send-keys" in c]
+    assert sendkeys == [], (
+        f"deferred submit must not fire any send-keys, got: {sendkeys}"
+    )
+
+
+def test_submit_defer_if_busy_skips_when_input_has_typing(monkeypatch):
+    """When ``defer_if_busy=True`` and the input area shows typed
+    content, abort BEFORE firing any send-keys."""
+    def fake_run(argv, **kw):
+        if "has-session" in argv:
+            return _fake_cp(returncode=0)
+        if "list-clients" in argv:
+            return _fake_cp(stdout="")
+        if "capture-pane" in argv:
+            return _fake_cp(stdout="> mid-typing-text\n")
+        return _fake_cp(returncode=0)
+
+    calls: list[list[str]] = []
+
+    def recording(argv, **kw):
+        calls.append(list(argv))
+        return fake_run(argv, **kw)
+
+    monkeypatch.setattr("subprocess.run", recording)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+    assert T.submit_to_tmux("sess", "hello", defer_if_busy=True) is False
+
+    sendkeys = [c for c in calls if "send-keys" in c]
+    assert sendkeys == [], (
+        f"deferred submit must not fire any send-keys, got: {sendkeys}"
+    )
+
+
+def test_submit_defer_if_busy_proceeds_when_clean(monkeypatch):
+    """When ``defer_if_busy=True`` but no client and no typing, the
+    submit proceeds normally (Escape×2, type, Enter)."""
+    calls = _capture_calls(monkeypatch)
+    assert T.submit_to_tmux("sess", "hello", defer_if_busy=True) is True
+    sendkeys = [c for c in calls if "send-keys" in c]
+    assert sendkeys, "expected send-keys to fire on clean pane"
+    assert any("-l" in c for c in sendkeys), "expected literal typing"
+
+
+def test_submit_defer_if_busy_default_false_ignores_attach(monkeypatch):
+    """Manual CLI paths use the default ``defer_if_busy=False``; these
+    must NOT skip when a client happens to be attached."""
+    def fake_run(argv, **kw):
+        if "has-session" in argv:
+            return _fake_cp(returncode=0)
+        if "list-clients" in argv:
+            return _fake_cp(stdout="/dev/pts/8\n")
+        if "capture-pane" in argv:
+            return _fake_cp(stdout="> mid-typing\n")
+        return _fake_cp(returncode=0)
+
+    calls: list[list[str]] = []
+
+    def recording(argv, **kw):
+        calls.append(list(argv))
+        return fake_run(argv, **kw)
+
+    monkeypatch.setattr("subprocess.run", recording)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+    # Default — no defer. Must proceed despite the attach.
+    assert T.submit_to_tmux("sess", "hello") is True
+    sendkeys = [c for c in calls if "send-keys" in c]
+    assert sendkeys, "manual submit must not be skipped by attach detection"
+
+

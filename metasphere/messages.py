@@ -706,7 +706,10 @@ def wake_recipient_if_live(
     notice = f"[wake] new {label} from {from_agent}: {body_preview}"
 
     try:
-        _tmux_submit(session, notice)
+        # defer_if_busy=True: agent-to-agent wakes are auto-fired,
+        # they'll re-trigger on the next message; never interleave
+        # with a human typing into the target pane.
+        _tmux_submit(session, notice, defer_if_busy=True)
     except Exception:
         pass
 

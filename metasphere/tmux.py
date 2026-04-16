@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 import time
 
 
@@ -34,6 +35,77 @@ def _has_session(tmux: str, session: str) -> bool:
             check=False,
         )
         return r.returncode == 0
+    except OSError:
+        return False
+
+
+def pane_has_human_client(session: str) -> bool:
+    """Return True if a tty client is attached to *session*.
+
+    2026-04-16: Julian was typing into the attached orchestrator pane
+    when a heartbeat fired ``submit_to_tmux``; the heartbeat's send-keys
+    interleaved with his keystrokes and submitted the garbled mess. A
+    fcntl writer-lock cannot help here — the human's keystrokes go via
+    the tty, not via send-keys, so they bypass any in-process lock.
+    The fix is upstream: detect attachment and defer auto-injections.
+
+    Uses ``tmux list-clients -t <session> -F '#{client_tty}'``. Empty
+    stdout = no clients attached. Fails open (returns False on any
+    tmux error) — better to occasionally interleave than silently drop
+    every heartbeat when tmux misbehaves.
+    """
+    tmux = _find_tmux()
+    if not tmux:
+        return False
+    try:
+        r = subprocess.run(
+            [tmux, "list-clients", "-t", session, "-F", "#{client_tty}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if r.returncode != 0:
+            return False
+        return bool(r.stdout.strip())
+    except OSError:
+        return False
+
+
+def _input_line_has_typing(tmux: str, session: str) -> bool:
+    """Inspect the pane and return True if the input box shows
+    user-typed content (mid-typing).
+
+    Heuristic: capture-pane, walk back through the last visible lines
+    looking for a Claude TUI prompt (``>`` after stripping any
+    box-drawing border chars). If the content after ``>`` is empty
+    whitespace OR is a known ``[Pasted text #`` placeholder, the input
+    is "ours to use"; anything else means a human is mid-typing and we
+    must defer rather than blow their input away with our own typing
+    or with the Escape×2 pre-clear.
+
+    Fails open on any error.
+    """
+    try:
+        r = subprocess.run(
+            [tmux, "capture-pane", "-p", "-t", session],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if r.returncode != 0:
+            return False
+        lines = r.stdout.splitlines()
+        for line in reversed(lines[-10:]):
+            inner = line.strip().lstrip("│|").rstrip("│|").strip()
+            if not inner.startswith(">"):
+                continue
+            after = inner[1:].strip()
+            if not after:
+                return False
+            if "[Pasted text #" in after:
+                return False
+            return True
+        return False
     except OSError:
         return False
 
@@ -60,7 +132,9 @@ def _has_pending_paste(tmux: str, session: str) -> bool:
         return False
 
 
-def submit_to_tmux(session: str, message: str) -> bool:
+def submit_to_tmux(
+    session: str, message: str, *, defer_if_busy: bool = False
+) -> bool:
     """Deliver *message* to a claude TUI in tmux session *session*.
 
     Strategy: split on newlines, send each line via ``tmux send-keys -l``
@@ -70,6 +144,14 @@ def submit_to_tmux(session: str, message: str) -> bool:
     retries Enter up to 3 times if one is found.
 
     Returns True on success, False on any failure. Never raises.
+
+    If *defer_if_busy* is True, abort (returning False, no send-keys
+    fired) when either a tty client is attached to the session or the
+    input box already has user-typed content. Auto-injectors
+    (heartbeat, agent-to-agent wakes, telegram inject, posthook
+    deferred-cmd, restart-wake) opt in; manual CLI paths leave it off
+    so a user-initiated send still goes through even with the user at
+    the pane. See ``pane_has_human_client`` for the full background.
     """
     try:
         tmux = _find_tmux()
@@ -78,6 +160,20 @@ def submit_to_tmux(session: str, message: str) -> bool:
 
         if not _has_session(tmux, session):
             return False
+
+        if defer_if_busy:
+            if pane_has_human_client(session):
+                print(
+                    f"[tmux.submit] defer: human attached to {session}",
+                    file=sys.stderr,
+                )
+                return False
+            if _input_line_has_typing(tmux, session):
+                print(
+                    f"[tmux.submit] defer: input has typing in {session}",
+                    file=sys.stderr,
+                )
+                return False
 
         # Pre-emptive Escape × 2: clears any ``[Pasted text #N``
         # placeholder left over from a prior wake that didn't fully
