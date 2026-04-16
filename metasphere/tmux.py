@@ -201,10 +201,22 @@ def submit_to_tmux(
         )
         time.sleep(0.4)
 
-        # Belt-and-suspenders: retry Enter if a stale placeholder is
-        # visible (e.g. from a prior buggy injection).
+        # Retry Enter if the submit didn't actually land. TWO
+        # independent "still-not-submitted" signals:
+        #   (a) a ``[Pasted text #N`` placeholder is visible (the old
+        #       bracketed-paste path — stale from a prior inject or
+        #       from our own Escape×2 prefix racing paste-mode).
+        #   (b) our typed text is still visible in the input box (the
+        #       ``send-keys -l`` literal path — Claude TUI sometimes
+        #       eats the first Enter due to a post-Escape modal, an
+        #       autocomplete popup, or a paste-buffer commit race).
+        # Without (b) the retry loop saw "no placeholder" and returned
+        # True while the text sat typed-but-unsubmitted — the 2026-04-16
+        # P0 telegram-inbound / wake-Enter race. Function was silently
+        # lying about success.
         for _ in range(3):
-            if not _has_pending_paste(tmux, session):
+            if (not _has_pending_paste(tmux, session)
+                    and not _input_line_has_typing(tmux, session)):
                 return True
             subprocess.run(
                 [tmux, "send-keys", "-t", session, "Enter"],
@@ -214,12 +226,14 @@ def submit_to_tmux(
             )
             time.sleep(0.4)
 
-        # Enter-retry exhausted and placeholder is still visible. One
+        # Enter-retry exhausted and the input is still dirty. One
         # last aggressive attempt: Escape to cancel whatever is pending.
         # Better to drop the current submission than to stack yet
-        # another paste for future callers to trip on (the accumulation
-        # pattern that caused the 2026-04-16 research-monitor outage).
-        if _has_pending_paste(tmux, session):
+        # another paste/typed-text for future callers to trip on (the
+        # accumulation pattern that caused the 2026-04-16 research-
+        # monitor outage).
+        if (_has_pending_paste(tmux, session)
+                or _input_line_has_typing(tmux, session)):
             subprocess.run(
                 [tmux, "send-keys", "-t", session, "Escape", "Escape"],
                 stdout=subprocess.DEVNULL,
@@ -228,8 +242,9 @@ def submit_to_tmux(
             )
             time.sleep(0.2)
 
-        # Final check after retries
-        return not _has_pending_paste(tmux, session)
+        # Final check after retries — both signals must be clean.
+        return (not _has_pending_paste(tmux, session)
+                and not _input_line_has_typing(tmux, session))
 
     except Exception:
         return False
