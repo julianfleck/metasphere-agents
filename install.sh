@@ -89,6 +89,29 @@ check_dependencies() {
         err "curl required"
     fi
 
+    # python3 + python3-venv (for $METASPHERE_DIR/venv). On Debian/
+    # Ubuntu, the `ensurepip` module ships separately via python3-venv,
+    # so `python3 -m venv` fails on minimal installs even though
+    # python3 itself is present.
+    if ! command -v python3 &>/dev/null; then
+        err "python3 required"
+    fi
+    if ! python3 -c "import ensurepip" &>/dev/null; then
+        err_no_exit "python3-venv not available — metasphere needs it for its dedicated venv"
+        local py_minor
+        py_minor=$(python3 -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || echo "")
+        echo "    On Debian/Ubuntu:"
+        if [[ -n "$py_minor" ]]; then
+            echo "      sudo apt install python3-venv python3.${py_minor}-venv"
+        else
+            echo "      sudo apt install python3-venv"
+        fi
+        echo "    On Alpine: apk add py3-virtualenv"
+        echo "    Then re-run this installer."
+        exit 1
+    fi
+    ok "python3 + python3-venv"
+
     # Claude Code CLI
     if command -v claude &>/dev/null; then
         local claude_version=$(claude --version 2>/dev/null | head -1 || echo "unknown")
