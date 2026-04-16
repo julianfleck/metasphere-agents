@@ -193,3 +193,157 @@ def test_build_context_empty_state_does_not_crash(tmp_paths: Paths):
     assert "## Tasks" in out
     assert "## Recent Events" in out
     assert "## Memory Context (FTS)" in out
+
+
+# --- Memory FTS: CAM wiring + query variance (2026-04-17) ------------------
+
+
+def test_render_memory_fts_uses_cam_when_available(tmp_paths: Paths, monkeypatch):
+    """When CamStrategy returns hits, they appear first in the output.
+    TokenOverlapStrategy hits appear as fallback after cam hits."""
+    from metasphere.memory.base import MemoryHit
+
+    cam_hits = [MemoryHit(source="cam-session/test.md", score=0.95,
+                           excerpt="CAM result about foo")]
+    fts_hits = [MemoryHit(source="docs/fallback.md", score=0.80,
+                           excerpt="FTS fallback result")]
+
+    # Monkeypatch the strategies so no real cam/fts runs
+    monkeypatch.setattr(
+        "metasphere.memory.api.recall",
+        lambda query, limit=10, strategies=None: cam_hits + fts_hits,
+    )
+    out = ctx._render_memory_fts(tmp_paths, "@test")
+    assert "## Memory Context (FTS)" in out
+    assert "cam-session/test.md" in out
+    # CAM hit appears before FTS hit
+    cam_pos = out.find("cam-session/test.md")
+    fts_pos = out.find("docs/fallback.md")
+    assert cam_pos < fts_pos
+
+
+def test_render_memory_fts_falls_back_on_cam_failure(tmp_paths: Paths, monkeypatch):
+    """When CamStrategy returns nothing (missing binary / timeout), the
+    output still has token-overlap hits."""
+    from metasphere.memory.base import MemoryHit
+
+    fts_hits = [MemoryHit(source="docs/only-fts.md", score=0.7,
+                           excerpt="Token overlap found this")]
+    monkeypatch.setattr(
+        "metasphere.memory.api.recall",
+        lambda query, limit=10, strategies=None: fts_hits,
+    )
+    out = ctx._render_memory_fts(tmp_paths, "@test")
+    assert "docs/only-fts.md" in out
+    assert "Token overlap found this" in out
+
+
+# --- Last-edited files section (2026-04-17) ---------------------------------
+
+
+def test_last_edited_files_excludes_noise(tmp_path, monkeypatch):
+    """Noise dirs (__pycache__, .git, node_modules, .venv) are excluded
+    from the last-edited listing."""
+    from metasphere import project as _project
+
+    proj_path = tmp_path / "myproject"
+    proj_path.mkdir()
+
+    # Real files
+    (proj_path / "src").mkdir()
+    (proj_path / "src" / "main.py").write_text("code")
+    (proj_path / "README.md").write_text("readme")
+
+    # Noise files
+    (proj_path / "__pycache__").mkdir()
+    (proj_path / "__pycache__" / "mod.cpython-311.pyc").write_bytes(b"noise")
+    (proj_path / ".git").mkdir()
+    (proj_path / ".git" / "HEAD").write_text("ref: refs/heads/main")
+    (proj_path / "node_modules").mkdir()
+    (proj_path / "node_modules" / "pkg.js").write_text("js")
+
+    # Mock project resolution
+    from types import SimpleNamespace
+    fake_proj = SimpleNamespace(path=str(proj_path), name="myproject")
+    monkeypatch.setattr(
+        _project, "project_for_scope",
+        lambda scope, paths=None: fake_proj,
+    )
+
+    from metasphere.paths import Paths
+    paths = Paths(
+        root=tmp_path / ".metasphere",
+        scope=proj_path,
+        project_root=proj_path,
+    )
+    (paths.root / "agents" / "@test").mkdir(parents=True)
+
+    out = ctx._render_last_edited_files(paths)
+    assert "main.py" in out
+    assert "README.md" in out
+    assert "__pycache__" not in out
+    assert ".git" not in out
+    assert "node_modules" not in out
+
+
+def test_last_edited_files_respects_10_cap(tmp_path, monkeypatch):
+    """Only the 10 most recently edited files are shown, even if more
+    exist."""
+    from metasphere import project as _project
+
+    proj_path = tmp_path / "proj"
+    proj_path.mkdir()
+    for i in range(20):
+        (proj_path / f"file_{i:02d}.txt").write_text(f"content {i}")
+
+    from types import SimpleNamespace
+    monkeypatch.setattr(
+        _project, "project_for_scope",
+        lambda scope, paths=None: SimpleNamespace(path=str(proj_path), name="proj"),
+    )
+
+    from metasphere.paths import Paths
+    paths = Paths(
+        root=tmp_path / ".metasphere",
+        scope=proj_path,
+        project_root=proj_path,
+    )
+    (paths.root / "agents" / "@test").mkdir(parents=True)
+
+    out = ctx._render_last_edited_files(paths)
+    # Count file lines (each starts with 2 spaces)
+    file_lines = [l for l in out.splitlines() if l.startswith("  ")]
+    assert len(file_lines) == 10
+
+
+def test_render_project_includes_timestamps(tmp_paths: Paths, monkeypatch):
+    """The project section's Recent: line includes a UTC timestamp
+    when a last commit is available."""
+    from metasphere import project as _project
+    from types import SimpleNamespace
+
+    proj_path = tmp_paths.scope
+    # Create .git dir so the git-log branch fires
+    (proj_path / ".git").mkdir(exist_ok=True)
+    fake_proj = SimpleNamespace(
+        path=str(proj_path), name="test-proj", goal="test goal",
+        members=[], status="active",
+    )
+    monkeypatch.setattr(
+        _project, "project_for_scope",
+        lambda scope, paths=None: fake_proj,
+    )
+    # Simulate git log returning subject|timestamp
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *a, **kw: SimpleNamespace(
+            returncode=0,
+            stdout="fix: something|2026-04-16T20:00:00+00:00\n",
+        ) if "git" in str(a) else SimpleNamespace(returncode=1, stdout=""),
+    )
+
+    out = ctx._render_project(tmp_paths)
+    assert "Scope:" in out
+    assert "Recent:" in out
+    # Timestamp from commit should be present
+    assert "2026-04-16T20:00" in out
