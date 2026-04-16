@@ -23,7 +23,7 @@ from . import api, archiver, attachments, commands, inject, poller
 # monkeypatching module-globals.
 Sender = Callable[..., object]
 Reactor = Callable[..., object]
-TmuxSubmit = Callable[[str, str], bool]
+TmuxSubmit = Callable[..., bool]
 ChatIdSaver = Callable[[int], None]
 PendingAckWriter = Callable[[int, int], None]
 
@@ -206,4 +206,7 @@ def handle_update(
         except Exception:
             pass
 
-    tmux_submit(f"@{u.from_username or 'user'}", payload)
+    # defer_if_busy=True: telegram bot loop is auto-driven; if a human
+    # is typing directly into the attached pane, defer the inject
+    # rather than interleave (the 2026-04-16 bug).
+    tmux_submit(f"@{u.from_username or 'user'}", payload, defer_if_busy=True)

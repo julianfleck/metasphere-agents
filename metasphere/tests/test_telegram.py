@@ -720,7 +720,7 @@ def _patch_handle_update(monkeypatch, tmp_path):
 
     tmux_log: list = []
 
-    def fake_submit_to_tmux(from_user, text, session="metasphere-orchestrator"):
+    def fake_submit_to_tmux(from_user, text, session="metasphere-orchestrator", **kwargs):
         tmux_log.append({"from": from_user, "text": text, "session": session})
         return True
 
@@ -826,7 +826,7 @@ def test_handle_update_download_failure_still_injects_note(tmp_path, monkeypatch
 
     tmux_log: list = []
 
-    def fake_submit(from_user, text, session="metasphere-orchestrator"):
+    def fake_submit(from_user, text, session="metasphere-orchestrator", **kwargs):
         tmux_log.append({"from": from_user, "text": text})
         return True
 
