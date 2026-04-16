@@ -347,6 +347,7 @@ def _render_memory_fts(paths: Paths, agent: str) -> str:
     turn-varying signal injected into the query so ranking shifts.
     """
     from .memory import (
+        AutoMemoryStrategy,
         CamStrategy,
         HybridStrategy,
         TokenOverlapStrategy,
@@ -375,8 +376,11 @@ def _render_memory_fts(paths: Paths, agent: str) -> str:
     query = " ".join(p for p in query_parts if p).replace("\n", " ")
     query = " ".join(query.split())[:300] or agent
 
-    # CAM primary (fast=True, 2s timeout), token-overlap as fallback.
+    # Auto-memory first (orchestrator's curated MEMORY.md memos —
+    # highest signal, pure Python, fast), then CAM (historical Claude
+    # session transcripts), then token-overlap as final fallback.
     strategies = [HybridStrategy([
+        AutoMemoryStrategy(),
         CamStrategy(fast=True, timeout=2.0),
         TokenOverlapStrategy(paths),
     ])]
