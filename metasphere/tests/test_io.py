@@ -124,3 +124,77 @@ def test_frontmatter_sigil_roundtrip(tmp_path):
     assert fm2.meta["created_by"] == "@alice"
     assert fm2.meta["priority"] == "!high"
     assert fm2.meta["status"] == "pending"
+
+
+# --- Escape-doubling regression (P0 2026-04-16) ----------------------------
+#
+# A task titled "Sunset /projects/writing-openclaw/ — Julian directive.\n
+# FACTS:\n..." grew to 2.6MB of backslashes after ~30 consolidate ticks.
+# Root cause: _format_scalar used json.dumps to write strings with
+# "needs quoting" chars, but _parse_scalar stripped the outer quotes
+# WITHOUT running json.loads — so each write-read-write cycle doubled
+# every backslash. The fix makes _parse_scalar symmetric: json.loads
+# on double-quoted values, with a bare-strip fallback for JSON-invalid
+# legacy content.
+
+
+def test_frontmatter_roundtrip_stable_with_embedded_newline(tmp_path):
+    """A title with an embedded \\n round-trips byte-stable after
+    N iterations — no escape-doubling. Allows one body-newline
+    normalization on the first tick, then requires strict stability.
+    """
+    p = tmp_path / "task.md"
+    title = "Sunset project — multi-line.\nFACTS:\n- one\n- two"
+    fm = io.Frontmatter(meta={"id": "t1", "title": title}, body="body\n")
+
+    sizes: list[int] = []
+    for _ in range(10):
+        io.write_frontmatter_file(p, fm)
+        text = p.read_text()
+        sizes.append(len(text))
+        fm = io.parse_frontmatter(text)
+
+    # From tick 1 onward the file size MUST be stable — that is the
+    # escape-doubling invariant. (Tick 0 may differ by a one-shot body
+    # newline normalization that's orthogonal to this bug.)
+    assert len(set(sizes[1:])) == 1, (
+        f"frontmatter size unstable from tick 1: {sizes} "
+        f"(escape-doubling regression)"
+    )
+    # And the title still equals the original after 10 round-trips.
+    assert fm.meta["title"] == title
+
+
+def test_frontmatter_roundtrip_stable_with_backslash_and_unicode(tmp_path):
+    """Belt-and-suspenders: literal backslashes, quotes, and non-ASCII
+    chars all round-trip byte-stable.
+    """
+    p = tmp_path / "task.md"
+    title = r'Windows path C:\Users\foo with "quotes" and em — dash and \u2014'
+    fm = io.Frontmatter(meta={"id": "t1", "title": title}, body="body\n")
+
+    sizes: list[int] = []
+    for _ in range(6):
+        io.write_frontmatter_file(p, fm)
+        text = p.read_text()
+        sizes.append(len(text))
+        fm = io.parse_frontmatter(text)
+
+    # After the first write the size may or may not match the literal
+    # source, but all subsequent writes must be stable (no doubling).
+    assert len(set(sizes[1:])) == 1, f"unstable round-trip: {sizes}"
+    assert fm.meta["title"] == title
+
+
+def test_frontmatter_bare_backslash_legacy_fallback(tmp_path):
+    """Double-quoted values that are json-INVALID (e.g. a stray bare
+    backslash from a bash-writer predecessor) must not raise — they
+    fall back to the old strip-quotes behavior so we don't regress on
+    existing on-disk content."""
+    p = tmp_path / "task.md"
+    # This is intentionally json-invalid: a lone backslash inside
+    # double quotes is an illegal escape sequence.
+    p.write_text('---\nid: t1\ntitle: "hello\\world"\n---\nbody\n')
+    fm = io.read_frontmatter_file(p)
+    # Fallback behavior: outer quotes stripped, content preserved.
+    assert fm.meta["title"] == r"hello\world"
