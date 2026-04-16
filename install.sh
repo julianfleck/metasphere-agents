@@ -163,39 +163,29 @@ check_dependencies() {
         ok "CAM installed"
     fi
 
-    # systemd (user instance) — required for the gateway/heartbeat/schedule
-    # daemons to auto-start and survive reboots. Minimal containers (bare
-    # Docker images without --init, WSL-without-systemd, etc.) ship
-    # without a user systemd session; metasphere would install the unit
-    # files but nothing would ever start them.
+    # systemd (user instance) — preferred for the gateway/heartbeat/schedule
+    # daemons since it gives them auto-restart and boot persistence. When
+    # unavailable (Docker minimal image, Alpine, WSL without systemd, or
+    # an install run as root with no user session), we fall back to
+    # nohup+disown launch. Daemons still work but don't auto-restart on
+    # reboot and die when the launching shell exits.
+    #
+    # ``METASPHERE_NO_SYSTEMD`` is exported for ``setup_daemon_linux`` so
+    # it picks the right branch.
     if [[ -n "${METASPHERE_SKIP_SYSTEMD:-}" ]]; then
         warn "systemd check skipped (METASPHERE_SKIP_SYSTEMD set)"
-        echo "    You MUST launch metasphere-gateway/heartbeat/schedule manually."
+        export METASPHERE_NO_SYSTEMD=1
     elif ! command -v systemctl &>/dev/null; then
-        err_no_exit "systemctl not found — metasphere needs systemd for its daemons"
-        echo "    Common causes: running inside a minimal Docker image, Alpine Linux,"
-        echo "    WSL without systemd support, or a distro without systemd."
-        echo
-        echo "    Options:"
-        echo "      1. Re-run in an environment with systemd (most Linux VMs / hosts)."
-        echo "      2. Run with METASPHERE_SKIP_SYSTEMD=1 to install files anyway;"
-        echo "         you'll have to launch the daemons manually and they won't"
-        echo "         survive container restarts."
-        exit 1
+        warn "systemctl not found — using nohup fallback for daemons"
+        echo "    Daemons won't auto-start on reboot. On a host with systemd"
+        echo "    (most Linux VMs), install.sh will pick it up automatically."
+        export METASPHERE_NO_SYSTEMD=1
     elif ! systemctl --user list-units &>/dev/null; then
-        err_no_exit "systemctl --user is not responsive"
-        echo "    systemd is installed but the user-level instance isn't running."
-        echo "    Typical cause: running inside a container where PID 1 isn't"
-        echo "    systemd, or a user session without linger enabled."
-        echo
-        echo "    Options:"
-        echo "      1. Enable user lingering (on a host with systemd):"
+        warn "systemctl --user isn't responsive — using nohup fallback"
+        echo "    If you want auto-restart: enable user lingering as root —"
         echo "         sudo loginctl enable-linger \$(whoami)"
-        echo "         Then log out and back in, and re-run this installer."
-        echo "      2. Re-run on a host where systemd is PID 1 (most Linux VMs)."
-        echo "      3. Run with METASPHERE_SKIP_SYSTEMD=1 to install files anyway;"
-        echo "         daemons will not auto-start."
-        exit 1
+        echo "    then log out, log back in, and re-run this installer."
+        export METASPHERE_NO_SYSTEMD=1
     else
         ok "systemd (user instance available)"
     fi
@@ -961,6 +951,41 @@ EOF
 }
 
 setup_daemon_linux() {
+    # Fallback path when preflight decided systemd isn't available.
+    # Daemons launch via nohup+disown. No auto-restart, no boot
+    # persistence — but the telegram bridge and heartbeat still work
+    # for the current session. Re-running install.sh on a host with
+    # systemd later will switch to the proper service mode.
+    if [[ -n "${METASPHERE_NO_SYSTEMD:-}" ]]; then
+        info "Starting daemons (nohup fallback, no auto-restart)..."
+        mkdir -p "$METASPHERE_DIR/logs"
+        # Kill any existing metasphere.cli daemon processes from a
+        # previous run, then start fresh. Safe because we own them all
+        # (same user).
+        pkill -u "$(whoami)" -f 'metasphere\.cli\.(gateway|heartbeat|schedule) daemon' 2>/dev/null || true
+        sleep 1
+        local mbin="$METASPHERE_DIR/bin/metasphere"
+        for d in gateway heartbeat schedule; do
+            if [[ "$d" == "gateway" ]]; then
+                nohup "$mbin" gateway daemon 3 \
+                    > "$METASPHERE_DIR/logs/gateway.log" 2>&1 &
+            else
+                nohup "$mbin" "$d" daemon \
+                    > "$METASPHERE_DIR/logs/$d.log" 2>&1 &
+            fi
+            disown
+        done
+        sleep 2
+        if pgrep -u "$(whoami)" -f 'metasphere\.cli\.gateway daemon' >/dev/null; then
+            ok "Daemons running (nohup). They'll die if you log out."
+            echo "    Re-run install.sh on a host with systemd for proper"
+            echo "    service management, or enable linger as described above."
+        else
+            warn "Daemons didn't come up — check $METASPHERE_DIR/logs/*.log"
+        fi
+        return 0
+    fi
+
     local service_dir="$HOME/.config/systemd/user"
     local service_file="$service_dir/metasphere.service"
 
