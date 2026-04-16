@@ -337,18 +337,25 @@ def _render_directives(paths: Paths) -> str:
 
 
 def _render_memory_fts(paths: Paths, agent: str) -> str:
-    """Pull the memory section from ``metasphere.memory.context_for``.
+    """Pull the memory section using CAM (primary) + token-overlap (fallback).
 
-    Replaces the previous shell-out to ``scripts/metasphere-fts``. The
-    memory module owns strategy selection (cam + token-overlap by
-    default) so this renderer just builds the query and formats.
+    Replaced the token-overlap-only path on 2026-04-17 because the
+    near-static query (task file + project name) produced identical
+    results every turn — Julian flagged the "noise" at 22:16Z.
+
+    Now: HybridStrategy(CamStrategy + TokenOverlapStrategy) with a
+    turn-varying signal injected into the query so ranking shifts.
     """
-    from .memory import TokenOverlapStrategy, context_for as _memory_context_for
+    from .memory import (
+        CamStrategy,
+        HybridStrategy,
+        TokenOverlapStrategy,
+        context_for as _memory_context_for,
+    )
 
     out = ["## Memory Context (FTS)"]
 
-    # Build query from the agent's task file + repo basename, mirroring the
-    # original bash hook.
+    # Build query: static stem (task + project) + fresh signal (last event)
     task_file = paths.agent_dir(agent) / "task"
     query_parts: list[str] = []
     if task_file.is_file():
@@ -357,19 +364,46 @@ def _render_memory_fts(paths: Paths, agent: str) -> str:
         except OSError:
             pass
     query_parts.append(paths.project_root.name)
-    query = " ".join(p for p in query_parts if p).replace("\n", " ")
-    query = " ".join(query.split())[:200] or agent
 
-    # Use the stdlib token-overlap strategy directly so per-turn context
-    # build never shells out (no cam latency, no missing-binary noise).
-    # Callers wanting cam/hybrid recall use `metasphere memory context`.
+    # Fresh signal: most recent event message. This ensures the query
+    # varies turn-to-turn so memory recall shifts with the agent's
+    # recent activity rather than returning the same top-N every tick.
+    fresh = _latest_event_message(paths)
+    if fresh:
+        query_parts.append(fresh)
+
+    query = " ".join(p for p in query_parts if p).replace("\n", " ")
+    query = " ".join(query.split())[:300] or agent
+
+    # CAM primary (fast=True, 2s timeout), token-overlap as fallback.
+    strategies = [HybridStrategy([
+        CamStrategy(fast=True, timeout=2.0),
+        TokenOverlapStrategy(paths),
+    ])]
     body = _memory_context_for(
-        query, budget_chars=2048, strategies=[TokenOverlapStrategy(paths)]
+        query, budget_chars=2048, strategies=strategies,
     ).strip()
     if not body:
         body = "No relevant memory found."
     out.append(body)
     return "\n".join(out) + "\n"
+
+
+def _latest_event_message(paths: Paths) -> str:
+    """Return the message field of the most recent event, or ''."""
+    from . import events as _events
+    try:
+        tail = _events.tail_events(1, paths=paths)
+        if not tail or not tail.strip():
+            return ""
+        # tail_events returns "HH:MM:SSZ [type] @agent: message"
+        # Extract everything after the first ": " as the message
+        first_line = tail.strip().splitlines()[0]
+        if ": " in first_line:
+            return first_line.split(": ", 1)[1][:80]
+        return first_line[:80]
+    except Exception:
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -412,29 +446,103 @@ def _render_project(paths: Paths) -> str:
     else:
         out.append("Members: (none)")
 
-    # Recent activity: count of active tasks + last commit subject.
+    # Scope line: show the project path + whether the agent is inside it.
+    scope_inside = str(paths.scope).startswith(str(proj.path))
+    scope_label = "(active)" if scope_inside else "(external)"
+    out.append(f"Scope: {proj.path} {scope_label}")
+
+    # Recent activity: count of active tasks + last commit subject with
+    # timestamps so the agent can gauge freshness.
     from . import tasks as _tasks
     try:
         active = _tasks.list_tasks(Path(proj.path), paths.project_root,
                                    include_completed=False)
         task_n = len(active)
+        # Most recent task update timestamp
+        latest_update = ""
+        for t in active:
+            u = getattr(t, "updated", "") or ""
+            if u > latest_update:
+                latest_update = u
     except Exception:
         task_n = 0
+        latest_update = ""
     last_commit = ""
+    commit_ts = ""
     git_dir = Path(proj.path) / ".git"
     if git_dir.exists():
         try:
             res = subprocess.run(
-                ["git", "-C", proj.path, "log", "-1", "--pretty=%s"],
+                ["git", "-C", proj.path, "log", "-1",
+                 "--pretty=%s|%aI"],
                 capture_output=True, text=True, timeout=3, check=False,
             )
-            last_commit = res.stdout.strip().splitlines()[0] if res.stdout.strip() else ""
-        except (subprocess.SubprocessError, OSError):
+            parts = res.stdout.strip().splitlines()[0].rsplit("|", 1) if res.stdout.strip() else [""]
+            last_commit = parts[0]
+            commit_ts = parts[1] if len(parts) > 1 else ""
+        except (subprocess.SubprocessError, OSError, IndexError):
             pass
     activity = f"{task_n} tasks active"
+    if latest_update:
+        activity += f", latest task update: {latest_update[:16]}"
     if last_commit:
-        activity += f", last commit: {last_commit}"
+        ts_part = f" ({commit_ts[:16]})" if commit_ts else ""
+        activity += f", last commit: {last_commit}{ts_part}"
     out.append(f"Recent: {activity}")
+    return "\n".join(out) + "\n"
+
+
+_LAST_EDITED_NOISE = {
+    "__pycache__", ".git", ".venv", "node_modules", ".metasphere",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build",
+    ".egg-info", ".eggs",
+}
+_LAST_EDITED_LIMIT = 10
+
+
+def _render_last_edited_files(paths: Paths) -> str:
+    """Show the most recently modified files under the project scope.
+
+    Skipped when not inside a project (root-scope agents get no noise).
+    """
+    from . import project as _project
+
+    proj = _project.project_for_scope(paths.scope, paths=paths)
+    if proj is None or not proj.path:
+        return ""
+    proj_path = Path(proj.path)
+    if not proj_path.is_dir():
+        return ""
+
+    candidates: list[tuple[float, str]] = []
+    try:
+        for entry in proj_path.rglob("*"):
+            if not entry.is_file():
+                continue
+            # Skip noise directories
+            parts = entry.relative_to(proj_path).parts
+            if any(p in _LAST_EDITED_NOISE or p.endswith(".egg-info") for p in parts):
+                continue
+            try:
+                mtime = entry.stat().st_mtime
+            except OSError:
+                continue
+            rel = str(entry.relative_to(proj_path))
+            candidates.append((mtime, rel))
+    except OSError:
+        return ""
+
+    if not candidates:
+        return ""
+
+    candidates.sort(reverse=True)
+    top = candidates[:_LAST_EDITED_LIMIT]
+
+    out = [f"## Last Edited Files [{proj.name}]"]
+    for mtime, rel in top:
+        from datetime import datetime, timezone
+        ts = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+        out.append(f"  {rel} — {ts}")
     return "\n".join(out) + "\n"
 
 
@@ -474,6 +582,8 @@ def build_context(paths: Paths | None = None, *, budget: int = DEFAULT_SECTION_B
     sections.append(truncate_section(_render_messages(paths), budget))
     sections.append(truncate_section(_render_tasks(paths), budget))
     sections.append(truncate_section(_render_events(paths), budget))
+    last_edited = _render_last_edited_files(paths)
+    sections.append(truncate_section(last_edited, budget) if last_edited else "")
     sections.append(truncate_section(_render_memory_fts(paths, agent), budget))
 
     return "\n".join(s for s in sections if s).rstrip() + "\n"
