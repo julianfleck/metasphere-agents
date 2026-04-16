@@ -100,6 +100,61 @@ def test_should_skip_silent_tick():
     assert posthook.should_skip_silent_tick("real reply text") is False
 
 
+def test_should_skip_silent_tick_prefix_variants():
+    """Regression 2026-04-16: ~30x 'Silent tick at HH:MMZ' messages
+    reached Julian's phone because the original suppression regex
+    required a full-line match. Prefix match now covers every
+    placeholder the orchestrator's persona might emit.
+    """
+    skip = posthook.should_skip_silent_tick
+    # Bare tokens.
+    assert skip("[idle]") is True
+    assert skip("Standing by") is True
+    assert skip("Silent tick") is True
+    assert skip("Quiet") is True
+    assert skip("Idle") is True
+    assert skip("Idle.") is True
+    assert skip("Nothing to report") is True
+    assert skip("Nothing new") is True
+    assert skip("Still here") is True
+    # With a trailing clock / scope / mood-adverb — the exact forms that
+    # leaked overnight.
+    assert skip("Silent tick at 05:07Z.") is True
+    assert skip("Silent tick. Idle, waiting on Julian's morning activity.") is True
+    assert skip("Idle, waiting on Julian's morning activity.") is True
+    assert skip("Nothing new to report — standing by.") is True
+    # Case-insensitive.
+    assert skip("SILENT TICK AT 05:07Z") is True
+    assert skip("silent tick at 05:07Z") is True
+    assert skip("IDLE.") is True
+    # Negative: substantive replies MUST NOT be suppressed even if they
+    # happen to contain an idle word mid-sentence.
+    assert skip("The schedule is quiet right now; here's the plan: ...") is False
+    assert skip("We should report the idle metric to the dashboard") is False
+    assert skip("PR #14 merged cleanly") is False
+
+
+def test_should_skip_silent_tick_matches_route_to_telegram():
+    """The suppression test used by ``should_skip_silent_tick`` and
+    ``route_to_telegram`` must be identical — they both reference
+    ``_IDLE_PATTERN``. This test pins that invariant so a future
+    refactor can't introduce divergence.
+    """
+    samples = [
+        "[idle]",
+        "Silent tick at 05:07Z.",
+        "Idle, waiting.",
+        "real reply",
+        "this is long-form content",
+    ]
+    for s in samples:
+        skip_says = posthook.should_skip_silent_tick(s)
+        pattern_says = posthook._IDLE_PATTERN.match(s.strip()) is not None
+        assert skip_says == pattern_says or skip_says is True and not s.strip(), (
+            f"divergence on {s!r}: skip={skip_says}, pattern={pattern_says}"
+        )
+
+
 # ---------- route_to_telegram ----------
 
 def _write_chat_id(paths: Paths) -> None:
