@@ -55,6 +55,7 @@ REGISTRY: dict[str, str] = {
     "project":   "metasphere.cli.project:main",
     "gateway":   "metasphere.cli.gateway:main",
     "update":    "metasphere.cli.update:main",
+    "restart":   "metasphere.cli.restart:main",
     "consolidate": "metasphere.cli.consolidate:main",
     "status":    "metasphere.cli.main:_status",
     "ls":        "metasphere.cli.ls:main",
@@ -88,6 +89,7 @@ Subcommands:
   sessions all|list|kill-viewer    Multi-agent tmux viewer
   project ...
   gateway status|daemon
+  restart [<agent-name>]    Restart daemons + all agent sessions, or one agent
 
 Run `metasphere <subcommand> --help` for details.
 """
