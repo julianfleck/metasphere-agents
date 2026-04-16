@@ -254,11 +254,32 @@ def restart_agent_session(
     # detect the restart even if this function is interrupted.
     _write_restart_pending(paths, reason, agent=agent)
 
+    # Enter-race fix (2026-04-16): previously ``send-keys /exit Enter``
+    # was a single invocation, which races with the REPL's input-state
+    # machine post-C-c. Observed symptom: supervisor.restart_claude
+    # fired but the pane never cycled. Fix mirrors the prior art in
+    # ``metasphere.tmux.submit_to_tmux``:
+    #   1. C-c twice to kill any in-flight tool call / input buffer.
+    #   2. C-u to clear readline kill-line.
+    #   3. ``/exit`` as literal (``-l``) — types characters into the
+    #      current prompt line without trailing newline semantics.
+    #   4. Settle, then Enter as a separate send-keys call.
+    #   5. Re-Enter once after a longer settle (belt-and-suspenders
+    #      for the case where the first Enter races the REPL's
+    #      paste-buffer commit).
     _tmux("send-keys", "-t", target, "C-c")
     time.sleep(0.3)
     _tmux("send-keys", "-t", target, "C-c")
     time.sleep(0.3)
-    _tmux("send-keys", "-t", target, "/exit", "Enter")
+    _tmux("send-keys", "-t", target, "C-u")
+    time.sleep(0.2)
+    _tmux("send-keys", "-t", target, "-l", "--", "/exit")
+    time.sleep(0.3)
+    _tmux("send-keys", "-t", target, "Enter")
+    time.sleep(0.4)
+    # Belt-and-suspenders: a second Enter if the first raced the
+    # paste-buffer commit. Harmless no-op if /exit already took.
+    _tmux("send-keys", "-t", target, "Enter")
     # The respawn loop (already running in the pane shell) handles
     # restarting Claude. We do NOT re-send the respawn command — that
     # would nest a second loop inside the first.
