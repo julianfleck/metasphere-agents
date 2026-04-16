@@ -200,7 +200,13 @@ def submit_to_tmux(
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
-            time.sleep(0.15)
+            # 2026-04-16: 150ms was too short — Claude Code's
+            # post-Escape transition to the "What should Claude do
+            # instead?" state was still in progress, eating the first
+            # char of the subsequent send-keys -l AND racing the Enter
+            # so it never committed. 800ms gives the TUI time to
+            # settle before we type.
+            time.sleep(0.8)
 
         # Split message into lines, preserving empty trailing lines
         lines = message.split("\n")
