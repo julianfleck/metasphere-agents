@@ -193,10 +193,25 @@ def test_submit_to_tmux_never_raises(monkeypatch):
 # and defer when it shows typed content.
 
 
+_BORDER = "─" * 60
+
+
+def _pane(input_lines: list[str]) -> str:
+    """Build a fake Claude Code pane capture with the input box borders
+    wrapping the given input_lines. Matches the real layout: some tool
+    output above, then top border, then the input lines, then bottom
+    border, then a footer."""
+    parts = ["tool output above", _BORDER]
+    parts.extend(input_lines)
+    parts.append(_BORDER)
+    parts.append("  ⏵⏵ bypass permissions on · esc to interrupt")
+    return "\n".join(parts) + "\n"
+
+
 def test_input_line_has_typing_detects_typed_content(monkeypatch):
     def fake_run(argv, **kw):
         if "capture-pane" in argv:
-            return _fake_cp(stdout="some output\n> the orchest\n")
+            return _fake_cp(stdout=_pane(["❯ hello there"]))
         return _fake_cp(returncode=0)
 
     monkeypatch.setattr("subprocess.run", fake_run)
@@ -206,7 +221,7 @@ def test_input_line_has_typing_detects_typed_content(monkeypatch):
 def test_input_line_has_typing_false_for_bare_prompt(monkeypatch):
     def fake_run(argv, **kw):
         if "capture-pane" in argv:
-            return _fake_cp(stdout="some output\n>\n")
+            return _fake_cp(stdout=_pane(["❯ "]))
         return _fake_cp(returncode=0)
 
     monkeypatch.setattr("subprocess.run", fake_run)
@@ -214,50 +229,69 @@ def test_input_line_has_typing_false_for_bare_prompt(monkeypatch):
 
 
 def test_input_line_has_typing_false_for_paste_placeholder(monkeypatch):
-    """A pre-existing ``[Pasted text #`` placeholder is something the
-    Escape×2 pre-clear handles — not typing. Must not abort."""
+    """A pre-existing ``[Pasted text #`` placeholder is not typing —
+    submit_watchdog handles those asynchronously."""
     def fake_run(argv, **kw):
         if "capture-pane" in argv:
-            return _fake_cp(stdout="> [Pasted text #4 +18 lines]\n")
+            return _fake_cp(stdout=_pane(["❯ [Pasted text #4 +18 lines]"]))
         return _fake_cp(returncode=0)
 
     monkeypatch.setattr("subprocess.run", fake_run)
     assert T._input_line_has_typing("/usr/bin/tmux", "sess") is False
 
 
-def test_input_line_has_typing_strips_box_drawing_chars(monkeypatch):
-    """Claude TUI renders the input box with ``│`` borders; the prompt
-    detection must look inside the box, not at the border."""
-    def fake_run(argv, **kw):
-        if "capture-pane" in argv:
-            return _fake_cp(stdout="│ > some typing │\n")
-        return _fake_cp(returncode=0)
-
-    monkeypatch.setattr("subprocess.run", fake_run)
-    assert T._input_line_has_typing("/usr/bin/tmux", "sess") is True
-
-
-def test_input_line_has_typing_detects_claude_code_chevron_prompt(monkeypatch):
-    """Real Claude Code TUI renders the prompt as ``❯`` (U+276F), not ASCII
-    ``>``. The 2026-04-16 regression: the heuristic matched only ``>`` and
-    therefore never fired against a real pane. With the fix, a mid-typing
-    ``❯ hello`` must be detected as typing."""
-    def fake_run(argv, **kw):
-        if "capture-pane" in argv:
-            return _fake_cp(stdout="tool output\n❯ hello\n")
-        return _fake_cp(returncode=0)
-
-    monkeypatch.setattr("subprocess.run", fake_run)
-    assert T._input_line_has_typing("/usr/bin/tmux", "sess") is True
-
-
 def test_input_line_has_typing_false_for_bare_chevron_with_nbsp(monkeypatch):
-    """Empty Claude Code prompt is rendered as ``❯\\xa0`` (chevron + NBSP).
-    ``str.strip()`` removes NBSP in Python 3, so the marker-only case
-    must return False."""
+    """Empty Claude Code prompt renders as ``❯\\xa0`` (chevron + NBSP).
+    ``str.strip()`` removes NBSP; must return False."""
     def fake_run(argv, **kw):
         if "capture-pane" in argv:
-            return _fake_cp(stdout="tool output\n❯\xa0\n")
+            return _fake_cp(stdout=_pane(["❯\xa0"]))
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert T._input_line_has_typing("/usr/bin/tmux", "sess") is False
+
+
+def test_input_line_has_typing_detects_wrapped_multiline_input(monkeypatch):
+    """2026-04-16 regression: when Julian typed a long message that
+    Claude Code wrapped across multiple lines, the old heuristic (walk
+    last 10 lines looking for ``❯``) missed the continuation lines and
+    heartbeats fired mid-typing, interleaving with his keystrokes.
+
+    The new border-based heuristic must see ALL content between the two
+    ``─────`` borders, even when the first (``❯``) line is pushed far
+    above the last 10 lines by continuation wrapping."""
+    wrapped = ["❯ this is a message Julian is typing"]
+    # Push the chevron line well past the last-10-window.
+    wrapped += [f"  continuation line {i}" for i in range(15)]
+
+    def fake_run(argv, **kw):
+        if "capture-pane" in argv:
+            return _fake_cp(stdout=_pane(wrapped))
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert T._input_line_has_typing("/usr/bin/tmux", "sess") is True
+
+
+def test_input_line_has_typing_false_when_only_continuation_is_whitespace(monkeypatch):
+    """An empty input box with a trailing blank continuation line (TUI
+    quirk) should not be mistaken for typing."""
+    def fake_run(argv, **kw):
+        if "capture-pane" in argv:
+            return _fake_cp(stdout=_pane(["❯\xa0", "", ""]))
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert T._input_line_has_typing("/usr/bin/tmux", "sess") is False
+
+
+def test_input_line_has_typing_false_when_no_borders_visible(monkeypatch):
+    """Fail open: if capture-pane doesn't show the input box (e.g.,
+    alt-screen app covering the TUI), don't block heartbeats."""
+    def fake_run(argv, **kw):
+        if "capture-pane" in argv:
+            return _fake_cp(stdout="just plain text\nno borders here\n")
         return _fake_cp(returncode=0)
 
     monkeypatch.setattr("subprocess.run", fake_run)
@@ -284,7 +318,7 @@ def test_submit_defer_if_busy_skips_when_input_has_typing(monkeypatch):
         if "has-session" in argv:
             return _fake_cp(returncode=0)
         if "capture-pane" in argv:
-            return _fake_cp(stdout="> mid-typing-text\n")
+            return _fake_cp(stdout=_pane(["❯ mid-typing-text"]))
         return _fake_cp(returncode=0)
 
     calls: list[list[str]] = []
@@ -335,7 +369,8 @@ def test_submit_defer_if_busy_default_false_ignores_typing(monkeypatch):
             # Our submit Enter cleared the input.
             pane_state["typed"] = False
         if "capture-pane" in argv:
-            return _fake_cp(stdout="> mid-typing\n" if pane_state["typed"] else ">\n")
+            content = ["❯ mid-typing"] if pane_state["typed"] else ["❯ "]
+            return _fake_cp(stdout=_pane(content))
         return _fake_cp(returncode=0)
 
     calls: list[list[str]] = []
@@ -380,9 +415,8 @@ def test_submit_retries_enter_if_typed_text_remains_in_input(monkeypatch):
         if "send-keys" in argv and "Enter" in argv and "-l" not in argv:
             enter_count["n"] += 1
         if "capture-pane" in argv:
-            if enter_count["n"] < 2:
-                return _fake_cp(stdout="> PROBE\n")  # text still there
-            return _fake_cp(stdout=">\n")             # cleared
+            content = ["❯ PROBE"] if enter_count["n"] < 2 else ["❯ "]
+            return _fake_cp(stdout=_pane(content))
         return _fake_cp(returncode=0)
 
     calls: list[list[str]] = []
@@ -406,19 +440,19 @@ def test_submit_retries_enter_if_typed_text_remains_in_input(monkeypatch):
 
 def test_submit_returns_false_if_enter_never_lands(monkeypatch):
     """Simulate the worst case: Claude TUI eats every Enter (input box
-    never clears). After 3 retries + fallback Escape×2, the final
-    check still sees typed content → submit_to_tmux MUST return False
-    (not silently lie "True")."""
+    never clears). After 3 retries, the final check still sees typed
+    content → submit_to_tmux MUST return False (not silently lie
+    "True"). The fallback Escape was removed 2bf6845 — dirty state is
+    left for submit_watchdog."""
     def fake_run(argv, **kw):
         if "has-session" in argv:
             return _fake_cp(returncode=0)
         if "capture-pane" in argv:
-            return _fake_cp(stdout="> STUCK\n")
+            return _fake_cp(stdout=_pane(["❯ STUCK"]))
         return _fake_cp(returncode=0)
 
     monkeypatch.setattr("subprocess.run", fake_run)
     monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
-    # Must return False — not the old silent True.
     assert T.submit_to_tmux("sess", "STUCK") is False
 
 

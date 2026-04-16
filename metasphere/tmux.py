@@ -39,39 +39,41 @@ def _has_session(tmux: str, session: str) -> bool:
         return False
 
 
+def _is_box_border(stripped: str) -> bool:
+    """A Claude Code input-box border line is a run of ``─`` (U+2500)
+    characters, optionally with leading/trailing spaces. Some terminals
+    render it as ASCII ``-`` — accept both."""
+    if not stripped:
+        return False
+    # Must be predominantly border chars (allow a few stray spaces).
+    border_chars = sum(1 for c in stripped if c in "─-")
+    return border_chars >= 10 and border_chars >= len(stripped) * 0.8
+
+
 def _input_line_has_typing(tmux: str, session: str) -> bool:
     """Inspect the pane and return True if the input box shows
-    user-typed content (mid-typing human).
+    user-typed content (mid-typing human, or mid-inject residue).
 
     2026-04-16: Julian was typing into the attached orchestrator pane
     when a heartbeat fired ``submit_to_tmux``; its send-keys interleaved
     with his keystrokes and submitted the garbled mess. This guard
     inspects the Claude TUI input box BEFORE firing any send-keys; if
-    the prompt line shows typed content that isn't a known paste
-    placeholder, auto-injectors defer.
+    the prompt shows typed content that isn't a known paste placeholder,
+    auto-injectors defer.
 
-    A fcntl writer-lock cannot help here — human keystrokes go via the
-    tty, bypassing in-process locks. And a broader check ("is any
-    client attached?") overreaches — Julian keeps the pane attached
-    for monitoring, so attach-alone is not evidence of typing. Looking
-    at the input-buffer state is the precise primitive.
+    Heuristic: find Claude Code's input box by its ``─────`` border
+    lines (U+2500). Input box content lives between the last two
+    border lines in the visible pane. If any line between them has
+    content beyond the ``❯`` prompt marker and whitespace, someone is
+    typing.
 
-    Heuristic: capture-pane, walk back through the last visible lines
-    looking for a Claude TUI prompt marker after stripping any
-    box-drawing border chars. Claude Code renders the prompt as ``❯``
-    (U+276F); older stubs/tests also used ASCII ``>``, so both are
-    accepted. If the content after the marker is empty whitespace OR a
-    known ``[Pasted text #`` placeholder, the input is "ours to use";
-    anything else means a human is mid-typing and we defer rather than
-    blow their input away with our own typing or with the Escape×2
-    pre-clear.
-
-    2026-04-16: the original check matched ``>`` only and therefore
-    never fired against a real Claude Code pane — leaving the PR #27
-    Enter-retry second signal dead on arrival, and causing
-    ``submit_to_tmux`` to return True after the first Enter whether or
-    not it actually landed (the race that ate the mid-tool-call
-    telegram inbound).
+    The earlier version walked only the last 10 lines looking for a
+    line starting with ``❯`` — which missed wrapped multi-line input,
+    because Claude Code pushes the ``❯``-line off the window when the
+    user types a long message. Heartbeats then fired mid-typing and
+    interleaved with keystrokes. The border-based detection handles
+    wrapped input correctly (all wrapped content sits between the
+    same two borders).
 
     Fails open on any error (returns False) — better to occasionally
     interleave than to silently drop every heartbeat on tmux quirks.
@@ -86,19 +88,36 @@ def _input_line_has_typing(tmux: str, session: str) -> bool:
         if r.returncode != 0:
             return False
         lines = r.stdout.splitlines()
-        for line in reversed(lines[-10:]):
+        # Walk up from the end looking for the two border lines that
+        # bracket the input box.
+        bottom_idx: int | None = None
+        top_idx: int | None = None
+        for i in range(len(lines) - 1, -1, -1):
+            if _is_box_border(lines[i].strip()):
+                if bottom_idx is None:
+                    bottom_idx = i
+                else:
+                    top_idx = i
+                    break
+        if bottom_idx is None or top_idx is None:
+            return False  # no input box found — fail open
+        # Inspect every line between the borders (exclusive).
+        for line in lines[top_idx + 1:bottom_idx]:
+            # Strip the box side chars and whitespace.
             inner = line.strip().lstrip("│|").rstrip("│|").strip()
-            if inner.startswith("❯"):
-                marker_len = len("❯")
-            elif inner.startswith(">"):
-                marker_len = 1
-            else:
+            if not inner:
                 continue
-            after = inner[marker_len:].strip()
-            if not after:
-                return False
-            if "[Pasted text #" in after:
-                return False
+            # Strip the ❯ / > prompt marker if this is the first line.
+            if inner.startswith("❯"):
+                inner = inner[len("❯"):].strip()
+            elif inner.startswith(">"):
+                inner = inner[1:].strip()
+            if not inner:
+                continue
+            # A lingering paste placeholder is not typing — submit_watchdog
+            # handles those asynchronously.
+            if "[Pasted text #" in inner:
+                continue
             return True
         return False
     except OSError:
