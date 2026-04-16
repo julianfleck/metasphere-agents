@@ -80,6 +80,12 @@ MSG_VERDICT_STALE = "MSG-STALE"
 MSG_VERDICT_UNREAD_OLD = "MSG-UNREAD-OLD"
 MSG_VERDICT_DONE_PENDING_ARCHIVE = "MSG-DONE-PENDING-ARCHIVE"
 MSG_VERDICT_INFO_AUTO_ARCHIVE = "MSG-INFO-AUTO-ARCHIVE"
+#: ``!done`` notification messages that have aged past the auto-archive
+#: window. Terminal — handler archives them without requiring read_at.
+#: Fixes the 2026-04-15 self-audit gap where every ``msg done`` spawned
+#: a new ``!done`` notification that never entered terminal state and
+#: got stale-pinged forever.
+MSG_VERDICT_DONE = "MSG-DONE"
 MSG_VERDICT_PINNED = "MSG-PINNED"  # !task/!query — pinned until explicitly completed
 
 MSG_VERDICTS = (
@@ -88,6 +94,7 @@ MSG_VERDICTS = (
     MSG_VERDICT_UNREAD_OLD,
     MSG_VERDICT_DONE_PENDING_ARCHIVE,
     MSG_VERDICT_INFO_AUTO_ARCHIVE,
+    MSG_VERDICT_DONE,
     MSG_VERDICT_PINNED,
 )
 
@@ -749,6 +756,17 @@ def classify_message(
     if msg.label in _messages.PINNED_LABELS:
         return MSG_VERDICT_PINNED
 
+    # !done terminal check — must precede the STATUS_UNREAD branch so
+    # unread !done notifications don't bounce through UNREAD-OLD → ping
+    # → STALE forever (2026-04-15 self-audit gap (b)). Aging anchor is
+    # read_at when the recipient viewed it; created when they didn't.
+    if msg.label == "!done":
+        info_window = _dt.timedelta(minutes=info_archive_after_minutes)
+        read_at_for_done = _parse_iso(msg.read_at)
+        anchor = read_at_for_done or _parse_iso(msg.created)
+        if anchor and (now - anchor) >= info_window:
+            return MSG_VERDICT_DONE
+
     # UNREAD-OLD: status still unread after the stale window. Rare after
     # auto-mark-read on view, but catches messages on agents that
     # never render their inbox.
@@ -775,11 +793,8 @@ def classify_message(
         if (now - read_at) >= info_window and not msg.completed_at:
             return MSG_VERDICT_INFO_AUTO_ARCHIVE
 
-    # !done notifications: archive once read + cooled down, just like info.
-    if msg.label == "!done" and msg.status == _messages.STATUS_READ and read_at:
-        info_window = _dt.timedelta(minutes=info_archive_after_minutes)
-        if (now - read_at) >= info_window:
-            return MSG_VERDICT_INFO_AUTO_ARCHIVE
+    # (``!done`` terminal check moved above the STATUS_UNREAD branch
+    #  so unread !dones still terminate — see the block there.)
 
     # Replied messages are already "handled" — archive after cooldown.
     if msg.status == _messages.STATUS_REPLIED:
@@ -902,6 +917,11 @@ def apply_message_verdict(
             result["action"] = "would-archive"
         else:
             result.update(_archive_msg(msg, "info-auto-archive"))
+    elif verdict == MSG_VERDICT_DONE:
+        if dry_run:
+            result["action"] = "would-archive"
+        else:
+            result.update(_archive_msg(msg, "done-auto-archive"))
     elif verdict == MSG_VERDICT_UNREAD_OLD:
         # Threshold: after N escalations with no progress, archive
         # instead of re-escalating forever. Matches STALE behaviour.
