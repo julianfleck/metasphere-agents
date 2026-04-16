@@ -594,10 +594,22 @@ def run_update(
         # PATH. For metasphere that's expected — only the symlinked
         # `metasphere` in `$METASPHERE_DIR/bin` needs to be on PATH
         # (install.sh sets that up); the other pip-installed scripts
-        # are harmless. Suppress the noise.
+        # are harmless.
+        #
+        # --break-system-packages: PEP 668 escape hatch for Debian 12+
+        # / Python 3.12+ hosts where the system Python ships with an
+        # EXTERNALLY-MANAGED marker. Without this flag, the reinstall
+        # fails with "error: externally-managed-environment". This
+        # flag affects only the pip install path pip has already
+        # chosen (user-site under ``~/.local/`` when not in a venv)
+        # — it does NOT let us overwrite apt-managed packages.
+        #
+        # Proper long-term fix is a dedicated venv at
+        # ``$METASPHERE_DIR/venv``; tracked as a follow-up task.
         rc = (pip_runner or _default_pip_runner)([
             "-m", "pip", "install", "-e", str(repo), "--quiet",
             "--no-warn-script-location",
+            "--break-system-packages",
         ])
         if rc != 0:
             reason = f"pip install -e exited rc={rc}"
