@@ -194,18 +194,21 @@ def submit_to_tmux(
         # placeholder, the auto-path can't clean it up — but the
         # submit_watchdog daemon handles that asynchronously.
         if escape_prefix:
+            # SINGLE Escape = interrupt running turn (Julian's
+            # Claude Code keybinding reference, 2026-04-16). Esc Esc
+            # opens the Rewind/Undo menu — we were typing into THAT
+            # menu's filter the whole time, which explains the
+            # "list of messages flashing" symptom. Never Escape×2
+            # here.
             subprocess.run(
-                [tmux, "send-keys", "-t", session, "Escape", "Escape"],
+                [tmux, "send-keys", "-t", session, "Escape"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
-            # 2026-04-16: 150ms was too short — Claude Code's
-            # post-Escape transition to the "What should Claude do
-            # instead?" state was still in progress, eating the first
-            # char of the subsequent send-keys -l AND racing the Enter
-            # so it never committed. 800ms gives the TUI time to
-            # settle before we type.
+            # 800ms gives the TUI time to finish its post-interrupt
+            # "What should Claude do instead?" transition before we
+            # type. Shorter settles eat the first 1-2 chars.
             time.sleep(0.8)
 
         # Split message into lines, preserving empty trailing lines
@@ -270,20 +273,16 @@ def submit_to_tmux(
         # accumulation pattern that caused the 2026-04-16 research-
         # monitor outage).
         #
-        # Gated on *escape_prefix* for the same reason as the pre-clear:
-        # auto-injectors must not interrupt a running tool even when
-        # their own submit failed. A stuck paste/typed-text from a
-        # failed auto-inject is picked up by :func:`submit_watchdog`
-        # on the next daemon tick.
-        if escape_prefix and (_has_pending_paste(tmux, session)
-                or _input_line_has_typing(tmux, session)):
-            subprocess.run(
-                [tmux, "send-keys", "-t", session, "Escape", "Escape"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-            time.sleep(0.2)
+        # Fallback Escape REMOVED 2026-04-16. The old Escape×2 was
+        # opening Claude Code's Rewind/Undo menu (not clearing input
+        # — that's Ctrl+U) and the typed text ended up in the menu's
+        # filter, never becoming a user-turn. A single Escape would
+        # interrupt the running turn, which is the pre-clear's job
+        # for user-inbound only; firing it again here would interrupt
+        # whatever turn we just successfully started. If the initial
+        # Enter + retry loop exhausted with the input still dirty,
+        # it's better to leave the typed text for submit_watchdog
+        # to pick up on its next daemon tick than to destroy it.
 
         # Final check after retries — both signals must be clean.
         return (not _has_pending_paste(tmux, session)

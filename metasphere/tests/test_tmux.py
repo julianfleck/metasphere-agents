@@ -51,26 +51,33 @@ def _capture_calls(monkeypatch, pane_states=None):
     return calls
 
 
-def test_submit_prefixes_escape_escape_before_typing(monkeypatch):
-    """Every submit starts with ``Escape Escape`` to clear any stacked
-    paste placeholder from a prior wake.
+def test_submit_prefixes_single_escape_before_typing(monkeypatch):
+    """Every user-inbound submit starts with a SINGLE Escape to interrupt
+    any running Claude Code turn. Esc Esc would open Claude Code's
+    Rewind/Undo menu (not clear input), which is what the 2026-04-16
+    telegram-inbound outage was: we typed into the rewind menu's filter
+    and Enter rolled back to a random prior turn. Exactly one Escape.
     """
     calls = _capture_calls(monkeypatch)
     assert T.submit_to_tmux("sess", "hello") is True
 
     sendkeys = [c for c in calls if "send-keys" in c]
-    # First send-keys call must be the Escape×2 pre-clear.
-    first = sendkeys[0]
-    assert "Escape" in first
+    escapes = [c for c in sendkeys if "Escape" in c]
+    # Exactly one Escape send-keys call — the pre-type interrupt.
+    # Never two (that's the rewind menu keybinding).
+    assert len(escapes) == 1, (
+        f"expected exactly ONE Escape (single Escape = interrupt), got {escapes}"
+    )
+    # First call must be the Escape (before any typing).
+    assert "Escape" in sendkeys[0]
     # Must precede any literal-text typing.
     literal_idx = next((i for i, c in enumerate(sendkeys) if "-l" in c), -1)
     assert literal_idx > 0
-    assert sendkeys[0] is sendkeys[literal_idx - 1] or literal_idx > 0
 
 
 def test_submit_typing_sequence_unchanged_after_prefix(monkeypatch):
     """Body-typing behavior (``-l -- line``, ``C-j`` between lines,
-    settle then Enter) is preserved — only the Escape×2 prefix is new.
+    settle then Enter) is preserved — only the Escape prefix is new.
     """
     calls = _capture_calls(monkeypatch)
     T.submit_to_tmux("sess", "line1\nline2")
@@ -86,31 +93,29 @@ def test_submit_typing_sequence_unchanged_after_prefix(monkeypatch):
     assert any(c[-1] == "Enter" for c in sendkeys)
 
 
-def test_submit_stuck_paste_retries_then_escape_fallback(monkeypatch):
-    """If the Enter-retry loop exhausts with the placeholder still
-    visible, submit_to_tmux fires Escape×2 as a last-ditch cleanup
-    rather than silently returning False with a stacked placeholder
-    left behind. Prevents the 2026-04-16 accumulation pattern.
+def test_submit_no_fallback_escape_on_retry_exhaust(monkeypatch):
+    """If the Enter-retry loop exhausts with the input still dirty,
+    submit_to_tmux must NOT fire a fallback Escape. Old behavior was
+    Escape×2 (which opened the rewind menu — 2026-04-16 telegram
+    outage); a single Escape here would interrupt the turn we just
+    submitted; leaving the typed text lets submit_watchdog clean up
+    asynchronously. Only one Escape send-keys call should happen
+    regardless of whether retries succeed.
     """
-    # capture-pane consumption order:
-    #   1-3. retry-loop checks × 3 (all show placeholder)
-    #   4. pre-escape check inside `if _has_pending_paste` guard
-    #   5. post-escape final check (clean)
     pane_states = [
-        "[Pasted text #4 +18 lines]",     # retry iter 1
-        "[Pasted text #4 +18 lines]",     # retry iter 2
-        "[Pasted text #4 +18 lines]",     # retry iter 3
-        "[Pasted text #4 +18 lines]",     # pre-escape check inside condition
-        "",                                # post-escape final check → clean
+        "[Pasted text #4 +18 lines]",     # retry iter 1 dirty
+        "[Pasted text #4 +18 lines]",     # retry iter 2 dirty
+        "[Pasted text #4 +18 lines]",     # retry iter 3 dirty
+        "[Pasted text #4 +18 lines]",     # final return check still dirty
     ]
     calls = _capture_calls(monkeypatch, pane_states=pane_states)
     T.submit_to_tmux("sess", "m")
 
     sendkeys = [c for c in calls if "send-keys" in c]
     escapes = [c for c in sendkeys if "Escape" in c]
-    # Two Escape send-keys calls: one at the start, one at the end.
-    assert len(escapes) >= 2, (
-        f"expected a prefix Escape and a fallback Escape, got {escapes}"
+    # Exactly ONE Escape (the pre-clear), never two.
+    assert len(escapes) == 1, (
+        f"retry-exhaust must not fire fallback Escape, got {escapes}"
     )
 
 
@@ -132,17 +137,15 @@ def test_submit_skips_escape_prefix_when_disabled(monkeypatch):
     assert any(c[-1] == "Enter" for c in sendkeys)
 
 
-def test_submit_no_fallback_escape_when_escape_prefix_false(monkeypatch):
-    """Retry-loop exhaustion with a stuck placeholder must NOT trigger
-    the fallback Escape×2 when ``escape_prefix=False``. The stuck
-    state is left for the submit_watchdog daemon to clean up on its
-    next tick; the auto-injector itself never fires Escape."""
+def test_submit_zero_escapes_when_escape_prefix_false_and_dirty(monkeypatch):
+    """Retry-loop exhaustion with a stuck placeholder: auto-injector
+    (``escape_prefix=False``) must emit ZERO Escape send-keys. The
+    stuck state is left for the submit_watchdog daemon to clean up
+    on its next tick."""
     pane_states = [
         "[Pasted text #4 +18 lines]",     # retry iter 1
         "[Pasted text #4 +18 lines]",     # retry iter 2
         "[Pasted text #4 +18 lines]",     # retry iter 3
-        # No final check inside the escape branch since it's skipped;
-        # post-loop final check:
         "[Pasted text #4 +18 lines]",     # final return check (still dirty)
     ]
     calls = _capture_calls(monkeypatch, pane_states=pane_states)
@@ -151,7 +154,7 @@ def test_submit_no_fallback_escape_when_escape_prefix_false(monkeypatch):
     sendkeys = [c for c in calls if "send-keys" in c]
     escapes = [c for c in sendkeys if "Escape" in c]
     assert escapes == [], (
-        f"escape_prefix=False must suppress fallback Escape too, got {escapes}"
+        f"escape_prefix=False must emit zero Escapes, got {escapes}"
     )
 
 
