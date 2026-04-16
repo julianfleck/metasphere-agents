@@ -114,6 +114,47 @@ def test_submit_stuck_paste_retries_then_escape_fallback(monkeypatch):
     )
 
 
+def test_submit_skips_escape_prefix_when_disabled(monkeypatch):
+    """Auto-injectors pass ``escape_prefix=False`` so they never interrupt
+    a running Claude Code tool call. The initial Escape×2 pre-clear AND
+    the fallback Escape at the end must both be suppressed. "Only
+    user-inbound interrupts" (Julian 2026-04-16)."""
+    calls = _capture_calls(monkeypatch)
+    T.submit_to_tmux("sess", "hello", escape_prefix=False)
+
+    sendkeys = [c for c in calls if "send-keys" in c]
+    escapes = [c for c in sendkeys if "Escape" in c]
+    assert escapes == [], (
+        f"auto-injector must not send Escape, got {escapes}"
+    )
+    # Still typed and Enter'd
+    assert any("hello" in c for c in sendkeys)
+    assert any(c[-1] == "Enter" for c in sendkeys)
+
+
+def test_submit_no_fallback_escape_when_escape_prefix_false(monkeypatch):
+    """Retry-loop exhaustion with a stuck placeholder must NOT trigger
+    the fallback Escape×2 when ``escape_prefix=False``. The stuck
+    state is left for the submit_watchdog daemon to clean up on its
+    next tick; the auto-injector itself never fires Escape."""
+    pane_states = [
+        "[Pasted text #4 +18 lines]",     # retry iter 1
+        "[Pasted text #4 +18 lines]",     # retry iter 2
+        "[Pasted text #4 +18 lines]",     # retry iter 3
+        # No final check inside the escape branch since it's skipped;
+        # post-loop final check:
+        "[Pasted text #4 +18 lines]",     # final return check (still dirty)
+    ]
+    calls = _capture_calls(monkeypatch, pane_states=pane_states)
+    T.submit_to_tmux("sess", "m", escape_prefix=False)
+
+    sendkeys = [c for c in calls if "send-keys" in c]
+    escapes = [c for c in sendkeys if "Escape" in c]
+    assert escapes == [], (
+        f"escape_prefix=False must suppress fallback Escape too, got {escapes}"
+    )
+
+
 def test_submit_returns_false_when_session_missing(monkeypatch):
     """Pre-existing invariant — no tmux traffic when the session is
     dead. Pinning so the Escape prefix doesn't regress this.

@@ -128,7 +128,9 @@ def _has_pending_paste(tmux: str, session: str) -> bool:
 
 
 def submit_to_tmux(
-    session: str, message: str, *, defer_if_busy: bool = False
+    session: str, message: str, *,
+    defer_if_busy: bool = False,
+    escape_prefix: bool = True,
 ) -> bool:
     """Deliver *message* to a claude TUI in tmux session *session*.
 
@@ -143,12 +145,24 @@ def submit_to_tmux(
     If *defer_if_busy* is True, abort (returning False, no send-keys
     fired) when the input box shows typed content (see
     :func:`_input_line_has_typing`). Auto-injectors (heartbeat,
-    agent-to-agent wakes, telegram inject, posthook deferred-cmd,
-    restart-wake) opt in; manual CLI paths leave it off so a
-    user-initiated send still goes through. Importantly, this does NOT
-    check for client attachment — Julian keeps panes attached for
-    monitoring and attach-alone isn't evidence of typing; we guard on
-    actual input-buffer content instead.
+    agent-to-agent wakes, posthook deferred-cmd, restart-wake) opt in;
+    manual CLI paths and user-inbound telegram leave it off so the send
+    still goes through. Importantly, this does NOT check for client
+    attachment — Julian keeps panes attached for monitoring and
+    attach-alone isn't evidence of typing; we guard on actual
+    input-buffer content instead.
+
+    If *escape_prefix* is True (default), fire ``Escape × 2`` before
+    typing to clear any stuck paste placeholder AND to interrupt any
+    in-flight Claude Code turn — so the pasted message becomes a new
+    user-turn rather than queuing behind a running tool. Auto-injectors
+    (heartbeat, agent-to-agent wakes, posthook deferred-cmd,
+    restart-wake) set this to False: they must never interrupt a
+    running tool call, only user-inbound telegram and manual CLI sends
+    should. 2026-04-16: the always-on Escape was eating Julian's
+    telegram inbound AND his own typing whenever a heartbeat fired
+    during a mid-tool-call; separating "interrupt intent" from "paste
+    intent" closes that race "once and for all" (his framing).
     """
     try:
         tmux = _find_tmux()
@@ -165,24 +179,28 @@ def submit_to_tmux(
             )
             return False
 
-        # Pre-emptive Escape × 2: clears any ``[Pasted text #N``
+        # Pre-emptive Escape × 2: (a) clears any ``[Pasted text #N``
         # placeholder left over from a prior wake that didn't fully
-        # commit. Without this, stacked pastes accumulated in the
-        # research-* agent panes overnight (2026-04-16 accelerator-
-        # programs had 2 stuck pastes; each new cron-fired wake just
-        # added another on top, the Enter-retry loop saw "placeholder
-        # still present" and gave up). Escape is the manual-recovery
-        # primitive Julian uses when he notices; doing it proactively
-        # stops the stacking at the source. Double-press in case the
-        # REPL is mid-character-input (first Escape cancels partial
-        # input, second Escape cancels any pending paste buffer).
-        subprocess.run(
-            [tmux, "send-keys", "-t", session, "Escape", "Escape"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        time.sleep(0.15)
+        # commit (stacking pattern that caused the 2026-04-16
+        # research-* pane outages); (b) interrupts any in-flight
+        # Claude Code turn so the pasted text becomes a NEW user-turn
+        # rather than queueing behind a running tool.
+        #
+        # Gated on *escape_prefix* so auto-injectors can paste without
+        # interrupting a running tool. When False we rely on Claude
+        # Code's keystroke queue: characters typed during a tool call
+        # are buffered and processed when the tool completes. The
+        # downside is that if a prior inject left a stale paste
+        # placeholder, the auto-path can't clean it up — but the
+        # submit_watchdog daemon handles that asynchronously.
+        if escape_prefix:
+            subprocess.run(
+                [tmux, "send-keys", "-t", session, "Escape", "Escape"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            time.sleep(0.15)
 
         # Split message into lines, preserving empty trailing lines
         lines = message.split("\n")
@@ -245,7 +263,13 @@ def submit_to_tmux(
         # another paste/typed-text for future callers to trip on (the
         # accumulation pattern that caused the 2026-04-16 research-
         # monitor outage).
-        if (_has_pending_paste(tmux, session)
+        #
+        # Gated on *escape_prefix* for the same reason as the pre-clear:
+        # auto-injectors must not interrupt a running tool even when
+        # their own submit failed. A stuck paste/typed-text from a
+        # failed auto-inject is picked up by :func:`submit_watchdog`
+        # on the next daemon tick.
+        if escape_prefix and (_has_pending_paste(tmux, session)
                 or _input_line_has_typing(tmux, session)):
             subprocess.run(
                 [tmux, "send-keys", "-t", session, "Escape", "Escape"],

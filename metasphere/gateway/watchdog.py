@@ -241,7 +241,17 @@ def _check_restart_marker(
     # is at the freshly-respawned pane and typing, drop this wake-msg
     # — the next heartbeat will inject context anyway, so the agent
     # still resumes; only the wake-msg phrasing is lost.
-    success = _submit("system", wake_msg, session=target_session, defer_if_busy=True)
+    # escape_prefix=False: post-restart wake is an auto-injector and
+    # must not interrupt whatever the respawned pane may already be
+    # doing — queue the wake text; claude-code will process it when
+    # idle.
+    success = _submit(
+        "system",
+        wake_msg,
+        session=target_session,
+        defer_if_busy=True,
+        escape_prefix=False,
+    )
 
     try:
         log_event(

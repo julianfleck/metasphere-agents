@@ -25,6 +25,7 @@ def submit_to_tmux(
     session: str = DEFAULT_SESSION,
     *,
     defer_if_busy: bool = False,
+    escape_prefix: bool = True,
 ) -> bool:
     """Submit ``[telegram from <from_user>] <text>`` to the tmux session.
 
@@ -32,12 +33,20 @@ def submit_to_tmux(
     missing. Never raises — injection is best-effort.
 
     *defer_if_busy* is forwarded to :func:`metasphere.tmux.submit_to_tmux`;
-    auto-injectors (telegram bot loop, restart-wake) pass True, manual
-    CLI paths leave it False.
+    user-inbound telegram leaves it False (always fire), restart-wake
+    passes True (defer on human typing). *escape_prefix* defaults True
+    for user-inbound telegram (clobber any running tool — "only
+    user-inbound interrupts", Julian 2026-04-16); restart-wake passes
+    False so it doesn't cut a mid-tool-call on the newly-respawned pane.
     """
     # Telegram usernames are attacker-controlled — sanitise to [\w]+ so
     # they can't smuggle slash-command-like prefixes into the orchestrator
     # REPL when the payload is rendered.
     safe_user = _USERNAME_RE.sub("", from_user) or "unknown"
     payload = f"[telegram from {safe_user}] {text}"
-    return _tmux_submit(session, payload, defer_if_busy=defer_if_busy)
+    return _tmux_submit(
+        session,
+        payload,
+        defer_if_busy=defer_if_busy,
+        escape_prefix=escape_prefix,
+    )

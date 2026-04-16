@@ -191,7 +191,14 @@ def invoke_agent_heartbeat(
         # is mid-keystroke), skip this tick — the next heartbeat will
         # retry. Prevents the 2026-04-16 "heartbeat took over my
         # cursor" interleaving.
-        ok = _tmux_submit(session, context, defer_if_busy=True)
+        # escape_prefix=False: heartbeats must never interrupt a
+        # running tool call. Paste+Enter without the Escape-prefix;
+        # Claude Code queues the keystrokes and processes them when
+        # the current tool finishes. "Only user-inbound interrupts"
+        # (Julian 2026-04-16).
+        ok = _tmux_submit(
+            session, context, defer_if_busy=True, escape_prefix=False
+        )
         if not ok:
             return False
         try:

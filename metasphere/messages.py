@@ -708,7 +708,10 @@ def wake_recipient_if_live(
     try:
         # defer_if_busy=True: agent-to-agent wakes are auto-fired;
         # never interleave with a human typing into the target pane.
-        _tmux_submit(session, notice, defer_if_busy=True)
+        # escape_prefix=False: wakes must never interrupt a tool call
+        # running in the target pane; the wake text queues until the
+        # tool finishes.
+        _tmux_submit(session, notice, defer_if_busy=True, escape_prefix=False)
     except Exception:
         pass
 

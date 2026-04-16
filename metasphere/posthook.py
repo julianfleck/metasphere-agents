@@ -457,7 +457,9 @@ def _check_deferred_command(agent: str, paths: Paths) -> None:
         # defer_if_busy=True: deferred-cmd injection is automatic; if
         # the pane shows a human mid-typing, drop this tick rather
         # than interleave. The cmd was already "deferred" anyway.
-        submit_to_tmux(session, cmd, defer_if_busy=True)
+        # escape_prefix=False: never interrupt a tool call with a
+        # deferred-cmd inject; queue behind the current tool.
+        submit_to_tmux(session, cmd, defer_if_busy=True, escape_prefix=False)
     except Exception:  # noqa: BLE001
         pass
 
