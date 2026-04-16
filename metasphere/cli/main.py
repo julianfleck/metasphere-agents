@@ -56,6 +56,7 @@ REGISTRY: dict[str, str] = {
     "gateway":   "metasphere.cli.gateway:main",
     "update":    "metasphere.cli.update:main",
     "restart":   "metasphere.cli.restart:main",
+    "version":   "metasphere.cli.version:main",
     "consolidate": "metasphere.cli.consolidate:main",
     "status":    "metasphere.cli.main:_status",
     "ls":        "metasphere.cli.ls:main",
@@ -90,6 +91,7 @@ Subcommands:
   project ...
   gateway status|daemon
   restart [<agent-name>]    Restart daemons + all agent sessions, or one agent
+  version                   Show version + commit hash
 
 Run `metasphere <subcommand> --help` for details.
 """
