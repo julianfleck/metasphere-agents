@@ -246,13 +246,25 @@ def test_submit_defer_if_busy_proceeds_on_bare_prompt(monkeypatch):
 
 def test_submit_defer_if_busy_default_false_ignores_typing(monkeypatch):
     """Manual CLI paths use the default ``defer_if_busy=False``; these
-    must NOT skip when the pane has typed content (the CLI user
-    explicitly asked for this send)."""
+    must NOT skip even when the pane shows pre-existing typing. The
+    submit proceeds and clobbers the typed content (which is what
+    the CLI user explicitly asked for).
+
+    State machine:
+      - Before Enter:  pane shows "> mid-typing" (human was typing,
+                       our Escape×2 is about to clobber it).
+      - After Enter:   pane shows bare "> " (our submit landed).
+    """
+    pane_state = {"typed": True}
+
     def fake_run(argv, **kw):
         if "has-session" in argv:
             return _fake_cp(returncode=0)
+        if "send-keys" in argv and "Enter" in argv:
+            # Our submit Enter cleared the input.
+            pane_state["typed"] = False
         if "capture-pane" in argv:
-            return _fake_cp(stdout="> mid-typing\n")
+            return _fake_cp(stdout="> mid-typing\n" if pane_state["typed"] else ">\n")
         return _fake_cp(returncode=0)
 
     calls: list[list[str]] = []
@@ -263,9 +275,79 @@ def test_submit_defer_if_busy_default_false_ignores_typing(monkeypatch):
 
     monkeypatch.setattr("subprocess.run", recording)
     monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
-    # Default — no defer. Must proceed despite visible typing.
+    # Default — no defer. Must proceed despite visible typing at start.
     assert T.submit_to_tmux("sess", "hello") is True
     sendkeys = [c for c in calls if "send-keys" in c]
     assert sendkeys, "manual submit must not be gated on input-buffer"
+    assert any("-l" in c for c in sendkeys), "expected literal typing"
+
+
+# --- Enter-race post-submit verification (2026-04-16 P0) -------------------
+#
+# Before this fix: submit_to_tmux returned True as long as no
+# ``[Pasted text #`` placeholder was visible, ignoring whether the typed
+# text actually got submitted. The Claude TUI sometimes ate the first
+# Enter (post-Escape modal, autocomplete popup, paste-buffer commit
+# race), leaving our text typed-but-unsubmitted while the function
+# lied "True". Symptom: telegram inbound + wake prompts appeared in
+# the input box but never became user-turns. Fix: retry Enter while
+# EITHER paste-placeholder OR typed-text-in-input-box is still visible.
+
+
+def test_submit_retries_enter_if_typed_text_remains_in_input(monkeypatch):
+    """Simulate Claude TUI eating the first Enter: text stays in the
+    input box after the first Enter. The retry loop must fire Enter
+    again until the input clears.
+    """
+    # send-keys-Enter attempts: first one is "eaten" (no effect),
+    # the second one actually clears.
+    enter_count = {"n": 0}
+
+    def fake_run(argv, **kw):
+        if "has-session" in argv:
+            return _fake_cp(returncode=0)
+        if "send-keys" in argv and "Enter" in argv and "-l" not in argv:
+            enter_count["n"] += 1
+        if "capture-pane" in argv:
+            if enter_count["n"] < 2:
+                return _fake_cp(stdout="> PROBE\n")  # text still there
+            return _fake_cp(stdout=">\n")             # cleared
+        return _fake_cp(returncode=0)
+
+    calls: list[list[str]] = []
+
+    def recording(argv, **kw):
+        calls.append(list(argv))
+        return fake_run(argv, **kw)
+
+    monkeypatch.setattr("subprocess.run", recording)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+
+    assert T.submit_to_tmux("sess", "PROBE") is True
+
+    # Must have fired Enter at least twice (initial + one retry).
+    enter_calls = [c for c in calls
+                   if "send-keys" in c and "Enter" in c and "-l" not in c]
+    assert len(enter_calls) >= 2, (
+        f"expected ≥2 Enter calls (initial + retry), got {len(enter_calls)}"
+    )
+
+
+def test_submit_returns_false_if_enter_never_lands(monkeypatch):
+    """Simulate the worst case: Claude TUI eats every Enter (input box
+    never clears). After 3 retries + fallback Escape×2, the final
+    check still sees typed content → submit_to_tmux MUST return False
+    (not silently lie "True")."""
+    def fake_run(argv, **kw):
+        if "has-session" in argv:
+            return _fake_cp(returncode=0)
+        if "capture-pane" in argv:
+            return _fake_cp(stdout="> STUCK\n")
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+    # Must return False — not the old silent True.
+    assert T.submit_to_tmux("sess", "STUCK") is False
 
 
