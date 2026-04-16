@@ -79,6 +79,25 @@ def submit_to_tmux(session: str, message: str) -> bool:
         if not _has_session(tmux, session):
             return False
 
+        # Pre-emptive Escape × 2: clears any ``[Pasted text #N``
+        # placeholder left over from a prior wake that didn't fully
+        # commit. Without this, stacked pastes accumulated in the
+        # research-* agent panes overnight (2026-04-16 accelerator-
+        # programs had 2 stuck pastes; each new cron-fired wake just
+        # added another on top, the Enter-retry loop saw "placeholder
+        # still present" and gave up). Escape is the manual-recovery
+        # primitive Julian uses when he notices; doing it proactively
+        # stops the stacking at the source. Double-press in case the
+        # REPL is mid-character-input (first Escape cancels partial
+        # input, second Escape cancels any pending paste buffer).
+        subprocess.run(
+            [tmux, "send-keys", "-t", session, "Escape", "Escape"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        time.sleep(0.15)
+
         # Split message into lines, preserving empty trailing lines
         lines = message.split("\n")
 
@@ -121,6 +140,20 @@ def submit_to_tmux(session: str, message: str) -> bool:
                 check=False,
             )
             time.sleep(0.4)
+
+        # Enter-retry exhausted and placeholder is still visible. One
+        # last aggressive attempt: Escape to cancel whatever is pending.
+        # Better to drop the current submission than to stack yet
+        # another paste for future callers to trip on (the accumulation
+        # pattern that caused the 2026-04-16 research-monitor outage).
+        if _has_pending_paste(tmux, session):
+            subprocess.run(
+                [tmux, "send-keys", "-t", session, "Escape", "Escape"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            time.sleep(0.2)
 
         # Final check after retries
         return not _has_pending_paste(tmux, session)
