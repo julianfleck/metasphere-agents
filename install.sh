@@ -225,24 +225,47 @@ install_scripts() {
     info "Installing scripts..."
 
     local BIN_DIR="$METASPHERE_DIR/bin"
+    local VENV_DIR="$METASPHERE_DIR/venv"
     mkdir -p "$BIN_DIR"
 
-    # Install the unified Python CLI entry point.  The single `metasphere`
-    # binary dispatches all subcommands via metasphere.cli.main.  Individual
-    # metasphere-* scripts are no longer symlinked (legacy bash; kept in
-    # scripts/ for reference only).
-    #
-    # Thin shims for `messages` and `tasks` remain so agents can call them
-    # as standalone commands per CLAUDE.md instructions.
-    if command -v pip3 >/dev/null 2>&1 && [[ -d "$SCRIPT_DIR" ]]; then
-        # pip-installed entry point preferred (handles venv, PATH, etc.)
-        pip3 install -e "$SCRIPT_DIR" -q 2>/dev/null || true
+    # Create / reuse a dedicated venv under $METASPHERE_DIR/venv.
+    # Avoids PEP 668 errors on Debian 12+ / Python 3.12+ hosts and
+    # keeps metasphere isolated from the system Python. The venv
+    # location is stable across reinstalls, so the pip install is
+    # editable against the source tree and subsequent git-pulls
+    # (metasphere update) pick up changes without re-venv-ing.
+    if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+        info "Creating metasphere venv at $VENV_DIR..."
+        if ! python3 -m venv "$VENV_DIR" 2>/dev/null; then
+            err "Failed to create venv. On Debian/Ubuntu: apt install python3-venv"
+        fi
+        ok "Created venv"
+    else
+        ok "Reusing existing venv at $VENV_DIR"
     fi
 
-    # Ensure the unified binary exists in BIN_DIR.  If pip installed a
-    # console_script we symlink to it; otherwise fall back to a shim.
+    # Install the unified Python CLI entry point INTO the venv.
+    # The single `metasphere` binary dispatches all subcommands via
+    # metasphere.cli.main. Individual metasphere-* scripts are no
+    # longer symlinked into BIN_DIR (legacy bash kept in scripts/ for
+    # reference). Thin shims for `messages` and `tasks` likewise route
+    # through `metasphere msg` / `metasphere task`.
+    #
+    # --no-warn-script-location: pip whines that the venv's bin isn't
+    # on PATH globally, but we symlink the single `metasphere` entry
+    # into BIN_DIR below, which IS on PATH (via setup_path). Silence
+    # the noise.
+    if [[ -d "$SCRIPT_DIR" ]]; then
+        "$VENV_DIR/bin/pip" install -e "$SCRIPT_DIR" -q \
+            --no-warn-script-location 2>&1 | tail -3 || true
+    fi
+
+    # Ensure the unified binary exists in BIN_DIR. Prefer the venv
+    # entry point; fall back to legacy locations for already-set-up
+    # hosts before we gain the venv.
     local pip_bin=""
     for candidate in \
+        "$VENV_DIR/bin/metasphere" \
         "${VIRTUAL_ENV:-/nonexistent}/bin/metasphere" \
         "$HOME/.local/bin/metasphere"; do
         if [[ -x "$candidate" ]]; then

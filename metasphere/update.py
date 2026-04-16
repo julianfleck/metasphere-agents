@@ -341,6 +341,74 @@ def _append_log(paths: Paths, line: str) -> None:
         fh.write(f"[{ts}] {line}\n")
 
 
+def _venv_python(paths: Paths) -> Path:
+    """Canonical metasphere venv python interpreter.
+
+    Located under ``$METASPHERE_DIR/venv/bin/python`` on Linux/macOS.
+    ``paths.root`` resolves ``METASPHERE_DIR`` with the same env-var
+    precedence as the rest of the harness.
+    """
+    return paths.root / "venv" / "bin" / "python"
+
+
+def _ensure_venv(
+    paths: Paths,
+    repo: Path,
+    log: Callable[[str], None],
+) -> Path:
+    """Return ``$METASPHERE_DIR/venv/bin/python``, creating the venv
+    on-demand if it doesn't exist yet.
+
+    This is the self-migration path: hosts installed before venv-first
+    (pre-2026-04-16) hit PEP 668 on ``pip install -e .`` against the
+    system Python. By lazily creating the venv on the first update
+    that needs it, we fix those hosts without requiring the user to
+    re-run install.sh.
+
+    If venv creation or the initial bootstrap install fails, raises
+    ``RuntimeError`` with a clear message so ``run_update`` surfaces it.
+    """
+    venv_python = _venv_python(paths)
+    if venv_python.exists():
+        return venv_python
+    venv_dir = venv_python.parent.parent
+    log(f"auto-update: creating venv at {venv_dir}")
+    r = subprocess.run(
+        [sys.executable, "-m", "venv", str(venv_dir)],
+        capture_output=True, text=True, check=False, timeout=120,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"venv creation at {venv_dir} failed (rc={r.returncode}): "
+            f"{(r.stderr or r.stdout or '').strip()}. "
+            "Is python3-venv installed? (apt install python3-venv)"
+        )
+    log(f"auto-update: bootstrapping metasphere into new venv")
+    r = subprocess.run(
+        [str(venv_python), "-m", "pip", "install", "-e", str(repo),
+         "--quiet", "--no-warn-script-location"],
+        capture_output=True, text=True, check=False, timeout=300,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"initial pip install into venv failed (rc={r.returncode}): "
+            f"{(r.stderr or r.stdout or '').strip()}"
+        )
+    return venv_python
+
+
+def _venv_pip_runner(venv_python: Path) -> Callable[[list[str]], int]:
+    """Return a pip_runner callable that invokes pip via the venv's
+    python instead of ``sys.executable``. Same signature as
+    ``_default_pip_runner`` so it drops in at the callsite."""
+    def run(args: list[str]) -> int:
+        return subprocess.run(
+            [str(venv_python), *args],
+            check=False, timeout=300,
+        ).returncode
+    return run
+
+
 def _dirty_paths(runner: GitRunner) -> list[str]:
     """Return the list of dirty porcelain lines from ``git status``.
 
@@ -589,27 +657,17 @@ def run_update(
     pip_reinstalled = False
     if _has_python_changes(repo, old, new, runner):
         log("auto-update: python changes detected, re-installing package")
-        # --no-warn-script-location: pip prints a noisy warning when
-        # console_scripts land in a user-site bin dir that isn't on
-        # PATH. For metasphere that's expected — only the symlinked
-        # `metasphere` in `$METASPHERE_DIR/bin` needs to be on PATH
-        # (install.sh sets that up); the other pip-installed scripts
-        # are harmless.
-        #
-        # --break-system-packages: PEP 668 escape hatch for Debian 12+
-        # / Python 3.12+ hosts where the system Python ships with an
-        # EXTERNALLY-MANAGED marker. Without this flag, the reinstall
-        # fails with "error: externally-managed-environment". This
-        # flag affects only the pip install path pip has already
-        # chosen (user-site under ``~/.local/`` when not in a venv)
-        # — it does NOT let us overwrite apt-managed packages.
-        #
-        # Proper long-term fix is a dedicated venv at
-        # ``$METASPHERE_DIR/venv``; tracked as a follow-up task.
-        rc = (pip_runner or _default_pip_runner)([
+        # Ensure we have a dedicated venv at $METASPHERE_DIR/venv and
+        # install into it. This avoids PEP 668 / externally-managed
+        # errors on modern Debian/Ubuntu hosts AND keeps metasphere
+        # isolated from the system Python. If the venv already exists
+        # we reuse it; otherwise we create it on-demand (self-healing
+        # migration path for hosts installed before venv-first).
+        venv_python = _ensure_venv(paths, repo, log)
+        pip_runner_for_venv = pip_runner or _venv_pip_runner(venv_python)
+        rc = pip_runner_for_venv([
             "-m", "pip", "install", "-e", str(repo), "--quiet",
             "--no-warn-script-location",
-            "--break-system-packages",
         ])
         if rc != 0:
             reason = f"pip install -e exited rc={rc}"

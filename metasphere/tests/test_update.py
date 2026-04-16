@@ -145,9 +145,16 @@ def _patch_update_helpers(monkeypatch, *, pull_raises=None, sync_calls=None,
         if restart_calls is not None:
             restart_calls.append(True)
 
+    def fake_ensure_venv(paths, repo, log):
+        # In tests we never actually create a venv or bootstrap install;
+        # the test-provided pip_runner handles the install. Return a
+        # fabricated python path; pip_runner won't actually invoke it.
+        return paths.root / "venv" / "bin" / "python"
+
     monkeypatch.setattr(_update, "_git_pull_or_reset", fake_pull)
     monkeypatch.setattr(_update, "_sync_claude_integration", fake_sync)
     monkeypatch.setattr(_update, "_restart_daemons", fake_restart)
+    monkeypatch.setattr(_update, "_ensure_venv", fake_ensure_venv)
 
 
 def test_run_update_happy_path(tmp_paths, monkeypatch):
@@ -311,6 +318,84 @@ def test_run_update_no_python_changes_skips_pip(tmp_paths, monkeypatch):
 
 
 # ---------- helper unit tests ----------
+
+def test_ensure_venv_returns_existing_python_without_recreating(tmp_path, monkeypatch):
+    """If $METASPHERE_DIR/venv/bin/python already exists, _ensure_venv
+    must return it directly without invoking subprocess — no venv
+    recreation, no bootstrap pip install."""
+    from types import SimpleNamespace
+
+    venv_python = tmp_path / "venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text("#!/usr/bin/env python3\n")
+    venv_python.chmod(0o755)
+
+    # Paths shim with just .root — that's all _ensure_venv touches.
+    paths = SimpleNamespace(root=tmp_path)
+
+    sp_calls: list = []
+    def fake_run(*args, **kw):
+        sp_calls.append(args[0] if args else None)
+        import subprocess as _sp
+        return _sp.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(_update.subprocess, "run", fake_run)
+
+    got = _update._ensure_venv(paths, Path("/tmp/repo"), lambda _: None)
+    assert got == venv_python
+    assert sp_calls == [], "reuse path must not call subprocess.run"
+
+
+def test_ensure_venv_creates_and_bootstraps_when_missing(tmp_path, monkeypatch):
+    """When the venv doesn't exist, _ensure_venv must (1) call
+    `python -m venv ...` to create it, (2) install metasphere into it
+    via the new venv's pip. Both subprocess calls return rc=0; after
+    success the venv python path is returned even though the mock
+    didn't create the file (the mock simulates the external behavior)."""
+    from types import SimpleNamespace
+
+    paths = SimpleNamespace(root=tmp_path)
+
+    commands: list[list[str]] = []
+    def fake_run(cmd, **kw):
+        commands.append(cmd)
+        # Simulate successful venv creation by actually touching the
+        # expected python path on the first call.
+        if "-m" in cmd and "venv" in cmd:
+            py = tmp_path / "venv" / "bin" / "python"
+            py.parent.mkdir(parents=True, exist_ok=True)
+            py.write_text("#!/usr/bin/env python3\n")
+            py.chmod(0o755)
+        import subprocess as _sp
+        return _sp.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(_update.subprocess, "run", fake_run)
+
+    got = _update._ensure_venv(paths, Path("/tmp/repo"), lambda _: None)
+    assert got == tmp_path / "venv" / "bin" / "python"
+    # First call: venv creation.
+    assert commands[0][1:3] == ["-m", "venv"]
+    # Second call: pip install -e repo into the new venv.
+    assert commands[1][1:5] == ["-m", "pip", "install", "-e"]
+    assert "/tmp/repo" in commands[1]
+
+
+def test_ensure_venv_raises_clear_error_if_venv_creation_fails(tmp_path, monkeypatch):
+    """If `python -m venv` fails (e.g. python3-venv apt pkg missing),
+    _ensure_venv must raise RuntimeError with actionable text so the
+    update surfaces it as 'pip install failed: <msg>'."""
+    from types import SimpleNamespace
+    paths = SimpleNamespace(root=tmp_path)
+
+    def fake_run(cmd, **kw):
+        import subprocess as _sp
+        return _sp.CompletedProcess(cmd, 1, "", "No module named venv")
+
+    monkeypatch.setattr(_update.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="python3-venv"):
+        _update._ensure_venv(paths, Path("/tmp/repo"), lambda _: None)
+
 
 def test_git_pull_or_reset_happy_path():
     """Clean tree → status porcelain empty → pull --ff-only succeeds."""
