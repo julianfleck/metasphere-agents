@@ -313,21 +313,29 @@ def test_run_update_no_python_changes_skips_pip(tmp_paths, monkeypatch):
 # ---------- helper unit tests ----------
 
 def test_git_pull_or_reset_happy_path():
+    """Clean tree → status porcelain empty → pull --ff-only succeeds."""
     import subprocess as _sp
     calls: list[list[str]] = []
 
     def runner(args):
         calls.append(args)
+        if args[0] == "status":
+            return _sp.CompletedProcess(args, 0, "", "")  # clean
         return _sp.CompletedProcess(args, 0, "", "")
 
     _update._git_pull_or_reset(Path("/tmp"), "main", runner)
-    assert calls == [["pull", "--ff-only", "origin", "main"]]
+    # status check happens first, then pull.
+    assert calls[0] == ["status", "--porcelain"]
+    assert ["pull", "--ff-only", "origin", "main"] in calls
 
 
 def test_git_pull_or_reset_fallback_to_reset():
+    """Clean tree, pull fails → fetch + reset --hard fallback runs."""
     import subprocess as _sp
 
     def runner(args):
+        if args[0] == "status":
+            return _sp.CompletedProcess(args, 0, "", "")  # clean
         if args[0] == "pull":
             return _sp.CompletedProcess(args, 1, "", "conflict")
         return _sp.CompletedProcess(args, 0, "", "")
@@ -339,6 +347,8 @@ def test_git_pull_or_reset_raises_when_reset_fails():
     import subprocess as _sp
 
     def runner(args):
+        if args[0] == "status":
+            return _sp.CompletedProcess(args, 0, "", "")  # clean
         if args[0] == "pull":
             return _sp.CompletedProcess(args, 1, "", "")
         if args[0] == "fetch":
@@ -346,6 +356,52 @@ def test_git_pull_or_reset_raises_when_reset_fails():
         return _sp.CompletedProcess(args, 0, "", "")
 
     with pytest.raises(RuntimeError, match="git fetch"):
+        _update._git_pull_or_reset(Path("/tmp"), "main", runner)
+
+
+def test_git_pull_or_reset_refuses_on_dirty_tree():
+    """Dirty tree → refuse with a RuntimeError listing the paths.
+
+    Regression: 2026-04-16 an auto-triggered `metasphere update` ran
+    against a working tree with 10 files of uncommitted WIP, hit a
+    pull conflict, fell through to `git reset --hard origin/main`, and
+    silently destroyed the WIP (irrecoverable from reflog). The fix
+    refuses to proceed when the tree is dirty so the human has to
+    commit/stash/discard explicitly.
+    """
+    import subprocess as _sp
+    calls: list[list[str]] = []
+
+    def runner(args):
+        calls.append(args)
+        if args[0] == "status":
+            return _sp.CompletedProcess(
+                args, 0,
+                " M metasphere/tmux.py\n M metasphere/heartbeat.py\n?? new_file.py\n",
+                "",
+            )
+        return _sp.CompletedProcess(args, 0, "", "")
+
+    with pytest.raises(RuntimeError, match="uncommitted changes"):
+        _update._git_pull_or_reset(Path("/tmp"), "main", runner)
+
+    # Critical: pull/fetch/reset must NOT have been called.
+    for c in calls:
+        assert c[0] not in ("pull", "fetch", "reset"), (
+            f"dirty-tree refusal must abort BEFORE touching remote, got {c}"
+        )
+
+
+def test_git_pull_or_reset_refuses_when_status_fails():
+    """Unusable `git status` → fail closed (treat as dirty)."""
+    import subprocess as _sp
+
+    def runner(args):
+        if args[0] == "status":
+            return _sp.CompletedProcess(args, 128, "", "not a git repo")
+        return _sp.CompletedProcess(args, 0, "", "")
+
+    with pytest.raises(RuntimeError, match="uncommitted|git status"):
         _update._git_pull_or_reset(Path("/tmp"), "main", runner)
 
 

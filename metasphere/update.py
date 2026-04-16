@@ -341,13 +341,44 @@ def _append_log(paths: Paths, line: str) -> None:
         fh.write(f"[{ts}] {line}\n")
 
 
+def _dirty_paths(runner: GitRunner) -> list[str]:
+    """Return the list of dirty porcelain lines from ``git status``.
+
+    Empty list = clean tree. Each element is a raw ``XY path`` line from
+    ``git status --porcelain``, so callers can both count (truthiness)
+    and render a useful error message.
+    """
+    r = runner(["status", "--porcelain"])
+    if r.returncode != 0:
+        # Fail closed on an unusable status call — treat "can't tell"
+        # as "dirty" rather than silently proceeding to reset --hard.
+        return [f"(git status failed rc={r.returncode})"]
+    return [line for line in (r.stdout or "").splitlines() if line.strip()]
+
+
 def _git_pull_or_reset(repo: Path, branch: str, runner: GitRunner) -> None:
     """Fast-forward ``repo`` to ``origin/<branch>`` with a hard-reset fallback.
 
+    Refuses to proceed if the working tree has uncommitted changes —
+    the fallback is ``git reset --hard``, which silently destroys WIP.
+    Bit Julian on 2026-04-16 (10 files of uncommitted tmux work erased
+    by a wake-triggered auto-update). Caller must commit, stash, or
+    explicitly discard before re-running.
+
     Mirrors the bash ``git pull --ff-only`` → ``git fetch && git reset --hard``
     chain from the retired ``scripts/metasphere update`` path. Raises
-    ``RuntimeError`` if both strategies fail.
+    ``RuntimeError`` if the tree is dirty or if both strategies fail.
     """
+    dirty = _dirty_paths(runner)
+    if dirty:
+        preview = "\n  ".join(dirty[:20])
+        more = f"\n  ...and {len(dirty) - 20} more" if len(dirty) > 20 else ""
+        raise RuntimeError(
+            "refusing to update: working tree has uncommitted changes.\n"
+            "The reset --hard fallback would silently destroy them.\n"
+            "Commit, stash, or `git checkout -- .` before re-running.\n"
+            f"Dirty paths:\n  {preview}{more}"
+        )
     ff = runner(["pull", "--ff-only", "origin", branch])
     if ff.returncode == 0:
         return
