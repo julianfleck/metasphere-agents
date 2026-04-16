@@ -57,12 +57,21 @@ def _input_line_has_typing(tmux: str, session: str) -> bool:
     at the input-buffer state is the precise primitive.
 
     Heuristic: capture-pane, walk back through the last visible lines
-    looking for a Claude TUI prompt (``>`` after stripping any
-    box-drawing border chars). If the content after ``>`` is empty
-    whitespace OR a known ``[Pasted text #`` placeholder, the input is
-    "ours to use"; anything else means a human is mid-typing and we
-    defer rather than blow their input away with our own typing or
-    with the Escape×2 pre-clear.
+    looking for a Claude TUI prompt marker after stripping any
+    box-drawing border chars. Claude Code renders the prompt as ``❯``
+    (U+276F); older stubs/tests also used ASCII ``>``, so both are
+    accepted. If the content after the marker is empty whitespace OR a
+    known ``[Pasted text #`` placeholder, the input is "ours to use";
+    anything else means a human is mid-typing and we defer rather than
+    blow their input away with our own typing or with the Escape×2
+    pre-clear.
+
+    2026-04-16: the original check matched ``>`` only and therefore
+    never fired against a real Claude Code pane — leaving the PR #27
+    Enter-retry second signal dead on arrival, and causing
+    ``submit_to_tmux`` to return True after the first Enter whether or
+    not it actually landed (the race that ate the mid-tool-call
+    telegram inbound).
 
     Fails open on any error (returns False) — better to occasionally
     interleave than to silently drop every heartbeat on tmux quirks.
@@ -79,9 +88,13 @@ def _input_line_has_typing(tmux: str, session: str) -> bool:
         lines = r.stdout.splitlines()
         for line in reversed(lines[-10:]):
             inner = line.strip().lstrip("│|").rstrip("│|").strip()
-            if not inner.startswith(">"):
+            if inner.startswith("❯"):
+                marker_len = len("❯")
+            elif inner.startswith(">"):
+                marker_len = 1
+            else:
                 continue
-            after = inner[1:].strip()
+            after = inner[marker_len:].strip()
             if not after:
                 return False
             if "[Pasted text #" in after:

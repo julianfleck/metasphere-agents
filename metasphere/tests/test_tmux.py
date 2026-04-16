@@ -193,6 +193,33 @@ def test_input_line_has_typing_strips_box_drawing_chars(monkeypatch):
     assert T._input_line_has_typing("/usr/bin/tmux", "sess") is True
 
 
+def test_input_line_has_typing_detects_claude_code_chevron_prompt(monkeypatch):
+    """Real Claude Code TUI renders the prompt as ``❯`` (U+276F), not ASCII
+    ``>``. The 2026-04-16 regression: the heuristic matched only ``>`` and
+    therefore never fired against a real pane. With the fix, a mid-typing
+    ``❯ hello`` must be detected as typing."""
+    def fake_run(argv, **kw):
+        if "capture-pane" in argv:
+            return _fake_cp(stdout="tool output\n❯ hello\n")
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert T._input_line_has_typing("/usr/bin/tmux", "sess") is True
+
+
+def test_input_line_has_typing_false_for_bare_chevron_with_nbsp(monkeypatch):
+    """Empty Claude Code prompt is rendered as ``❯\\xa0`` (chevron + NBSP).
+    ``str.strip()`` removes NBSP in Python 3, so the marker-only case
+    must return False."""
+    def fake_run(argv, **kw):
+        if "capture-pane" in argv:
+            return _fake_cp(stdout="tool output\n❯\xa0\n")
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert T._input_line_has_typing("/usr/bin/tmux", "sess") is False
+
+
 def test_input_line_has_typing_fails_open_on_error(monkeypatch):
     """Fail open on capture-pane errors — better to occasionally
     interleave than drop every heartbeat on tmux quirks."""
