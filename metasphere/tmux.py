@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 import time
 
 
@@ -34,6 +35,59 @@ def _has_session(tmux: str, session: str) -> bool:
             check=False,
         )
         return r.returncode == 0
+    except OSError:
+        return False
+
+
+def _input_line_has_typing(tmux: str, session: str) -> bool:
+    """Inspect the pane and return True if the input box shows
+    user-typed content (mid-typing human).
+
+    2026-04-16: Julian was typing into the attached orchestrator pane
+    when a heartbeat fired ``submit_to_tmux``; its send-keys interleaved
+    with his keystrokes and submitted the garbled mess. This guard
+    inspects the Claude TUI input box BEFORE firing any send-keys; if
+    the prompt line shows typed content that isn't a known paste
+    placeholder, auto-injectors defer.
+
+    A fcntl writer-lock cannot help here — human keystrokes go via the
+    tty, bypassing in-process locks. And a broader check ("is any
+    client attached?") overreaches — Julian keeps the pane attached
+    for monitoring, so attach-alone is not evidence of typing. Looking
+    at the input-buffer state is the precise primitive.
+
+    Heuristic: capture-pane, walk back through the last visible lines
+    looking for a Claude TUI prompt (``>`` after stripping any
+    box-drawing border chars). If the content after ``>`` is empty
+    whitespace OR a known ``[Pasted text #`` placeholder, the input is
+    "ours to use"; anything else means a human is mid-typing and we
+    defer rather than blow their input away with our own typing or
+    with the Escape×2 pre-clear.
+
+    Fails open on any error (returns False) — better to occasionally
+    interleave than to silently drop every heartbeat on tmux quirks.
+    """
+    try:
+        r = subprocess.run(
+            [tmux, "capture-pane", "-p", "-t", session],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if r.returncode != 0:
+            return False
+        lines = r.stdout.splitlines()
+        for line in reversed(lines[-10:]):
+            inner = line.strip().lstrip("│|").rstrip("│|").strip()
+            if not inner.startswith(">"):
+                continue
+            after = inner[1:].strip()
+            if not after:
+                return False
+            if "[Pasted text #" in after:
+                return False
+            return True
+        return False
     except OSError:
         return False
 
@@ -60,7 +114,9 @@ def _has_pending_paste(tmux: str, session: str) -> bool:
         return False
 
 
-def submit_to_tmux(session: str, message: str) -> bool:
+def submit_to_tmux(
+    session: str, message: str, *, defer_if_busy: bool = False
+) -> bool:
     """Deliver *message* to a claude TUI in tmux session *session*.
 
     Strategy: split on newlines, send each line via ``tmux send-keys -l``
@@ -70,6 +126,16 @@ def submit_to_tmux(session: str, message: str) -> bool:
     retries Enter up to 3 times if one is found.
 
     Returns True on success, False on any failure. Never raises.
+
+    If *defer_if_busy* is True, abort (returning False, no send-keys
+    fired) when the input box shows typed content (see
+    :func:`_input_line_has_typing`). Auto-injectors (heartbeat,
+    agent-to-agent wakes, telegram inject, posthook deferred-cmd,
+    restart-wake) opt in; manual CLI paths leave it off so a
+    user-initiated send still goes through. Importantly, this does NOT
+    check for client attachment — Julian keeps panes attached for
+    monitoring and attach-alone isn't evidence of typing; we guard on
+    actual input-buffer content instead.
     """
     try:
         tmux = _find_tmux()
@@ -77,6 +143,13 @@ def submit_to_tmux(session: str, message: str) -> bool:
             return False
 
         if not _has_session(tmux, session):
+            return False
+
+        if defer_if_busy and _input_line_has_typing(tmux, session):
+            print(
+                f"[tmux.submit] defer: input has typing in {session}",
+                file=sys.stderr,
+            )
             return False
 
         # Pre-emptive Escape × 2: clears any ``[Pasted text #N``
