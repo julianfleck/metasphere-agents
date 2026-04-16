@@ -294,6 +294,14 @@ def test_run_update_no_python_changes_skips_pip(tmp_paths, monkeypatch):
     pip_calls: list[list[str]] = []
     _patch_update_helpers(monkeypatch)
 
+    # Pre-create the venv python path so run_update sees
+    # "venv_existed_before=True" and doesn't mark pip_reinstalled=True
+    # just because _ensure_venv bootstrapped a fresh venv.
+    fake_venv_python = tmp_paths.root / "venv" / "bin" / "python"
+    fake_venv_python.parent.mkdir(parents=True, exist_ok=True)
+    fake_venv_python.write_text("#!/usr/bin/env python3\n")
+    fake_venv_python.chmod(0o755)
+
     def fake_runner(args):
         import subprocess
         if args[0] == "rev-parse":

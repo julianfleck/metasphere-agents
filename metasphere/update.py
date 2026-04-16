@@ -655,15 +655,37 @@ def run_update(
 
     subjects = _commit_subjects(repo, old, new, runner)
     pip_reinstalled = False
+
+    # Ensure the dedicated venv at $METASPHERE_DIR/venv exists — even
+    # if there are no python changes in this update cycle. A host
+    # installed before venv-first (pre-e148ad1) has no venv; the first
+    # `metasphere update` after the venv-first commit lands must
+    # create one regardless of whether python_changes triggers a
+    # subsequent reinstall. Otherwise the host sits in a state where
+    # HEAD is current, python_changes=False, and the venv never
+    # materializes (the 2026-04-16 srv1399986 stuck state).
+    #
+    # _ensure_venv does a bootstrap `pip install -e .` during venv
+    # creation; that counts as a reinstall for this cycle's purposes.
+    venv_existed_before = _venv_python(paths).exists()
+    try:
+        venv_python = _ensure_venv(paths, repo, log)
+    except RuntimeError as e:
+        reason = f"venv bootstrap failed: {e}"
+        log(f"auto-update: FAILED — {reason}")
+        result = UpdateResult(
+            ok=False, old_hash=old, new_hash=new, commits=len(subjects),
+            subjects=subjects, reason=reason,
+        )
+        _record_result(paths, result, cfg, notify_sender)
+        return result
+    if not venv_existed_before:
+        log("auto-update: new venv bootstrapped, initial pip install done")
+        pip_reinstalled = True
+
+    # Additional reinstall if git pulled actual python changes.
     if _has_python_changes(repo, old, new, runner):
         log("auto-update: python changes detected, re-installing package")
-        # Ensure we have a dedicated venv at $METASPHERE_DIR/venv and
-        # install into it. This avoids PEP 668 / externally-managed
-        # errors on modern Debian/Ubuntu hosts AND keeps metasphere
-        # isolated from the system Python. If the venv already exists
-        # we reuse it; otherwise we create it on-demand (self-healing
-        # migration path for hosts installed before venv-first).
-        venv_python = _ensure_venv(paths, repo, log)
         pip_runner_for_venv = pip_runner or _venv_pip_runner(venv_python)
         rc = pip_runner_for_venv([
             "-m", "pip", "install", "-e", str(repo), "--quiet",
