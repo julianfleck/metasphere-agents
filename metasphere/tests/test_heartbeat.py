@@ -131,6 +131,33 @@ def test_invoke_agent_heartbeat_falls_back_to_oneshot(tmp_paths: Paths):
     assert "--allowedTools" in cmd
 
 
+def test_invoke_agent_heartbeat_passes_defer_if_busy_true(tmp_paths: Paths):
+    """Heartbeat is a NON-user auto-injector: it must pass
+    ``defer_if_busy=True`` so it backs off when the REPL pane shows
+    typed content (the 2026-04-16 'heartbeat took over my cursor'
+    bug). Companion to the telegram-handler test that asserts the
+    USER inbound path passes False.
+    """
+    _agent(tmp_paths, "@orchestrator", "active")
+
+    captured: list[dict] = []
+
+    def fake_submit(session, message, **kwargs):
+        captured.append({"session": session, "kwargs": dict(kwargs)})
+        return True
+
+    with mock.patch.object(hb, "session_alive", return_value=True), \
+         mock.patch("metasphere.tmux.submit_to_tmux", fake_submit):
+        ok = hb.invoke_agent_heartbeat("@orchestrator", tmp_paths)
+
+    assert ok is True
+    assert len(captured) == 1
+    assert captured[0]["kwargs"].get("defer_if_busy") is True, (
+        "heartbeat (non-user auto-injector) must defer when the REPL "
+        "buffer shows typed content"
+    )
+
+
 def test_log_status_to_disk_writes_marker(tmp_paths: Paths):
     hb.log_status_to_disk(tmp_paths)
     p = tmp_paths.state / "heartbeat_last_run"

@@ -881,6 +881,52 @@ def test_handle_update_plain_text_unchanged(tmp_path, monkeypatch):
     assert tmux_log[0]["text"] == "just text"
 
 
+def test_handle_update_telegram_inject_does_not_defer(tmp_path, monkeypatch):
+    """Telegram-user inbound IS the user typing — clobbering visible
+    REPL content with a telegram is precisely what j0lian wants. The
+    handler MUST pass ``defer_if_busy=False`` (or omit it / leave the
+    default) so the input-buffer guard never gates this path.
+
+    Regression for the 2026-04-16 PR #23 overreach: handler.py originally
+    passed defer_if_busy=True, which silently dropped j0lian's
+    12:15/12:48/12:54 CEST messages whenever the orchestrator pane had
+    typed content. Telegram-side marked status=read but the pane never
+    became a user-turn.
+    """
+    captured: list[dict] = []
+
+    def fake_submit(from_user, text, session="metasphere-orchestrator", **kwargs):
+        captured.append({"from": from_user, "text": text, "kwargs": dict(kwargs)})
+        return True
+
+    monkeypatch.setattr(inject, "submit_to_tmux", fake_submit)
+
+    monkeypatch.setattr(archiver, "DEFAULT_DIR", str(tmp_path / "tg"))
+    monkeypatch.setattr(_handler, "_default_save_chat_id", lambda cid: None)
+    monkeypatch.setattr(_handler, "_default_pending_ack_writer", lambda cid, mid: None)
+
+    payload = {
+        "update_id": 2001,
+        "message": {
+            "message_id": 901,
+            "chat": {"id": 123, "is_forum": False},
+            "from": {"username": "j0lian"},
+            "date": 1700000000,
+            "text": "is this getting through?",
+        },
+    }
+    u = poller.Update.from_payload(payload)
+    _handler.handle_update(u)
+
+    assert len(captured) == 1, "telegram path must inject exactly once"
+    # The guard MUST NOT be active for telegram-user input.
+    assert captured[0]["kwargs"].get("defer_if_busy") is False, (
+        "handler must pass defer_if_busy=False — telegram-user input is "
+        "the user typing and must always land, even when REPL has typed "
+        "content visible (that is precisely what the user is replacing)."
+    )
+
+
 # NOTE: there is no integration test against a real bot token. The
 # poller-side path above covers the download + inject wiring with
 # mocked getFile + http_get. A live end-to-end test would require a
