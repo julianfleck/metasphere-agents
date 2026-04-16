@@ -81,6 +81,28 @@ def _changelog_newest_date(changelog: Path) -> Optional[str]:
     return None
 
 
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _normalize_since(since: str) -> str:
+    """Render a ``YYYY-MM-DD`` as an unambiguous ``YYYY-MM-DD 00:00:00
+    +0000`` string so ``git log --since`` doesn't miss same-day
+    commits due to local-time interpretation.
+
+    Symptom 2026-04-15: ``--since 2026-04-15`` run on 2026-04-15
+    could return "no new commits" because git interpreted the bare
+    date in local-TZ, pushing the cutoff forward of UTC commits made
+    earlier that same day. Explicit UTC midnight fixes it — commits
+    with a UTC timestamp ``>= YYYY-MM-DD 00:00:00Z`` are included.
+
+    Non-date strings (e.g. ``"2 days ago"`` or an explicit timestamp)
+    pass through unchanged.
+    """
+    if _DATE_ONLY_RE.match(since):
+        return f"{since} 00:00:00 +0000"
+    return since
+
+
 def _git_log_since(repo: Path, since: str) -> List[dict]:
     """Parse ``git log --since=<date> --name-only`` into a list of
     ``{"sha", "subject", "files"}`` records. Empty list on any git
@@ -95,7 +117,7 @@ def _git_log_since(repo: Path, since: str) -> List[dict]:
     try:
         out = subprocess.run(
             ["git", "-C", str(repo), "log",
-             f"--since={since}",
+             f"--since={_normalize_since(since)}",
              "--pretty=format:%H|%s",
              "--name-only"],
             check=False, text=True, capture_output=True,
@@ -257,13 +279,17 @@ def _notify_orchestrator(project_name: str, report_path: Path,
 
 def _run_audit(project_name: str, *, paths: Paths,
                 output_dir: Optional[Path] = None,
-                notify: bool = True) -> tuple[int, Path]:
+                notify: bool = True,
+                since_override: Optional[str] = None) -> tuple[int, Path]:
     """Execute an audit for one project.
 
     Returns ``(exit_code, report_path)``. Exit codes:
       * 0 — report produced, no staleness flags
       * 1 — report produced, staleness flags raised
       * 2 — precondition failure (no such project, no repo)
+
+    ``since_override`` bypasses ``_changelog_newest_date`` — useful when
+    the operator wants to re-audit a known window.
     """
     proj = _project.Project.for_name(project_name, paths)
     if proj is None:
@@ -275,11 +301,14 @@ def _run_audit(project_name: str, *, paths: Paths,
               file=sys.stderr)
         return 2, Path()
 
-    changelog = repo / "CHANGELOG.md"
-    since = _changelog_newest_date(changelog)
-    if since is None:
-        # No CHANGELOG or no datable entries — audit the last 7 days.
-        since = (_dt.date.today() - _dt.timedelta(days=7)).isoformat()
+    if since_override:
+        since = since_override
+    else:
+        changelog = repo / "CHANGELOG.md"
+        since = _changelog_newest_date(changelog)
+        if since is None:
+            # No CHANGELOG or no datable entries — audit the last 7 days.
+            since = (_dt.date.today() - _dt.timedelta(days=7)).isoformat()
 
     records = _git_log_since(repo, since)
     stale = _staleness_flags(records)
@@ -411,6 +440,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help=f"Report dir (default: {REPORTS_ROOT}).")
     parser.add_argument("--no-notify", action="store_true",
                         help="Skip the !info message to @orchestrator.")
+    parser.add_argument(
+        "--since", default=None,
+        help="Override the CHANGELOG-derived window. Accepts a bare "
+        "``YYYY-MM-DD`` (interpreted as 00:00:00 UTC — same-day commits "
+        "included), or any string git's ``--since`` understands.",
+    )
 
     args = parser.parse_args(argv)
     paths = resolve()
@@ -444,6 +479,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         args.project, paths=paths,
         output_dir=args.output,
         notify=not args.no_notify,
+        since_override=args.since,
     )
     if path != Path():
         print(f"audit-docs: report → {path}")

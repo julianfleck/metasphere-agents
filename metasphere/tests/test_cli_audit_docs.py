@@ -249,3 +249,105 @@ def test_register_cron_cli_entry(tmp_paths, tmp_path, capsys):
 def test_main_rejects_invocation_without_project_or_subcommand(capsys):
     with pytest.raises(SystemExit):
         A.main([])
+
+
+# --- P3: same-day --since handling --------------------------------------
+
+
+def test_normalize_since_bare_date_pins_utc_midnight():
+    """Bare ``YYYY-MM-DD`` must be pinned to UTC midnight so git's
+    local-TZ interpretation can't push same-day UTC commits out.
+    """
+    assert A._normalize_since("2026-04-15") == "2026-04-15 00:00:00 +0000"
+
+
+def test_normalize_since_non_date_passes_through():
+    """Non-date strings are git-relative (``2 days ago``) or explicit
+    timestamps; leave those unchanged.
+    """
+    assert A._normalize_since("2 days ago") == "2 days ago"
+    assert (A._normalize_since("2026-04-15T12:00:00Z")
+            == "2026-04-15T12:00:00Z")
+
+
+def test_audit_includes_same_day_commits(tmp_path, tmp_paths):
+    """Regression for the 2026-04-15 evening symptom: an audit run ON
+    2026-04-15 with ``since=2026-04-15`` must include commits made
+    earlier that same day. Previously, git's local-TZ interpretation
+    could push the cutoff past UTC same-day commits, returning 'no
+    new commits' despite prior merges that day.
+    """
+    import datetime as _dt
+    import time as _time
+    repo = _make_repo(tmp_path / "proj-sameday")
+    _register(tmp_paths, "proj-sameday", repo)
+
+    # Commit with today's UTC date, pinned via GIT_*_DATE env so the
+    # test is reproducible across test-host TZs.
+    today_iso = _dt.date.today().isoformat()
+    env = {
+        "GIT_AUTHOR_DATE":    f"{today_iso}T08:00:00+0000",
+        "GIT_COMMITTER_DATE": f"{today_iso}T08:00:00+0000",
+    }
+    (repo / "new.py").write_text("x = 1\n")
+    import subprocess as _sp
+    _sp.run(["git", "-C", str(repo), "add", "new.py"], check=True)
+    _sp.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m",
+         "feat(cli): same-day commit for audit test"],
+        check=True, env={**__import__("os").environ, **env},
+    )
+
+    # Audit with since=today should include the same-day commit.
+    rc, path = A._run_audit(
+        "proj-sameday", paths=tmp_paths,
+        output_dir=tmp_path / "audits",
+        notify=False, since_override=today_iso,
+    )
+    # rc is 1 (staleness flag on the cli: subject) rather than 0 means
+    # the commit was seen — that's the assertion we care about.
+    report = path.read_text()
+    assert "same-day commit for audit test" in report, (
+        f"same-day commit missed — report:\n{report}"
+    )
+
+
+def test_cli_since_flag_passed_through(tmp_path, tmp_paths, capsys):
+    """``metasphere audit-docs --project X --since 2026-04-15`` routes
+    the flag through to ``_run_audit``. Pin a synthetic old commit
+    and a new commit; audit with ``--since=<old>`` → report mentions
+    both.
+    """
+    import datetime as _dt
+    import subprocess as _sp, os as _os
+    repo = _make_repo(tmp_path / "proj-flag")
+    _register(tmp_paths, "proj-flag", repo)
+
+    today_iso = _dt.date.today().isoformat()
+    # A commit dated 2 days ago.
+    two_days_ago = (_dt.date.today() - _dt.timedelta(days=2)).isoformat()
+    env = {
+        **_os.environ,
+        "GIT_AUTHOR_DATE":    f"{two_days_ago}T12:00:00+0000",
+        "GIT_COMMITTER_DATE": f"{two_days_ago}T12:00:00+0000",
+    }
+    (repo / "older.py").write_text("y = 2\n")
+    _sp.run(["git", "-C", str(repo), "add", "older.py"], check=True)
+    _sp.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m",
+         "feat: older commit"],
+        check=True, env=env,
+    )
+
+    rc = A.main([
+        "--project", "proj-flag",
+        "--since", two_days_ago,
+        "--output", str(tmp_path / "out"),
+        "--no-notify",
+    ])
+    assert rc in (0, 1)
+    # Locate the written report by pattern.
+    outs = list((tmp_path / "out").rglob("proj-flag.md"))
+    assert outs, "report not written"
+    content = outs[0].read_text()
+    assert "older commit" in content
