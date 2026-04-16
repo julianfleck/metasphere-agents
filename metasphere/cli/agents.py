@@ -19,14 +19,20 @@ from metasphere import agents as _agents
 from metasphere import paths as _paths
 
 
-def _list() -> int:
+def _list(project_filter: str | None = None) -> int:
     p = _paths.resolve()
     items = _agents.list_agents(p)
     persistent = [a for a in items if a.is_persistent]
+    if project_filter:
+        persistent = [a for a in persistent
+                      if getattr(a, "project", None) == project_filter]
     if not persistent:
         print("No persistent agents.")
         return 0
-    print("Persistent agents (have MISSION.md):")
+    header = "Persistent agents (have MISSION.md):"
+    if project_filter:
+        header = f"Persistent agents [{project_filter}]:"
+    print(header)
     for a in persistent:
         marker = "●" if _agents.session_alive(a.session_name) else "○"
         print(f"  {marker} {a.name}")
@@ -469,7 +475,8 @@ def main(argv: list[str] | None = None) -> int:
         print(__doc__ or "")
         return 0
     if not argv or argv[0] in ("list", "--list"):
-        return _list()
+        project_arg = argv[1] if len(argv) > 1 and not argv[1].startswith("-") else None
+        return _list(project_filter=project_arg)
     if argv[0] in ("status", "--status"):
         return _status()
     if argv[0] == "spawn":

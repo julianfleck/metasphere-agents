@@ -61,11 +61,11 @@ class _C:
 
 
 def _ok(c: _C, text: str) -> str:
-    return f"  {c.green}*{c.nc} {text}"
+    return f"  {c.green}●{c.nc} {text}"
 
 
 def _warn(c: _C, text: str) -> str:
-    return f"  {c.yellow}!{c.nc} {text}"
+    return f"  {c.yellow}○{c.nc} {text}"
 
 
 def _dim(c: _C, text: str) -> str:
@@ -116,9 +116,9 @@ def _render_session(c: _C, lines: list[str]) -> None:
     # use the canonical helper so any future rename flows through.
     alive = _agents.session_alive("metasphere-orchestrator")
     if alive:
-        lines.append(f"  {c.green}*{c.nc} session active")
+        lines.append(f"  {c.green}●{c.nc} session active")
     else:
-        lines.append(f"  {c.yellow}o{c.nc} no session")
+        lines.append(f"  {c.yellow}○{c.nc} no session")
 
 
 def _count_active_tasks(project_path: Path) -> int:
@@ -149,7 +149,8 @@ def _count_agents_for_scope(paths: Paths, project_path: Path) -> int:
     return count
 
 
-def _render_projects(c: _C, paths: Paths, lines: list[str]) -> None:
+def _render_projects(c: _C, paths: Paths, lines: list[str],
+                     *, project_filter: str | None = None) -> None:
     lines.append(f"{c.bold}Projects{c.nc}")
     try:
         projects = _project.list_projects(paths=paths)
@@ -158,6 +159,11 @@ def _render_projects(c: _C, paths: Paths, lines: list[str]) -> None:
     if not projects:
         lines.append(_dim(c, "(no projects - run: metasphere project init)"))
         return
+    if project_filter:
+        projects = [p for p in projects if p.name == project_filter]
+        if not projects:
+            lines.append(_dim(c, f"(no project named '{project_filter}')"))
+            return
     for p in projects:
         pp = Path(p.path) if p.path else None
         # ``list_projects`` marks a project ``missing`` when its project.json
@@ -167,12 +173,12 @@ def _render_projects(c: _C, paths: Paths, lines: list[str]) -> None:
         # check was a rough approximation and reported false positives for
         # projects whose on-disk home moved to ``~/.metasphere/projects/``.
         if p.status == "missing" or pp is None or not pp.exists():
-            lines.append(f"  {c.red}o{c.nc} {p.name} {c.dim}(missing){c.nc}")
+            lines.append(f"  {c.red}○{c.nc} {p.name} {c.dim}(missing){c.nc}")
             continue
         tasks = _count_active_tasks(pp)
         agents = _count_agents_for_scope(paths, pp)
         lines.append(
-            f"  {c.green}*{c.nc} {p.name} "
+            f"  {c.green}●{c.nc} {p.name} "
             f"{c.dim}({tasks} tasks, {agents} agents){c.nc}"
         )
 
@@ -191,7 +197,8 @@ def _render_events(c: _C, paths: Paths, lines: list[str]) -> None:
         lines.append(f"  {ev_line}")
 
 
-def _render_agents(c: _C, paths: Paths, lines: list[str]) -> None:
+def _render_agents(c: _C, paths: Paths, lines: list[str],
+                   *, project_filter: str | None = None) -> None:
     lines.append(f"{c.bold}Agents{c.nc}")
     active: list[str] = []
     spawned: list[str] = []
@@ -200,6 +207,9 @@ def _render_agents(c: _C, paths: Paths, lines: list[str]) -> None:
         records = _agents.list_agents(paths)
     except Exception:
         records = []
+    if project_filter:
+        records = [r for r in records
+                   if getattr(r, "project", None) == project_filter]
     for rec in records:
         status = rec.status or "unknown"
         head = status.split(":", 1)[0]
@@ -211,11 +221,11 @@ def _render_agents(c: _C, paths: Paths, lines: list[str]) -> None:
             other.append(rec.name)
 
     if active:
-        lines.append(f"  {c.green}*{c.nc} active: {' '.join(active)}")
+        lines.append(f"  {c.green}●{c.nc} active: {' '.join(active)}")
     if spawned:
-        lines.append(f"  {c.yellow}o{c.nc} spawned: {' '.join(spawned)}")
+        lines.append(f"  {c.yellow}◐{c.nc} spawned: {' '.join(spawned)}")
     if other:
-        lines.append(f"  {c.dim}o{c.nc} other: {' '.join(other)}")
+        lines.append(f"  {c.dim}○{c.nc} other: {' '.join(other)}")
     if not (active or spawned or other):
         lines.append(_dim(c, "(none)"))
 
@@ -409,9 +419,10 @@ def _agent_event_tail(paths: Paths, agent: str, n: int) -> list[str]:
 def main(argv: list[str]) -> int:
     if argv and argv[0] in ("-h", "--help"):
         sys.stdout.write(
-            "Usage: metasphere ls [@agent]\n"
-            "  (no arg)  Show top-level landscape\n"
-            "  @agent    Show detail view for that agent\n"
+            "Usage: metasphere ls [@agent | project-name]\n"
+            "  (no arg)      Show top-level landscape\n"
+            "  @agent        Show detail view for that agent\n"
+            "  project-name  Show landscape filtered to one project\n"
         )
         return 0
 
@@ -425,15 +436,17 @@ def main(argv: list[str]) -> int:
         sys.stdout.write("\n".join(lines) + "\n")
         return rc
 
+    project_filter = argv[0] if argv and not argv[0].startswith("-") else None
+
     # Top-level landscape
     lines.append(f"{c.bold}Metasphere{c.nc} {_time_display(paths)}")
     _render_session(c, lines)
     lines.append("")
-    _render_projects(c, paths, lines)
+    _render_projects(c, paths, lines, project_filter=project_filter)
     lines.append("")
     _render_events(c, paths, lines)
     lines.append("")
-    _render_agents(c, paths, lines)
+    _render_agents(c, paths, lines, project_filter=project_filter)
     lines.append("")
     _render_tasks(c, paths, lines)
     _render_messages(c, paths, lines)

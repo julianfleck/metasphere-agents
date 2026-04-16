@@ -108,6 +108,11 @@ def _all_projects_tasks(include_completed: bool = False) -> list:
     project whose ``.tasks/`` directory is missing or unreadable is
     silently skipped — a condensed view with N-1 projects is vastly
     preferable to a hard error.
+
+    Deduplicates by task ID so that global tasks (scope ``/.``, project
+    ``default``) appear once under a "Global" project header rather
+    than being duplicated into every project section (each project's
+    ``list_tasks`` includes the global bucket).
     """
     try:
         from metasphere.project import list_projects
@@ -116,6 +121,7 @@ def _all_projects_tasks(include_completed: bool = False) -> list:
         return []
     paths = _p.resolve()
     out: list = []
+    seen_ids: set[str] = set()
     try:
         projects = list_projects(paths=paths)
     except Exception:
@@ -128,12 +134,44 @@ def _all_projects_tasks(include_completed: bool = False) -> list:
             items = _tasks.list_tasks(pp, pp, include_completed=include_completed)
         except Exception:
             continue
-        # Tag the project name onto each task in case the frontmatter says
-        # "default" — keeps the condensed view accurate.
         for t in items:
+            tid = getattr(t, "id", None)
+            if tid and tid in seen_ids:
+                continue
+            if tid:
+                seen_ids.add(tid)
+            # Tag the project name onto each task in case the frontmatter
+            # says "default" — keeps the condensed view accurate. Tasks
+            # whose project is genuinely "default" (global scope) keep
+            # that tag so format_task_condensed groups them under "Global".
             if not getattr(t, "project", None) or t.project == "default":
                 t.project = proj.name
-        out.extend(items)
+            out.extend([t])
+    # Also collect global-only tasks not yet seen (tasks created at root
+    # scope that don't appear under any registered project).
+    try:
+        from metasphere.project import Project
+        global_proj = Project.global_scope()
+        td = global_proj.tasks_dir(paths)
+        if td.is_dir():
+            for d in [td / "active"] + ([td / "completed"] if include_completed else []):
+                if not d.is_dir():
+                    continue
+                for f in sorted(d.glob("*.md")):
+                    try:
+                        t = _tasks._load(f)
+                    except Exception:
+                        continue
+                    tid = getattr(t, "id", None)
+                    if tid and tid in seen_ids:
+                        continue
+                    if tid:
+                        seen_ids.add(tid)
+                    if not getattr(t, "project", None) or t.project == "default":
+                        t.project = "Global"
+                    out.append(t)
+    except Exception:
+        pass
     return out
 
 
@@ -162,6 +200,9 @@ def _cmd_list(args: list[str]) -> int:
             i += 1
         elif a in ("active", "all", "completed"):
             filter_ = a
+            i += 1
+        elif not a.startswith("-") and project_filter is None:
+            project_filter = a
             i += 1
         else:
             i += 1

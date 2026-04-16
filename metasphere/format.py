@@ -32,18 +32,18 @@ from typing import Sequence
 # ---------------------------------------------------------------------------
 
 TASK_STATUS_EMOJI = {
-    "pending": "🔵",
-    "in-progress": "🟡",
-    "in_progress": "🟡",
-    "blocked": "🔴",
-    "completed": "🟢",
-    "stale": "🟣",
-    "unowned": "⚪",
+    "pending": "○",
+    "in-progress": "◐",
+    "in_progress": "◐",
+    "blocked": "◑",
+    "completed": "●",
+    "stale": "◑",
+    "unowned": "○",
 }
 
 SCHED_STATUS_EMOJI = {
-    "enabled": "🟢",
-    "disabled": "🔴",
+    "enabled": "●",
+    "disabled": "○",
 }
 
 
@@ -52,8 +52,8 @@ def task_status_emoji(status: str, *, assignee: str = "") -> str:
     if s in TASK_STATUS_EMOJI:
         return TASK_STATUS_EMOJI[s]
     if not assignee:
-        return "⚪"
-    return "🔵"
+        return "○"
+    return "○"
 
 
 def sched_status_emoji(enabled: bool) -> str:
@@ -208,12 +208,12 @@ def _resolve_html(html):
 
 
 AGENT_STATUS_EMOJI = {
-    "active": "🟢",
-    "idle": "⚪",
-    "spawned": "🔵",
-    "working": "🟡",
-    "waiting": "🟠",
-    "complete": "🟢",
+    "active": "●",
+    "idle": "○",
+    "spawned": "◐",
+    "working": "◐",
+    "waiting": "◑",
+    "complete": "●",
 }
 
 
@@ -222,7 +222,7 @@ def _agent_status_emoji(status: str) -> str:
     for prefix, emoji in AGENT_STATUS_EMOJI.items():
         if s.startswith(prefix):
             return emoji
-    return "🔵"
+    return "○"
 
 
 def _agent_card(agent, *, html: bool, live: bool = False) -> str:

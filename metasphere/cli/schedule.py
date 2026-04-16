@@ -26,18 +26,32 @@ def _fmt_ts(ts: int) -> str:
     return _dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
-def _cmd_list() -> int:
+def _cmd_list(project_filter: str | None = None) -> int:
     paths = _paths.resolve()
     jobs = _sched.list_jobs(paths)
+    if project_filter:
+        jobs = [j for j in jobs if _job_matches_project(j, project_filter)]
     if not jobs:
-        print("(no scheduled jobs)")
+        msg = f"(no scheduled jobs for {project_filter})" if project_filter else "(no scheduled jobs)"
+        print(msg)
         return 0
     from metasphere.format import format_schedule_table
     ordered = sorted(jobs, key=lambda x: (not x.enabled, x.name))
-    print(f"Scheduled Jobs ({len(jobs)})")
+    header = f"Scheduled Jobs ({len(jobs)})"
+    if project_filter:
+        header = f"Scheduled Jobs [{project_filter}] ({len(jobs)})"
+    print(header)
     print()
     print(format_schedule_table(ordered))
     return 0
+
+
+def _job_matches_project(job, project_name: str) -> bool:
+    """Return True if a job's name or target suggests it belongs to a
+    project. Heuristic: the job name contains the project name as a
+    prefix (e.g. ``cam:weekly-review``)."""
+    name = getattr(job, "name", "") or ""
+    return name.startswith(f"{project_name}:") or name == project_name
 
 
 def _cmd_run() -> int:
@@ -90,7 +104,8 @@ def main(argv: list[str] | None = None) -> int:
     rest = argv[1:]
 
     if cmd in ("", "list", "ls"):
-        return _cmd_list()
+        project_arg = rest[0] if rest and not rest[0].startswith("-") else None
+        return _cmd_list(project_filter=project_arg)
     if cmd in ("run", "check"):
         return _cmd_run()
     if cmd == "daemon":

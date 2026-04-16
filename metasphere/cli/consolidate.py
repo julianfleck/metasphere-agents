@@ -79,8 +79,9 @@ def _cmd_run(argv: list[str]) -> int:
         f"{len(report.results)} tasks scanned"
     )
     for r in report.results:
-        marker = f"[{r['action']}]"
-        line = f"  {marker:32s} {r['verdict']:8s} {r['task_id']}"
+        icon = "○" if r["action"] == "noop" else "●"
+        action = r["action"]
+        line = f"  {icon} {action:28s} {r['verdict']:8s} {r['task_id']}"
         if r.get("target"):
             line += f"  → {r['target']}"
         print(line)
@@ -94,8 +95,9 @@ def _cmd_run(argv: list[str]) -> int:
         for r in report.message_results:
             if r["action"] == "noop":
                 continue
-            marker = f"[{r['action']}]"
-            line = f"  {marker:32s} {r['verdict']:24s} {r['msg_id']}"
+            icon = "●"
+            action = r["action"]
+            line = f"  {icon} {action:28s} {r['verdict']:24s} {r['msg_id']}"
             if r.get("target"):
                 line += f"  → {r['target']}"
             print(line)

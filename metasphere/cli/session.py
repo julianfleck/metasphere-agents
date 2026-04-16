@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
             print("(no metasphere sessions)")
             return 0
         for s in rows:
-            mark = "*" if s.attached else " "
+            mark = "●" if s.attached else "○"
             print(f"{mark} {s.agent:24} {s.name:32} windows={s.windows}")
         return 0
 
