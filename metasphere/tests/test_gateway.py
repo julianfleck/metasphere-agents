@@ -493,3 +493,63 @@ def test_restart_claude_skips_when_session_dead(tmp_paths, monkeypatch):
     # No send-keys traffic.
     sendkeys = [c for c in calls if c and c[0] == "send-keys"]
     assert sendkeys == []
+
+
+# ---------------------------------------------------------------------------
+# write_harness_hash_baseline — drift-banner divergence fix (PR #19)
+#
+# 2026-04-16: the drift banner fired every context inject even when
+# nothing had changed. Baseline writer (gateway daemon with
+# METASPHERE_REPO_ROOT=/home/openclaw/projects/metasphere-agents)
+# hashed source-repo CLAUDE.md; reader (@orchestrator REPL with
+# CWD=~/.metasphere, no env) hashed ~/.metasphere/CLAUDE.md. Two
+# different files, two different hashes, banner always mismatched.
+# Fixed by pinning both to paths.root.
+# ---------------------------------------------------------------------------
+
+
+def test_write_harness_hash_baseline_hashes_root_not_project_root(tmp_paths):
+    """Writer and reader must resolve the same file regardless of which
+    of project_root/root they start from. Seed DIFFERENT content in
+    both; baseline must match the root hash (what the REPL reader
+    also computes).
+    """
+    import hashlib as _h
+    (tmp_paths.root / "CLAUDE.md").write_text("ROOT content\n")
+    (tmp_paths.project_root).mkdir(parents=True, exist_ok=True)
+    (tmp_paths.project_root / "CLAUDE.md").write_text("REPO content\n")
+
+    gw_session.write_harness_hash_baseline(tmp_paths)
+
+    baseline_path = tmp_paths.state / "harness_hash_baseline"
+    assert baseline_path.is_file()
+    written = baseline_path.read_text(encoding="utf-8").strip()
+    expected = _h.sha256(b"ROOT content\n").hexdigest()
+    assert written == expected, (
+        f"baseline must hash paths.root/CLAUDE.md (ROOT), "
+        f"not project_root/CLAUDE.md (REPO). got {written}, "
+        f"expected {expected}"
+    )
+
+
+def test_write_harness_hash_baseline_matches_reader_hash(tmp_paths):
+    """End-to-end: baseline written by the gateway must equal the live
+    hash computed by ``harness_hash`` on the same paths. Before PR #19
+    these diverged when the two callers resolved different
+    project_roots via env.
+    """
+    from metasphere.context import harness_hash
+    (tmp_paths.root / "CLAUDE.md").write_text("same claude.md\n")
+    # Also write a DIFFERENT file at project_root — would have
+    # tripped the old code that read from project_root.
+    tmp_paths.project_root.mkdir(parents=True, exist_ok=True)
+    (tmp_paths.project_root / "CLAUDE.md").write_text("divergent content\n")
+
+    gw_session.write_harness_hash_baseline(tmp_paths)
+    live = harness_hash(tmp_paths)
+
+    baseline = (tmp_paths.state / "harness_hash_baseline").read_text().strip()
+    assert baseline == live, (
+        "baseline writer and harness_hash reader must agree "
+        "regardless of which CLAUDE.md lives at project_root"
+    )

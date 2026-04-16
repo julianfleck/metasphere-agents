@@ -53,25 +53,32 @@ def truncate_section(text: str, budget: int = DEFAULT_SECTION_BUDGET) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _existing_harness_files(project_root: Path) -> list[Path]:
+def _existing_harness_files(base: Path) -> list[Path]:
     out: list[Path] = []
     for rel in _HARNESS_FILES:
-        p = project_root / rel
+        p = base / rel
         if p.is_file():
             out.append(p)
     return out
 
 
 def harness_hash(paths: Paths) -> str:
-    """Sha256 of the harness files, sorted by path then concatenated.
+    """Sha256 of the harness files the claude REPL actually baked in.
 
-    Sorts filenames, concatenates their content, and hashes:
-
-        printf '%s\\n' files | sort | xargs cat | sha256sum
+    Reads from ``paths.root`` (= ``~/.metasphere``) — the dir whose
+    ``CLAUDE.md`` / ``.claude/settings*.json`` the claude CLI auto-
+    loads when it starts a session. Previously used
+    ``paths.project_root``, which diverged between the baseline writer
+    (gateway daemon with ``METASPHERE_REPO_ROOT`` set to the source
+    repo) and the reader (REPL whose CWD resolves to ``~/.metasphere``
+    via ``git rev-parse`` fallback). That divergence produced a drift
+    banner that could never clear — baseline always mismatched live.
+    Rooting both to ``paths.root`` eliminates the env-hygiene class of
+    bug entirely.
 
     Returns "" if no files exist.
     """
-    files = _existing_harness_files(paths.project_root)
+    files = _existing_harness_files(paths.root)
     if not files:
         return ""
     files_sorted = sorted(str(p) for p in files)
