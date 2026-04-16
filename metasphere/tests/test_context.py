@@ -28,17 +28,17 @@ def _write(p: Path, body: str) -> None:
 
 
 def test_harness_hash_matches_bash_recipe(tmp_paths: Paths):
-    # Populate the three harness files with distinct contents.
-    _write(tmp_paths.project_root / "CLAUDE.md", "claude\n")
-    _write(tmp_paths.project_root / ".claude" / "settings.json", "{settings}\n")
-    _write(tmp_paths.project_root / ".claude" / "settings.local.json", "{local}\n")
+    """Hash is computed over files under ``paths.root`` (= the dir
+    the claude CLI actually reads CLAUDE.md from), not project_root.
+    """
+    _write(tmp_paths.root / "CLAUDE.md", "claude\n")
+    _write(tmp_paths.root / ".claude" / "settings.json", "{settings}\n")
+    _write(tmp_paths.root / ".claude" / "settings.local.json", "{local}\n")
 
     py_hash = ctx.harness_hash(tmp_paths)
 
-    # Reproduce the hash recipe: sort filenames, cat in order,
-    # sha256sum the concatenated bytes.
     files = sorted(
-        str(tmp_paths.project_root / rel)
+        str(tmp_paths.root / rel)
         for rel in (
             "CLAUDE.md",
             ".claude/settings.json",
@@ -53,6 +53,28 @@ def test_harness_hash_matches_bash_recipe(tmp_paths: Paths):
 
 def test_harness_hash_empty_when_no_files(tmp_paths: Paths):
     assert ctx.harness_hash(tmp_paths) == ""
+
+
+def test_harness_hash_reads_root_not_project_root(tmp_paths: Paths):
+    """Regression for the 2026-04-16 divergence: baseline writer
+    (gateway daemon with METASPHERE_REPO_ROOT set to the source repo)
+    and reader (@orchestrator REPL with CWD=~/.metasphere) resolved
+    different ``project_root`` values and hashed different CLAUDE.md
+    files. Banner fired every inject. Fix roots both to ``paths.root``.
+
+    Prove it: write DIFFERENT content to both project_root and root;
+    hash must reflect root (which is where the claude CLI actually
+    bakes in CLAUDE.md from), NOT project_root.
+    """
+    _write(tmp_paths.root / "CLAUDE.md", "ROOT content\n")
+    _write(tmp_paths.project_root / "CLAUDE.md", "REPO content\n")
+
+    py_hash = ctx.harness_hash(tmp_paths)
+    expected = hashlib.sha256(b"ROOT content\n").hexdigest()
+    assert py_hash == expected, (
+        "harness_hash must hash paths.root/CLAUDE.md (what the claude "
+        "CLI bakes in), not paths.project_root/CLAUDE.md"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +100,7 @@ def test_truncate_section_passthrough_short_text():
 
 
 def test_drift_warning_emitted_when_baseline_differs(tmp_paths: Paths):
-    _write(tmp_paths.project_root / "CLAUDE.md", "claude v1\n")
+    _write(tmp_paths.root / "CLAUDE.md", "claude v1\n")
     (tmp_paths.state).mkdir(parents=True, exist_ok=True)
     (tmp_paths.state / "harness_hash_baseline").write_text("deadbeef\n")
 
@@ -87,7 +109,7 @@ def test_drift_warning_emitted_when_baseline_differs(tmp_paths: Paths):
 
 
 def test_drift_warning_silent_when_baseline_matches(tmp_paths: Paths):
-    _write(tmp_paths.project_root / "CLAUDE.md", "claude v1\n")
+    _write(tmp_paths.root / "CLAUDE.md", "claude v1\n")
     live = ctx.harness_hash(tmp_paths)
     (tmp_paths.state).mkdir(parents=True, exist_ok=True)
     (tmp_paths.state / "harness_hash_baseline").write_text(live + "\n")
@@ -108,8 +130,10 @@ def test_build_context_emits_all_sections_in_order(tmp_paths: Paths):
     agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "status").write_text("working: porting context.py\n")
 
-    # 2. Drift (force a warning)
-    _write(tmp_paths.project_root / "CLAUDE.md", "claude\n")
+    # 2. Drift (force a warning) — write to paths.root (where the
+    # claude CLI actually bakes CLAUDE.md from; post-PR #19 the hash
+    # no longer uses project_root).
+    _write(tmp_paths.root / "CLAUDE.md", "claude\n")
     tmp_paths.state.mkdir(parents=True, exist_ok=True)
     (tmp_paths.state / "harness_hash_baseline").write_text("deadbeef\n")
 
