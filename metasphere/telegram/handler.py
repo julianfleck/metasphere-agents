@@ -206,7 +206,12 @@ def handle_update(
         except Exception:
             pass
 
-    # defer_if_busy=True: telegram bot loop is auto-driven; if a human
-    # is typing directly into the attached pane, defer the inject
-    # rather than interleave (the 2026-04-16 bug).
-    tmux_submit(f"@{u.from_username or 'user'}", payload, defer_if_busy=True)
+    # defer_if_busy=False: telegram-user inbound IS the user typing.
+    # Clobbering visible REPL content with a telegram message is not a
+    # race — it's precisely what j0lian wants. Only NON-user injectors
+    # (heartbeat, scheduled cron, agent-to-agent wakes, restart-wake)
+    # defer; this path must always land. PR #23 originally set this to
+    # True and broke j0lian's telegram inbound when the orchestrator
+    # pane had any visible typed content (12:15/12:48/12:54 CEST went
+    # to /dev/null with status=read but no user-turn).
+    tmux_submit(f"@{u.from_username or 'user'}", payload, defer_if_busy=False)
