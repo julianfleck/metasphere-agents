@@ -163,9 +163,27 @@ import re as _re
 # CLAUDE.md instructs agents to emit exactly "[idle]" when there's
 # nothing to report. The posthook filters it out so it never reaches
 # Telegram. Also matches common free-form variants as a safety net.
+#
+# Matched as a **prefix** (no trailing ``$``) so a placeholder with an
+# appended clock / scope / mood-adverb still gets suppressed. The
+# 2026-04-16 incident was ~30x "Silent tick at 05:07Z." messages
+# reaching Julian's phone because the original ``^...$`` anchor
+# required an exact full-line match and the timestamp suffix broke it.
+# Widened per @orchestrator's 07:13Z dispatch.
 _IDLE_TOKEN = "[idle]"
 _IDLE_PATTERN = _re.compile(
-    r"^\s*(?:\[idle\]|standing by|silent tick|quiet|nothing to report|still here)\.?\s*$",
+    r"^\s*(?:"
+    r"\[idle\]"                     # literal token; self-delimited
+    r"|(?:"                          # free-form phrases — word-boundary
+    r"standing by"                   #   so "idleness" isn't absorbed, but
+    r"|silent tick"                  #   "idle." / "idle, " / "idle at" are.
+    r"|still here"
+    r"|quiet"
+    r"|idle"
+    r"|nothing to report"
+    r"|nothing new"
+    r")\b"
+    r")",
     _re.IGNORECASE,
 )
 
