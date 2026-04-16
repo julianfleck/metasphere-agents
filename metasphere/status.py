@@ -16,7 +16,7 @@ def summary() -> str:
     alive_count = len(sessions)
     lines.append(f"Sessions: {alive_count} active")
     for s in sessions:
-        mark = "*" if s.attached else " "
+        mark = "●" if s.attached else "○"
         lines.append(f"  {mark} {s.agent}")
 
     # Tasks

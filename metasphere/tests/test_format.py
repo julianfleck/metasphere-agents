@@ -28,18 +28,18 @@ def test_ellipsize():
 
 
 def test_task_status_emoji_mapping():
-    assert fmt.task_status_emoji("pending") == "🔵"
-    assert fmt.task_status_emoji("in-progress") == "🟡"
-    assert fmt.task_status_emoji("blocked") == "🔴"
-    assert fmt.task_status_emoji("completed") == "🟢"
-    assert fmt.task_status_emoji("stale") == "🟣"
-    assert fmt.task_status_emoji("weird", assignee="") == "⚪"
-    assert fmt.task_status_emoji("weird", assignee="@x") == "🔵"
+    assert fmt.task_status_emoji("pending") == "○"
+    assert fmt.task_status_emoji("in-progress") == "◐"
+    assert fmt.task_status_emoji("blocked") == "◑"
+    assert fmt.task_status_emoji("completed") == "●"
+    assert fmt.task_status_emoji("stale") == "◑"
+    assert fmt.task_status_emoji("weird", assignee="") == "○"
+    assert fmt.task_status_emoji("weird", assignee="@x") == "○"
 
 
 def test_sched_status_emoji():
-    assert fmt.sched_status_emoji(True) == "🟢"
-    assert fmt.sched_status_emoji(False) == "🔴"
+    assert fmt.sched_status_emoji(True) == "●"
+    assert fmt.sched_status_emoji(False) == "○"
 
 
 def test_format_task_cards_contains_fields(tmp_paths, monkeypatch):
@@ -57,7 +57,7 @@ def test_format_task_cards_contains_fields(tmp_paths, monkeypatch):
     assert "alpha" in out and "beta" in out
     assert "@alice" in out and "@bob" in out
     assert "recurse" in out
-    assert "🔵" in out  # both pending
+    assert "○" in out  # both pending
     # Card metadata labels
     assert "Created:" in out and "Owner:" in out and "Project:" in out
     assert "Priority:" in out and "Status:" in out
@@ -103,7 +103,7 @@ def test_format_schedule_cards():
     assert "—" in out
     assert "|" not in out
     assert "daily digest" in out
-    assert "🟢" in out and "🔴" in out
+    assert "●" in out and "○" in out
     assert "2021-01-01 00:00" in out
     assert "Expression:" in out and "Last fired:" in out and "Next fire:" in out
 
@@ -131,7 +131,7 @@ def test_format_task_condensed_header_per_project(tmp_paths, monkeypatch):
     assert "worldwire (2)" in out
     assert "metasphere-agents (1)" in out
     # One line per task (no em-dash card rule)
-    assert "🔵" in out
+    assert "○" in out
     # Titles present
     assert "alpha" in out and "beta" in out and "gamma" in out
     # Long title got truncated with ellipsis
