@@ -386,3 +386,110 @@ def test_poll_once_handler_exception_does_not_block_offset_advance(tmp_path, mon
     assert processed == 1
     # Offset advanced past the failing update so we don't re-drive it.
     assert saved_offsets == [9003]
+
+
+# ---------------------------------------------------------------------------
+# restart_agent_session — /exit Enter-race fix (PR #18)
+#
+# 2026-04-16: supervisor.restart_claude fired but the tmux pane never
+# cycled — the single ``send-keys /exit Enter`` invocation races the
+# REPL's input-state machine post-C-c. Prior art in ``metasphere.tmux
+# .submit_to_tmux`` separates the literal-text send from the Enter,
+# with settles between. These tests pin the fixed sequence so a
+# future refactor can't regress it.
+# ---------------------------------------------------------------------------
+
+
+def test_restart_claude_uses_separated_exit_and_enter_sequence(tmp_paths, monkeypatch):
+    """The fix: ``/exit`` is sent via ``send-keys -l --`` (literal) as
+    its own call, then Enter is a separate send-keys. Double Enter as
+    belt-and-suspenders. No single ``/exit Enter`` invocation.
+    """
+    calls: list[list[str]] = []
+
+    def fake_tmux(*args: str):
+        calls.append(list(args))
+        cp = MagicMock()
+        cp.returncode = 0
+        cp.stdout = ""
+        cp.stderr = ""
+        return cp
+
+    monkeypatch.setattr(gw_session, "_tmux", fake_tmux)
+    monkeypatch.setattr(gw_session, "session_alive", lambda name=None: True)
+    # _write_restart_pending writes under paths.state; tmp_paths
+    # already redirects that.
+    ok = gw_session.restart_agent_session(
+        agent="@orchestrator", reason="test", paths=tmp_paths,
+    )
+    assert ok is True
+
+    # Sequence matches the post-fix shape:
+    #   C-c, C-c, C-u, send-keys -l -- /exit, Enter, Enter
+    sendkeys = [c for c in calls if c and c[0] == "send-keys"]
+    # 5+ send-keys calls (2x C-c, 1x C-u, 1x /exit, 2x Enter).
+    assert len(sendkeys) >= 6
+
+    # No single call that contains BOTH "/exit" AND "Enter" — that
+    # combined form is exactly the race we're fixing.
+    for call in sendkeys:
+        if "/exit" in call:
+            assert "Enter" not in call, (
+                f"/exit must not share a send-keys call with Enter: {call}"
+            )
+
+    # /exit sent via literal mode.
+    exit_calls = [c for c in sendkeys if "/exit" in c]
+    assert len(exit_calls) == 1
+    assert "-l" in exit_calls[0], f"/exit must use -l: {exit_calls[0]}"
+
+    # At least two separate Enter sends after the /exit.
+    exit_idx = sendkeys.index(exit_calls[0])
+    enters_after = [c for c in sendkeys[exit_idx + 1:] if c[-1] == "Enter"]
+    assert len(enters_after) >= 2, (
+        f"expected belt-and-suspenders double-Enter, got {enters_after}"
+    )
+
+
+def test_restart_claude_sends_c_c_twice_before_exit(tmp_paths, monkeypatch):
+    """C-c × 2 with settles precedes /exit — kills any in-flight tool
+    call / input buffer before issuing the slash command. Pre-fix
+    this was already correct; test pins it.
+    """
+    calls: list[list[str]] = []
+    monkeypatch.setattr(gw_session, "_tmux",
+                         lambda *a: (calls.append(list(a)) or MagicMock(
+                             returncode=0, stdout="", stderr="")))
+    monkeypatch.setattr(gw_session, "session_alive", lambda name=None: True)
+
+    gw_session.restart_agent_session(
+        agent="@orchestrator", reason="test", paths=tmp_paths,
+    )
+
+    sendkeys = [c for c in calls if c and c[0] == "send-keys"]
+    c_cs = [c for c in sendkeys if "C-c" in c]
+    assert len(c_cs) == 2, f"expected 2x C-c before /exit, got {len(c_cs)}"
+
+    # C-c comes before /exit.
+    exit_idx = next(i for i, c in enumerate(sendkeys) if "/exit" in c)
+    c_c_idxs = [i for i, c in enumerate(sendkeys) if "C-c" in c]
+    for idx in c_c_idxs:
+        assert idx < exit_idx, "C-c must precede /exit"
+
+
+def test_restart_claude_skips_when_session_dead(tmp_paths, monkeypatch):
+    """No tmux traffic + return False when the session isn't alive.
+    Fast-path for first-boot / crashed-pane states.
+    """
+    calls: list[list[str]] = []
+    monkeypatch.setattr(gw_session, "_tmux",
+                         lambda *a: (calls.append(list(a)) or MagicMock(
+                             returncode=0, stdout="", stderr="")))
+    monkeypatch.setattr(gw_session, "session_alive", lambda name=None: False)
+    ok = gw_session.restart_agent_session(
+        agent="@orchestrator", reason="test", paths=tmp_paths,
+    )
+    assert ok is False
+    # No send-keys traffic.
+    sendkeys = [c for c in calls if c and c[0] == "send-keys"]
+    assert sendkeys == []
