@@ -155,6 +155,11 @@ def _patch_update_helpers(monkeypatch, *, pull_raises=None, sync_calls=None,
     monkeypatch.setattr(_update, "_sync_claude_integration", fake_sync)
     monkeypatch.setattr(_update, "_restart_daemons", fake_restart)
     monkeypatch.setattr(_update, "_ensure_venv", fake_ensure_venv)
+    # _find_repo must return the test's project_root, not the real
+    # metasphere-agents repo (which _find_repo would discover via the
+    # editable install). Without this, sync_calls/repo assertions fail
+    # because the test git_runner sees the real repo, not the tmp one.
+    monkeypatch.setattr(_update, "_find_repo", lambda paths: paths.project_root)
 
 
 def test_run_update_happy_path(tmp_paths, monkeypatch):
@@ -496,6 +501,59 @@ def test_git_pull_or_reset_refuses_when_status_fails():
 
     with pytest.raises(RuntimeError, match="uncommitted|git status"):
         _update._git_pull_or_reset(Path("/tmp"), "main", runner)
+
+
+def test_find_repo_prefers_editable_install_over_project_root(tmp_path, monkeypatch):
+    """When METASPHERE_PROJECT_ROOT points at the data dir (not a git
+    repo), _find_repo should discover the actual repo via the editable
+    install path (metasphere.__file__)."""
+    from metasphere.paths import Paths
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    paths = Paths(root=data_dir, scope=data_dir, project_root=data_dir)
+    monkeypatch.delenv("METASPHERE_REPO_ROOT", raising=False)
+
+    # Mock metasphere.__file__ to point inside the fake repo
+    import metasphere as _ms
+    monkeypatch.setattr(_ms, "__file__", str(repo_dir / "metasphere" / "__init__.py"))
+
+    result = _update._find_repo(paths)
+    assert result == repo_dir, (
+        f"Expected {repo_dir}, got {result}. _find_repo should resolve "
+        f"from editable install when project_root is not a git repo"
+    )
+
+
+def test_find_repo_uses_metasphere_repo_root_env(tmp_path, monkeypatch):
+    """METASPHERE_REPO_ROOT env var takes highest precedence."""
+    from metasphere.paths import Paths
+
+    env_dir = tmp_path / "env-repo"
+    env_dir.mkdir()
+    (env_dir / ".git").mkdir()
+    monkeypatch.setenv("METASPHERE_REPO_ROOT", str(env_dir))
+
+    paths = Paths(root=tmp_path, scope=tmp_path, project_root=tmp_path)
+    assert _update._find_repo(paths) == env_dir
+
+
+def test_find_repo_falls_back_to_project_root(tmp_path, monkeypatch):
+    """When neither env var nor editable install resolves, fall back."""
+    from metasphere.paths import Paths
+
+    monkeypatch.delenv("METASPHERE_REPO_ROOT", raising=False)
+    import metasphere as _ms
+    monkeypatch.setattr(_ms, "__file__", str(tmp_path / "nowhere" / "__init__.py"))
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    paths = Paths(root=data_dir, scope=data_dir, project_root=data_dir)
+    assert _update._find_repo(paths) == data_dir
 
 
 def test_sync_claude_integration_creates_symlinks(tmp_path):
