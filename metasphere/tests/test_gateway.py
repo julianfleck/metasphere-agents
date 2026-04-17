@@ -553,3 +553,38 @@ def test_write_harness_hash_baseline_matches_reader_hash(tmp_paths):
         "baseline writer and harness_hash reader must agree "
         "regardless of which CLAUDE.md lives at project_root"
     )
+
+
+# ---------------------------------------------------------------------------
+# _respawn_cmd — feedback-modal disabled (PR #21)
+#
+# 2026-04-16: Claude TUI's feedback modal ("How is Claude doing this
+# session? 1: Bad 2: Fine 3: Good 0: Dismiss") captures input and
+# causes stuck-paste accumulation. Disable at the env level for every
+# metasphere-spawned agent REPL. Julian's own interactive claude
+# sessions are NOT affected (this only touches agent-REPL respawn +
+# agent-spawn env paths).
+# ---------------------------------------------------------------------------
+
+
+def test_respawn_cmd_exports_feedback_disable_env():
+    """The respawn loop sets CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1
+    before each claude invocation so the modal doesn't show up."""
+    cmd = gw_session._respawn_cmd("@orchestrator")
+    assert "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1" in cmd
+    # Superset that also kills the telemetry Dismiss would emit.
+    assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1" in cmd
+    # Must appear BEFORE the claude invocation, not after.
+    disable_idx = cmd.index("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1")
+    claude_idx = cmd.index("claude --dangerously-skip-permissions")
+    assert disable_idx < claude_idx, (
+        "env exports must precede the claude invocation in the respawn "
+        "loop so the new process inherits them"
+    )
+
+
+def test_respawn_cmd_with_model_still_disables_feedback():
+    """Model flag didn't regress the env export."""
+    cmd = gw_session._respawn_cmd("@worker", model="anthropic/claude-haiku-4-5")
+    assert "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1" in cmd
+    assert "--model anthropic/claude-haiku-4-5" in cmd

@@ -59,6 +59,17 @@ def _respawn_cmd(agent: str = "@orchestrator", *, model: str = "") -> str:
         # Refresh METASPHERE_PROJECT_ROOT from git on each restart so
         # stale env vars from a previous session don't persist.
         'export METASPHERE_PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$METASPHERE_PROJECT_ROOT")"; '
+        # Disable the Claude TUI feedback modal for metasphere-spawned
+        # agent REPLs. The modal captures input when visible — wakes /
+        # scheduled tasks bounce off its button layout instead of
+        # reaching the prompt, leading to stuck-paste accumulation
+        # (2026-04-16 research-monitor outage). Scoped to agent REPLs
+        # only — Julian's interactive claude sessions are unaffected.
+        # Setting ``CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`` is the
+        # superset that also kills any telemetry emitted via Dismiss
+        # (per upstream: even pressing 0 may transmit session data).
+        "export CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 "
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1; "
         f"claude --dangerously-skip-permissions{model_flag}; "
         'ec=$?; echo "[gateway] claude exited ($ec), respawning in 1s..."; '
         'echo "{\\"timestamp\\": '
