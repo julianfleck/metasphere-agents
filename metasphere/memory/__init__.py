@@ -10,6 +10,7 @@ without touching call sites.
 from __future__ import annotations
 
 from .api import context_for, default_strategies, recall
+from .auto import AutoMemoryStrategy
 from .base import MemoryHit, MemoryStrategy
 from .cam import CamStrategy
 from .fts import TokenOverlapStrategy
@@ -18,6 +19,7 @@ from .hybrid import HybridStrategy
 __all__ = [
     "MemoryHit",
     "MemoryStrategy",
+    "AutoMemoryStrategy",
     "TokenOverlapStrategy",
     "CamStrategy",
     "HybridStrategy",
