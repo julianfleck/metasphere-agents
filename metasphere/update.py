@@ -590,6 +590,35 @@ def notify(text: str, *, sender: Callable[[str], None] | None = None) -> None:
         logger.info("auto-update notify suppressed: %s", e)
 
 
+def _find_repo(paths: "Paths") -> Path:
+    """Resolve the metasphere-agents repo root for git operations.
+
+    ``paths.project_root`` is set from ``METASPHERE_PROJECT_ROOT`` which
+    some agent panes point at ``~/.metasphere`` (the data dir, NOT a git
+    repo). This caused ``git -C ~/.metasphere status`` → rc=128 →
+    the dirty-check refused to update (2026-04-17 P0 update-broken bug).
+
+    Resolution order:
+    1. ``METASPHERE_REPO_ROOT`` env var (explicit override)
+    2. Editable install: ``metasphere.__file__`` is inside the repo
+    3. Fallback: ``paths.project_root`` (may be wrong but predictable)
+    """
+    env = os.environ.get("METASPHERE_REPO_ROOT")
+    if env:
+        p = Path(env)
+        if p.is_dir() and (p / ".git").is_dir():
+            return p
+    try:
+        import metasphere as _ms
+        pkg_dir = Path(_ms.__file__).resolve().parent
+        candidate = pkg_dir.parent
+        if (candidate / ".git").is_dir():
+            return candidate
+    except Exception:
+        pass
+    return paths.project_root
+
+
 def run_update(
     *,
     paths: Paths | None = None,
@@ -610,7 +639,7 @@ def run_update(
     """
     paths = paths or resolve()
     cfg = cfg or load_config(paths)
-    repo = paths.project_root
+    repo = _find_repo(paths)
     runner = git_runner or _git(repo)
 
     def log(line: str) -> None:
