@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import logging
+import re
 import shutil
 import subprocess
 
@@ -284,6 +285,83 @@ def save_project(project: Project, *, paths: Optional[Paths] = None) -> Path:
     return pf
 
 
+_NAME_INVALID_RE = re.compile(r"[/\\\x00]")
+
+
+def rename_project(
+    old_name: str,
+    new_name: str,
+    *,
+    paths: Optional[Paths] = None,
+) -> Project:
+    """Rename a project: update on-disk dir + project.json metadata.
+
+    If the project lives under ``~/.metasphere/projects/<old_name>/``
+    (the default layout), the directory is renamed. If the project has a
+    custom path outside that tree, only the metadata is updated.
+
+    Raises:
+        FileNotFoundError: if ``old_name`` is not in the registry.
+        FileExistsError: if ``new_name`` already exists.
+        ValueError: if ``new_name`` contains filesystem-unfriendly chars.
+    """
+    paths = paths or resolve()
+
+    if _NAME_INVALID_RE.search(new_name):
+        raise ValueError(
+            f"invalid project name: {new_name!r} "
+            f"(must not contain /, \\, or null)"
+        )
+
+    # Noop case: same name
+    if old_name == new_name:
+        proj = get_project(old_name, paths=paths)
+        if proj is None:
+            raise FileNotFoundError(f"project not found: {old_name}")
+        return proj
+
+    # Load old, check collision
+    old_proj = get_project(old_name, paths=paths)
+    if old_proj is None:
+        raise FileNotFoundError(f"project not found: {old_name}")
+    if get_project(new_name, paths=paths) is not None:
+        raise FileExistsError(
+            f"project {new_name!r} already exists — "
+            f"choose a different name or remove it first"
+        )
+
+    # Determine if we should rename the on-disk dir
+    default_old_dir = paths.projects / old_name
+    default_new_dir = paths.projects / new_name
+    dir_renamed = False
+
+    if default_old_dir.is_dir():
+        default_old_dir.rename(default_new_dir)
+        dir_renamed = True
+
+    # Update project metadata
+    old_proj.name = new_name
+    old_path_str = str(old_proj.path) if old_proj.path else ""
+    if old_path_str == str(default_old_dir):
+        old_proj.path = str(default_new_dir)
+
+    # Save at new canonical location + update registry
+    try:
+        save_project(old_proj, paths=paths)
+        _unregister(paths, old_name)
+        _register(paths, old_proj)
+    except Exception:
+        # Best-effort rollback: restore the dir if we moved it
+        if dir_renamed and default_new_dir.is_dir():
+            try:
+                default_new_dir.rename(default_old_dir)
+            except OSError:
+                pass
+        raise
+
+    return old_proj
+
+
 def _ensure_scaffold(p: Path, *, paths: Optional[Paths] = None,
                       project_name: Optional[str] = None) -> None:
     """Create the per-project data dirs at their canonical location.
@@ -326,6 +404,13 @@ def _register(paths: Paths, project: Project) -> None:
             {"name": project.name, "path": project.path, "registered": _now_iso()}
         )
         write_json(_projects_file(paths), registry)
+
+
+def _unregister(paths: Paths, name: str) -> None:
+    """Remove a project from the registry by name."""
+    registry = _load_registry(paths)
+    registry = [e for e in registry if e.get("name") != name]
+    write_json(_projects_file(paths), registry)
 
 
 # ---------------------------------------------------------------------------

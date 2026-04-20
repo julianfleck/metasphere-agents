@@ -13,6 +13,7 @@ Subcommands::
     project wake [name]
     project for [path]                        # print enclosing project name
     project chat <name> "message"             # send to project telegram topic
+    project rename <old-name> <new-name>  # rename project (dir + metadata)
     project changelog [name]
     project learnings [name]
 
@@ -293,6 +294,59 @@ def _cmd_learnings(rest: list[str], paths) -> int:
     return 0
 
 
+def _cmd_rename(rest: list[str], paths) -> int:
+    from metasphere.project import rename_project, get_project
+
+    if len(rest) < 2:
+        print("Usage: metasphere project rename <old-name> <new-name>",
+              file=sys.stderr)
+        return 2
+    old_name, new_name = rest[0], rest[1]
+
+    if old_name == new_name:
+        print(f"'{old_name}' is already named '{new_name}' — nothing to do.")
+        return 0
+
+    try:
+        proj = rename_project(old_name, new_name, paths=paths)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    except FileExistsError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+
+    print(f"Renamed: {old_name} → {proj.name}")
+    print(f"  Path: {proj.path}")
+
+    # Best-effort scan for dangling references in agent persona files
+    _warn_dangling_refs(old_name, paths)
+    return 0
+
+
+def _warn_dangling_refs(old_name: str, paths) -> None:
+    """Scan agent persona-index/MISSION files for stale project refs."""
+    agents_dir = paths.agents
+    if not agents_dir.is_dir():
+        return
+    for agent_dir in agents_dir.iterdir():
+        if not agent_dir.is_dir() or not agent_dir.name.startswith("@"):
+            continue
+        for fname in ("persona-index.md", "MISSION.md"):
+            fp = agent_dir / fname
+            if not fp.is_file():
+                continue
+            try:
+                if old_name in fp.read_text(encoding="utf-8"):
+                    print(f"  WARN: {agent_dir.name}/{fname} still references "
+                          f"'{old_name}' — update manually")
+            except OSError:
+                pass
+
+
 _DISPATCH = {
     "new":        _cmd_new,
     "init":       _cmd_init,
@@ -309,6 +363,7 @@ _DISPATCH = {
     "changes":    _cmd_changelog,
     "learnings":  _cmd_learnings,
     "learn":      _cmd_learnings,
+    "rename":     _cmd_rename,
 }
 
 
