@@ -253,7 +253,12 @@ def submit_to_tmux(
         # Settle, then submit
         time.sleep(0.3)
         subprocess.run(
-            [tmux, "send-keys", "-t", session, "Enter"],
+            # C-m (ASCII 0x0D) instead of the 'Enter' keysym. tmux 3.3a's
+                # 'Enter' keysym doesn't trigger submit in Claude Code's
+                # TUI (Ink/React), but raw C-m does. Root cause of the
+                # 2026-04-20 wake-Enter race: text typed but Enter keysym
+                # silently dropped by the TUI input handler.
+                [tmux, "send-keys", "-t", session, "C-m"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
@@ -278,7 +283,12 @@ def submit_to_tmux(
                     and not _input_line_has_typing(tmux, session)):
                 return True
             subprocess.run(
-                [tmux, "send-keys", "-t", session, "Enter"],
+                # C-m (ASCII 0x0D) instead of the 'Enter' keysym. tmux 3.3a's
+                # 'Enter' keysym doesn't trigger submit in Claude Code's
+                # TUI (Ink/React), but raw C-m does. Root cause of the
+                # 2026-04-20 wake-Enter race: text typed but Enter keysym
+                # silently dropped by the TUI input handler.
+                [tmux, "send-keys", "-t", session, "C-m"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
@@ -333,7 +343,12 @@ def submit_watchdog(session: str) -> bool:
         # Force submit, up to 2 attempts
         for _ in range(2):
             subprocess.run(
-                [tmux, "send-keys", "-t", session, "Enter"],
+                # C-m (ASCII 0x0D) instead of the 'Enter' keysym. tmux 3.3a's
+                # 'Enter' keysym doesn't trigger submit in Claude Code's
+                # TUI (Ink/React), but raw C-m does. Root cause of the
+                # 2026-04-20 wake-Enter race: text typed but Enter keysym
+                # silently dropped by the TUI input handler.
+                [tmux, "send-keys", "-t", session, "C-m"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,

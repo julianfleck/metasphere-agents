@@ -89,8 +89,35 @@ def test_submit_typing_sequence_unchanged_after_prefix(monkeypatch):
     assert any("line1" in c for c in types)
     assert any("line2" in c for c in types)
     assert any("C-j" in c for c in sendkeys)
-    # Final Enter exists.
-    assert any(c[-1] == "Enter" for c in sendkeys)
+    # Final submit uses C-m (ASCII 0x0D), NOT the Enter keysym.
+    assert any(c[-1] == "C-m" for c in sendkeys)
+
+
+def test_submit_uses_c_m_not_enter_keysym(monkeypatch):
+    """Submit must use ``C-m`` (ASCII 0x0D) not the ``Enter`` keysym.
+
+    2026-04-20 root cause: tmux 3.3a's ``Enter`` keysym was silently
+    dropped by Claude Code's TUI input handler (Ink/React). Two
+    wake-Enter races in one session (visa-lead, metasphere-lead) were
+    unblocked only by ``C-m``. The ``Enter`` keysym works fine for bash
+    readline but NOT for Claude Code's prompt-submit path.
+
+    Regression guard: if someone casually "cleans up" C-m back to Enter,
+    this test fails.
+    """
+    calls = _capture_calls(monkeypatch)
+    T.submit_to_tmux("sess", "probe")
+    sendkeys = [c for c in calls if "send-keys" in c]
+    # All submit-like calls must use C-m, never the Enter keysym.
+    for c in sendkeys:
+        assert "Enter" not in c, (
+            f"send-keys must use 'C-m' not 'Enter' keysym "
+            f"(2026-04-20 wake-Enter race). Got: {c}"
+        )
+    # At least one C-m call exists (the submit).
+    assert any("C-m" in c for c in sendkeys), (
+        "expected at least one C-m send-keys call for submit"
+    )
 
 
 def test_submit_no_fallback_escape_on_retry_exhaust(monkeypatch):
@@ -134,7 +161,7 @@ def test_submit_skips_escape_prefix_when_disabled(monkeypatch):
     )
     # Still typed and Enter'd
     assert any("hello" in c for c in sendkeys)
-    assert any(c[-1] == "Enter" for c in sendkeys)
+    assert any(c[-1] == "C-m" for c in sendkeys)
 
 
 def test_submit_zero_escapes_when_escape_prefix_false_and_dirty(monkeypatch):
@@ -365,7 +392,7 @@ def test_submit_defer_if_busy_default_false_ignores_typing(monkeypatch):
     def fake_run(argv, **kw):
         if "has-session" in argv:
             return _fake_cp(returncode=0)
-        if "send-keys" in argv and "Enter" in argv:
+        if "send-keys" in argv and "C-m" in argv:
             # Our submit Enter cleared the input.
             pane_state["typed"] = False
         if "capture-pane" in argv:
@@ -412,7 +439,7 @@ def test_submit_retries_enter_if_typed_text_remains_in_input(monkeypatch):
     def fake_run(argv, **kw):
         if "has-session" in argv:
             return _fake_cp(returncode=0)
-        if "send-keys" in argv and "Enter" in argv and "-l" not in argv:
+        if "send-keys" in argv and "C-m" in argv and "-l" not in argv:
             enter_count["n"] += 1
         if "capture-pane" in argv:
             content = ["❯ PROBE"] if enter_count["n"] < 2 else ["❯ "]
@@ -432,7 +459,7 @@ def test_submit_retries_enter_if_typed_text_remains_in_input(monkeypatch):
 
     # Must have fired Enter at least twice (initial + one retry).
     enter_calls = [c for c in calls
-                   if "send-keys" in c and "Enter" in c and "-l" not in c]
+                   if "send-keys" in c and "C-m" in c and "-l" not in c]
     assert len(enter_calls) >= 2, (
         f"expected ≥2 Enter calls (initial + retry), got {len(enter_calls)}"
     )
