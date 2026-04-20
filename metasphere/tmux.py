@@ -198,6 +198,23 @@ def submit_to_tmux(
             )
             return False
 
+        # Pre-flush C-m: if the input box has legit pending content
+        # from a prior wake that didn't fully commit (rare now that
+        # escape_prefix=False on wakes, but possible on daemon restart
+        # or interrupt race), submit it as its own user-turn rather
+        # than clobbering it. Claude Code queues user-turns during an
+        # active turn and processes them in order, so this is safe.
+        # On clean empty input, C-m is a no-op (no spurious turn).
+        # 2026-04-20: Julian's suggestion — pre-C-m preserves legit
+        # queued content instead of overwriting it.
+        subprocess.run(
+            [tmux, "send-keys", "-t", session, "C-m"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        time.sleep(0.2)
+
         # Pre-emptive Escape × 2: (a) clears any ``[Pasted text #N``
         # placeholder left over from a prior wake that didn't fully
         # commit (stacking pattern that caused the 2026-04-16

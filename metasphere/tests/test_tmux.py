@@ -52,11 +52,14 @@ def _capture_calls(monkeypatch, pane_states=None):
 
 
 def test_submit_prefixes_single_escape_before_typing(monkeypatch):
-    """Every user-inbound submit starts with a SINGLE Escape to interrupt
-    any running Claude Code turn. Esc Esc would open Claude Code's
-    Rewind/Undo menu (not clear input), which is what the 2026-04-16
-    telegram-inbound outage was: we typed into the rewind menu's filter
-    and Enter rolled back to a random prior turn. Exactly one Escape.
+    """Every user-inbound submit (escape_prefix=True) fires a SINGLE Escape
+    to interrupt any running Claude Code turn, AFTER the pre-flush C-m.
+    Esc Esc would open Claude Code's Rewind/Undo menu (not clear input),
+    which is what the 2026-04-16 telegram-inbound outage was: we typed
+    into the rewind menu's filter and Enter rolled back to a random prior
+    turn. Exactly one Escape.
+
+    Order: pre-flush C-m → Escape → typing → submit C-m.
     """
     calls = _capture_calls(monkeypatch)
     assert T.submit_to_tmux("sess", "hello") is True
@@ -68,22 +71,32 @@ def test_submit_prefixes_single_escape_before_typing(monkeypatch):
     assert len(escapes) == 1, (
         f"expected exactly ONE Escape (single Escape = interrupt), got {escapes}"
     )
-    # First call must be the Escape (before any typing).
-    assert "Escape" in sendkeys[0]
-    # Must precede any literal-text typing.
+    # First call is the pre-flush C-m (Julian's 2026-04-20 idea:
+    # submit any legit pending content as its own user-turn before
+    # we type our new payload).
+    assert sendkeys[0][-1] == "C-m", (
+        f"first send-keys must be the pre-flush C-m, got {sendkeys[0]}"
+    )
+    # Escape is second (after pre-flush).
+    assert "Escape" in sendkeys[1]
+    # Escape must precede any literal-text typing.
     literal_idx = next((i for i, c in enumerate(sendkeys) if "-l" in c), -1)
-    assert literal_idx > 0
+    escape_idx = next((i for i, c in enumerate(sendkeys) if "Escape" in c), -1)
+    assert literal_idx > escape_idx > 0
 
 
 def test_submit_typing_sequence_unchanged_after_prefix(monkeypatch):
     """Body-typing behavior (``-l -- line``, ``C-j`` between lines,
-    settle then Enter) is preserved — only the Escape prefix is new.
+    settle then Enter) is preserved. Order: pre-flush C-m → Escape →
+    typing → submit C-m.
     """
     calls = _capture_calls(monkeypatch)
     T.submit_to_tmux("sess", "line1\nline2")
     sendkeys = [c for c in calls if "send-keys" in c]
-    # First: Escape prefix.
-    assert "Escape" in sendkeys[0]
+    # First: pre-flush C-m.
+    assert sendkeys[0][-1] == "C-m"
+    # Second: Escape prefix.
+    assert "Escape" in sendkeys[1]
     # Then literal typing for "line1", then C-j, then literal "line2".
     types = [c for c in sendkeys if "-l" in c]
     assert any("line1" in c for c in types)
@@ -462,12 +475,18 @@ def test_submit_polls_until_input_clears_no_retry_c_m(monkeypatch):
 
     assert T.submit_to_tmux("sess", "PROBE") is True
 
-    # EXACTLY ONE C-m fire — no retry spam.
+    # EXACTLY TWO C-m fires — no retry spam.
+    # 1. Pre-flush C-m (commits any legit pending content as a
+    #    user-turn, no-op on clean input). Julian 2026-04-20.
+    # 2. Submit C-m (commits the payload we just typed).
+    # The previous code fired 1-4 C-m: 1 submit + up to 3 retry-on-dirty.
+    # Retries were the bug — they spammed C-m while TUI was still
+    # processing the first submit.
     enter_calls = [c for c in calls
                    if "send-keys" in c and "C-m" in c and "-l" not in c]
-    assert len(enter_calls) == 1, (
-        f"expected exactly 1 C-m call (no retries — that's the "
-        f"2026-04-20 fix), got {len(enter_calls)}"
+    assert len(enter_calls) == 2, (
+        f"expected exactly 2 C-m calls (pre-flush + submit), "
+        f"got {len(enter_calls)}"
     )
 
 
