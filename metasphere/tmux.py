@@ -229,6 +229,15 @@ def submit_to_tmux(
             # "What should Claude do instead?" transition before we
             # type. Shorter settles eat the first 1-2 chars.
             time.sleep(0.8)
+        else:
+            # No Escape prefix, but we still need a modest settle
+            # before typing. Without it, the first 6-7 characters
+            # get eaten when the pane is in a post-turn transition
+            # state (e.g., TUI still rendering the previous reply
+            # / ack). 2026-04-20 repro: cam-lead pane, wake with
+            # "[task] TEST ..." payload, "[task] " (7 chars)
+            # consistently lost; 0.5s pre-type settle eliminates it.
+            time.sleep(0.5)
 
         # Split message into lines, preserving empty trailing lines
         lines = message.split("\n")
