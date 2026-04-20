@@ -277,8 +277,8 @@ def test_wake_persistent_already_alive_injects_task(tmp_paths: Paths):
             cp.returncode = 0
         return cp
 
-    def fake_tmux_submit(session: str, message: str) -> bool:
-        submitted.append((session, message))
+    def fake_tmux_submit(session: str, message: str, **kwargs) -> bool:
+        submitted.append((session, message, kwargs))
         return True
 
     with patch("metasphere.agents.subprocess.run", side_effect=fake_run), \
@@ -288,6 +288,12 @@ def test_wake_persistent_already_alive_injects_task(tmp_paths: Paths):
     assert submitted, "expected _tmux_submit call"
     assert submitted[0][0] == "metasphere-waker"
     assert "hello" in submitted[0][1]
+    # Wakes must pass escape_prefix=False — Escape on idle panes triggers
+    # Claude Code's session-rating dialog / Rewind menu, racing with our
+    # typed content + C-m submit (2026-04-20 buffered-wake incidents).
+    assert submitted[0][2].get("escape_prefix") is False, (
+        f"wake must pass escape_prefix=False, got {submitted[0][2]}"
+    )
 
 
 # ---------------------------------------------------------------------------

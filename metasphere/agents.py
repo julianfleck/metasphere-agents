@@ -520,8 +520,28 @@ def _wait_for_ready(session: str, timeout_s: int = _READY_TIMEOUT_S) -> bool:
 
 
 def _submit_via_tmux(session: str, body: str) -> None:
-    """Submit text to a tmux session via :mod:`metasphere.tmux`."""
-    _tmux_submit(session, body)
+    """Submit text to a tmux session via :mod:`metasphere.tmux`.
+
+    Wakes pass ``escape_prefix=False``: an agent wake is a task-inject,
+    not an interrupt. The pre-Escape was intended to interrupt a
+    running turn so the new task becomes a NEW user-turn rather than
+    queueing — but on an IDLE pane, Escape is not a no-op. It can
+    trigger Claude Code's session-rating dialog ("How is Claude doing
+    this session? 1: Bad 2: Fine 3: Good 0: Dismiss"), the Rewind/Undo
+    menu, or other modal states. When that happens the subsequent
+    typing + C-m races against the modal handler and the submit is
+    eaten. 2026-04-20 test matrix: WITHOUT Escape → submits cleanly
+    every time; WITH Escape on idle → triggered rating dialog on
+    multiple distinct panes, typed content interleaved with modal,
+    C-m unreliable.
+
+    Claude Code queues keystrokes during a running turn and processes
+    them when the turn completes — so queueing is safe. The old
+    "interrupt running turn to jump the queue" rationale was wrong
+    for wakes: we want our task to be processed, not to displace
+    whatever the agent is doing mid-flight.
+    """
+    _tmux_submit(session, body, escape_prefix=False)
 
 
 def wake_persistent(
