@@ -427,22 +427,27 @@ def test_submit_defer_if_busy_default_false_ignores_typing(monkeypatch):
 # EITHER paste-placeholder OR typed-text-in-input-box is still visible.
 
 
-def test_submit_retries_enter_if_typed_text_remains_in_input(monkeypatch):
-    """Simulate Claude TUI eating the first Enter: text stays in the
-    input box after the first Enter. The retry loop must fire Enter
-    again until the input clears.
+def test_submit_polls_until_input_clears_no_retry_c_m(monkeypatch):
+    """Single C-m fires; submit_to_tmux polls capture-pane until the
+    input box is clean. NO retry C-m fires while polling.
+
+    Previous code retried C-m every 400ms (3x) on dirty input. That
+    was the 2026-04-20 root cause: the TUI takes 3-5s to process a
+    multi-line submit; the 400ms dirty-check was a false positive
+    from render lag. Each retry C-m landed mid-process, leaving dirt
+    that future wakes stacked on. The fix is to poll and wait — the
+    single C-m always lands eventually, we just have to be patient.
     """
-    # send-keys-Enter attempts: first one is "eaten" (no effect),
-    # the second one actually clears.
-    enter_count = {"n": 0}
+    poll_count = {"n": 0}
 
     def fake_run(argv, **kw):
         if "has-session" in argv:
             return _fake_cp(returncode=0)
-        if "send-keys" in argv and "C-m" in argv and "-l" not in argv:
-            enter_count["n"] += 1
         if "capture-pane" in argv:
-            content = ["❯ PROBE"] if enter_count["n"] < 2 else ["❯ "]
+            poll_count["n"] += 1
+            # First two polls show dirty (TUI still rendering); third
+            # onwards shows clean (submit landed).
+            content = ["❯ PROBE"] if poll_count["n"] < 3 else ["❯ "]
             return _fake_cp(stdout=_pane(content))
         return _fake_cp(returncode=0)
 
@@ -457,11 +462,12 @@ def test_submit_retries_enter_if_typed_text_remains_in_input(monkeypatch):
 
     assert T.submit_to_tmux("sess", "PROBE") is True
 
-    # Must have fired Enter at least twice (initial + one retry).
+    # EXACTLY ONE C-m fire — no retry spam.
     enter_calls = [c for c in calls
                    if "send-keys" in c and "C-m" in c and "-l" not in c]
-    assert len(enter_calls) >= 2, (
-        f"expected ≥2 Enter calls (initial + retry), got {len(enter_calls)}"
+    assert len(enter_calls) == 1, (
+        f"expected exactly 1 C-m call (no retries — that's the "
+        f"2026-04-20 fix), got {len(enter_calls)}"
     )
 
 

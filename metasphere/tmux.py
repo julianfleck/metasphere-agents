@@ -250,72 +250,46 @@ def submit_to_tmux(
                     check=False,
                 )
 
-        # Settle, then submit
+        # Settle, then single C-m. The TUI's submit handler can take
+        # 3-5 seconds to process a multi-line buffer (rendering catches
+        # up first, then commit, then the agent starts processing).
+        # The previous code fired retry C-m every 400ms, which spammed
+        # extra submits while the TUI was still working on the first
+        # one — those extra C-m landed mid-process and either reset
+        # the input, produced duplicate user-turns, or left dirt that
+        # future wakes stacked on. That stacking is the 2026-04-20
+        # frame-semantics + common-law buffered-not-submitted incident.
+        #
+        # 2026-04-20 repro: typed 30 lines, fired single C-m, captured
+        # at t+1.5s ("still dirty") and t+4.5s ("agent has replied").
+        # The C-m landed at t=0; the dirty-check at t+0.4s was a false
+        # positive caused by render lag. One C-m is enough — we just
+        # need to wait for it.
         time.sleep(0.3)
         subprocess.run(
-            # C-m (ASCII 0x0D) instead of the 'Enter' keysym. tmux 3.3a's
-                # 'Enter' keysym doesn't trigger submit in Claude Code's
-                # TUI (Ink/React), but raw C-m does. Root cause of the
-                # 2026-04-20 wake-Enter race: text typed but Enter keysym
-                # silently dropped by the TUI input handler.
-                [tmux, "send-keys", "-t", session, "C-m"],
+            # C-m (ASCII 0x0D) raw byte. tmux 3.3a's 'Enter' keysym
+            # doesn't trigger submit in Claude Code's TUI (Ink/React)
+            # in all states; raw C-m does.
+            [tmux, "send-keys", "-t", session, "C-m"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
         )
-        time.sleep(0.4)
 
-        # Retry Enter if the submit didn't actually land. TWO
-        # independent "still-not-submitted" signals:
-        #   (a) a ``[Pasted text #N`` placeholder is visible (the old
-        #       bracketed-paste path — stale from a prior inject or
-        #       from our own Escape×2 prefix racing paste-mode).
-        #   (b) our typed text is still visible in the input box (the
-        #       ``send-keys -l`` literal path — Claude TUI sometimes
-        #       eats the first Enter due to a post-Escape modal, an
-        #       autocomplete popup, or a paste-buffer commit race).
-        # Without (b) the retry loop saw "no placeholder" and returned
-        # True while the text sat typed-but-unsubmitted — the 2026-04-16
-        # P0 telegram-inbound / wake-Enter race. Function was silently
-        # lying about success.
-        for _ in range(3):
+        # Poll for clean input box, up to 6s. Fast path returns in
+        # <1s on the common case; patient on slow TUI processing.
+        # No retry C-m firing — single submit, just wait for it.
+        for _ in range(12):
+            time.sleep(0.5)
             if (not _has_pending_paste(tmux, session)
                     and not _input_line_has_typing(tmux, session)):
                 return True
-            subprocess.run(
-                # C-m (ASCII 0x0D) instead of the 'Enter' keysym. tmux 3.3a's
-                # 'Enter' keysym doesn't trigger submit in Claude Code's
-                # TUI (Ink/React), but raw C-m does. Root cause of the
-                # 2026-04-20 wake-Enter race: text typed but Enter keysym
-                # silently dropped by the TUI input handler.
-                [tmux, "send-keys", "-t", session, "C-m"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
-            time.sleep(0.4)
 
-        # Enter-retry exhausted and the input is still dirty. One
-        # last aggressive attempt: Escape to cancel whatever is pending.
-        # Better to drop the current submission than to stack yet
-        # another paste/typed-text for future callers to trip on (the
-        # accumulation pattern that caused the 2026-04-16 research-
-        # monitor outage).
-        #
-        # Fallback Escape REMOVED 2026-04-16. The old Escape×2 was
-        # opening Claude Code's Rewind/Undo menu (not clearing input
-        # — that's Ctrl+U) and the typed text ended up in the menu's
-        # filter, never becoming a user-turn. A single Escape would
-        # interrupt the running turn, which is the pre-clear's job
-        # for user-inbound only; firing it again here would interrupt
-        # whatever turn we just successfully started. If the initial
-        # Enter + retry loop exhausted with the input still dirty,
-        # it's better to leave the typed text for submit_watchdog
-        # to pick up on its next daemon tick than to destroy it.
-
-        # Final check after retries — both signals must be clean.
-        return (not _has_pending_paste(tmux, session)
-                and not _input_line_has_typing(tmux, session))
+        # 6s elapsed and the input is still dirty. Don't fire a recovery
+        # C-m here — that's what created the stacking bug. Leave the
+        # buffered content for submit_watchdog to handle on its next
+        # daemon tick, OR for the next intentional caller to overwrite.
+        return False
 
     except Exception:
         return False
