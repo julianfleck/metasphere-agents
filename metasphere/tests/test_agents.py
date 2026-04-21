@@ -53,6 +53,52 @@ def test_is_persistent_requires_mission(tmp_paths: Paths):
 
 
 # ---------------------------------------------------------------------------
+# _resolve_scope (path-doubling regression)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveScope:
+    """Regression tests for the _resolve_scope path-doubling bug.
+
+    Before the fix, passing an absolute filesystem path inside
+    project_root (e.g. "/home/.../metasphere-agents/scripts") unconditionally
+    lstrip'd the leading "/" and prepended project_root, yielding
+    <project_root>/<project_root_without_leading_slash>/scripts. The
+    workaround everywhere was to spawn with scope="/" so lstrip produced
+    "" and project_root / "" == project_root. The fix strips a matching
+    project_root prefix first; project-relative forms are unchanged.
+    """
+
+    def test_root_slash_resolves_to_project_root(self, tmp_paths: Paths):
+        assert agents._resolve_scope("/", tmp_paths.project_root) == tmp_paths.project_root
+
+    def test_project_relative_absolute_resolves_under_project_root(self, tmp_paths: Paths):
+        assert (
+            agents._resolve_scope("/scripts", tmp_paths.project_root)
+            == tmp_paths.project_root / "scripts"
+        )
+
+    def test_absolute_project_root_string_resolves_to_project_root(self, tmp_paths: Paths):
+        assert (
+            agents._resolve_scope(str(tmp_paths.project_root), tmp_paths.project_root)
+            == tmp_paths.project_root
+        )
+
+    def test_absolute_path_inside_project_root_resolves_correctly(self, tmp_paths: Paths):
+        scope = str(tmp_paths.project_root) + "/scripts"
+        assert (
+            agents._resolve_scope(scope, tmp_paths.project_root)
+            == tmp_paths.project_root / "scripts"
+        )
+
+    def test_bare_relative_path_resolves_under_project_root(self, tmp_paths: Paths):
+        assert (
+            agents._resolve_scope("scripts", tmp_paths.project_root)
+            == tmp_paths.project_root / "scripts"
+        )
+
+
+# ---------------------------------------------------------------------------
 # spawn_ephemeral
 # ---------------------------------------------------------------------------
 

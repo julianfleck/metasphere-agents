@@ -258,6 +258,16 @@ When done:
 # ---------------------------------------------------------------------------
 
 def _resolve_scope(scope_path: str, project_root: Path) -> Path:
+    # An absolute filesystem path already inside project_root (e.g. read
+    # from an agent's scope sidecar) must have the project_root prefix
+    # stripped first — otherwise lstrip("/") below would treat it as a
+    # project-relative path and produce
+    # <project_root>/<project_root_without_leading_slash>.
+    root_str = str(project_root)
+    if scope_path == root_str:
+        return project_root
+    if scope_path.startswith(root_str + "/"):
+        scope_path = scope_path[len(root_str):]
     if scope_path.startswith("/"):
         # Project-relative absolute path.
         s = project_root / scope_path.lstrip("/")
