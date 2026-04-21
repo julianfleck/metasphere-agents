@@ -301,3 +301,52 @@ def test_reply_marks_original_and_sets_reply_to(tmp_paths):
     assert reply.reply_to == orig.id
     assert reply.label == "!reply"
     assert reply.from_ == "@me"
+
+
+# ---------------------------------------------------------------------------
+# Session-hygiene: send_message hooks on_done_delivered on !done label
+# ---------------------------------------------------------------------------
+
+def test_send_message_done_label_invokes_on_done_delivered(tmp_paths, monkeypatch):
+    """send_message with label='!done' MUST call agents.on_done_delivered
+    with the sender. Any other label MUST NOT."""
+    from metasphere import agents as _agents
+
+    calls: list[str] = []
+
+    def fake_on_done(sender, paths=None):
+        calls.append(sender)
+        return None
+
+    monkeypatch.setattr(_agents, "on_done_delivered", fake_on_done)
+
+    m.send_message("@..", "!done", "done body", "@child-eph",
+                   paths=tmp_paths, wake=False)
+    m.send_message("@..", "!info", "info body", "@child-eph",
+                   paths=tmp_paths, wake=False)
+    m.send_message("@..", "!task", "task body", "@child-eph",
+                   paths=tmp_paths, wake=False)
+
+    assert calls == ["@child-eph"], (
+        f"on_done_delivered must be called exactly once on !done, got {calls}"
+    )
+
+
+def test_send_message_done_hook_failure_does_not_break_delivery(tmp_paths, monkeypatch):
+    """The session-hygiene hook is best-effort — any exception must NOT
+    prevent the !done message from being delivered and indexed."""
+    from metasphere import agents as _agents
+
+    def boom(sender, paths=None):
+        raise RuntimeError("simulated hook failure")
+
+    monkeypatch.setattr(_agents, "on_done_delivered", boom)
+
+    msg = m.send_message("@..", "!done", "still delivered", "@child-eph",
+                         paths=tmp_paths, wake=False)
+    assert msg.path is not None and msg.path.exists(), (
+        "hook failure must not prevent message persistence"
+    )
+    loaded = m.read_message(msg.path)
+    assert loaded.label == "!done"
+    assert loaded.from_ == "@child-eph"

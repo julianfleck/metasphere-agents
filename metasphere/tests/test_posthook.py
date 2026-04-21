@@ -8,8 +8,25 @@ from unittest import mock
 
 import pytest
 
+from metasphere import breadcrumbs as _bc
 from metasphere import posthook
 from metasphere.paths import Paths
+
+
+def _seed_success_breadcrumb(paths: Paths, *, session_id: str, transcript: Path) -> None:
+    """Helper: write a success breadcrumb that matches the transcript's
+    user-message count, so the fail-closed gate lets the turn through.
+    Tests that exercise the happy path of route_to_telegram via
+    run_posthook need this — without it the gate suppresses.
+    """
+    count = _bc.count_user_messages(transcript)
+    _bc.write_breadcrumb(
+        paths,
+        session_id=session_id,
+        status=_bc.STATUS_SUCCESS,
+        user_msg_count=count,
+        agent="@orchestrator",
+    )
 
 
 # ---------- read_stop_hook_payload ----------
@@ -258,6 +275,7 @@ def test_run_posthook_routes_orchestrator(tmp_paths: Paths, monkeypatch):
             }
         ],
     )
+    _seed_success_breadcrumb(tmp_paths, session_id="s", transcript=transcript)
     payload = json.dumps(
         {
             "session_id": "s",
@@ -408,6 +426,164 @@ def test_run_posthook_does_not_auto_close_orchestrator(tmp_paths: Paths, monkeyp
     from metasphere import tasks as _tasks
     # Orchestrator never auto-closes — it's persistent, not ephemeral.
     assert _tasks._find_task_file(task_id, include_completed=False) is not None
+
+
+# ---------- fail-closed gate ----------
+
+
+def _orchestrator_transcript(tmp_paths: Paths) -> Path:
+    transcript = tmp_paths.root / "t.jsonl"
+    _write_jsonl(
+        transcript,
+        [
+            {"type": "user", "message": {"content": "hi"}},
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "the reply"}]},
+            },
+        ],
+    )
+    return transcript
+
+
+def _orchestrator_payload(transcript: Path, *, session_id: str = "sess-A") -> bytes:
+    return json.dumps(
+        {
+            "session_id": session_id,
+            "transcript_path": str(transcript),
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+        }
+    ).encode("utf-8")
+
+
+def test_failclose_missing_breadcrumb_suppresses(tmp_paths: Paths, monkeypatch):
+    """Scenario 3: no breadcrumb at all (e.g. context hook never ran or
+    crashed before writing). Posthook MUST NOT call the telegram-send
+    path; suppression log entry exists; !info to @orchestrator queued.
+    """
+    _write_chat_id(tmp_paths)
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    transcript = _orchestrator_transcript(tmp_paths)
+    payload = _orchestrator_payload(transcript, session_id="sess-missing")
+    # No breadcrumb seeded.
+    with mock.patch("metasphere.telegram.api.send_message") as m:
+        rc = posthook.run_posthook(payload, tmp_paths)
+    assert rc == 0
+    m.assert_not_called()
+
+    log_path = tmp_paths.logs / "posthook-suppressions.log"
+    assert log_path.exists(), "suppression log must be created"
+    body = log_path.read_text(encoding="utf-8")
+    assert "session=sess-missing" in body
+    assert "breadcrumb-missing" in body
+    assert "agent=@orchestrator" in body
+
+    # !info to @orchestrator: a message file lands in @orchestrator's
+    # canonical inbox under the project bucket.
+    inboxes = list((tmp_paths.root / "projects").rglob("inbox/*.msg"))
+    assert inboxes, "expected a !info to @orchestrator in the project inbox"
+    body = inboxes[0].read_text(encoding="utf-8")
+    assert "!info" in body
+    assert "fail-closed" in body
+    assert "breadcrumb-missing" in body
+
+
+def test_failclose_failed_breadcrumb_suppresses(tmp_paths: Paths, monkeypatch):
+    """Scenario 1: context hook ran but wrote a FAILED breadcrumb (it
+    caught an exception and stamped the failure marker). Posthook MUST
+    NOT call telegram-send; suppression logged; !info queued.
+    """
+    _write_chat_id(tmp_paths)
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    transcript = _orchestrator_transcript(tmp_paths)
+    # Seed a FAILED breadcrumb that matches this turn's count.
+    _bc.write_breadcrumb(
+        tmp_paths,
+        session_id="sess-failed",
+        status=_bc.STATUS_FAILED,
+        user_msg_count=_bc.count_user_messages(transcript),
+        agent="@orchestrator",
+        reason="OSError: [Errno 11] Resource temporarily unavailable",
+    )
+    payload = _orchestrator_payload(transcript, session_id="sess-failed")
+    with mock.patch("metasphere.telegram.api.send_message") as m:
+        rc = posthook.run_posthook(payload, tmp_paths)
+    assert rc == 0
+    m.assert_not_called()
+
+    log_body = (tmp_paths.logs / "posthook-suppressions.log").read_text(encoding="utf-8")
+    assert "session=sess-failed" in log_body
+    assert "context-hook-failed" in log_body
+
+
+def test_happy_path_success_breadcrumb_forwards(tmp_paths: Paths, monkeypatch):
+    """Scenario 2: success breadcrumb present + matching count. Posthook
+    forwards via telegram-send normally; no suppression log.
+    """
+    _write_chat_id(tmp_paths)
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    transcript = _orchestrator_transcript(tmp_paths)
+    _seed_success_breadcrumb(tmp_paths, session_id="sess-ok", transcript=transcript)
+    payload = _orchestrator_payload(transcript, session_id="sess-ok")
+    with mock.patch("metasphere.telegram.api.send_message") as m:
+        m.return_value = [{"ok": True}]
+        rc = posthook.run_posthook(payload, tmp_paths)
+    assert rc == 0
+    m.assert_called_once()
+    # No suppression log created on the happy path.
+    assert not (tmp_paths.logs / "posthook-suppressions.log").exists()
+
+
+def test_failclose_count_mismatch_suppresses(tmp_paths: Paths, monkeypatch):
+    """Scenario 4 (defense-in-depth): breadcrumb says success, but the
+    transcript user-message count moved on. Means the breadcrumb is
+    stale (probably from the previous turn — current turn's context
+    hook crashed before it could write). Posthook MUST fail closed.
+    """
+    _write_chat_id(tmp_paths)
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    transcript = _orchestrator_transcript(tmp_paths)
+    # Breadcrumb claims user_msg_count=99 but transcript has 1 user msg.
+    _bc.write_breadcrumb(
+        tmp_paths,
+        session_id="sess-stale",
+        status=_bc.STATUS_SUCCESS,
+        user_msg_count=99,
+        agent="@orchestrator",
+    )
+    payload = _orchestrator_payload(transcript, session_id="sess-stale")
+    with mock.patch("metasphere.telegram.api.send_message") as m:
+        rc = posthook.run_posthook(payload, tmp_paths)
+    assert rc == 0
+    m.assert_not_called()
+    log_body = (tmp_paths.logs / "posthook-suppressions.log").read_text(encoding="utf-8")
+    assert "count-mismatch" in log_body
+
+
+def test_failclose_does_not_block_explicit_send_path(tmp_paths: Paths, monkeypatch):
+    """When the orchestrator already pushed a message via
+    `metasphere-telegram send` during the turn (explicit-send marker is
+    fresh), the auto-forward is suppressed independently. The
+    fail-closed gate must not introduce new behavior on this path —
+    we still don't auto-forward, but we also shouldn't double-log the
+    suppression when the user already got an explicit send.
+
+    Concretely: missing breadcrumb + fresh explicit-send marker →
+    suppression IS logged (the user might NOT have gotten the assistant
+    text — only what was explicitly sent — so degraded-context warning
+    is still useful), but we must not crash or send twice.
+    """
+    _write_chat_id(tmp_paths)
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    transcript = _orchestrator_transcript(tmp_paths)
+    # Touch the explicit-send marker so it's "fresh".
+    posthook.mark_orchestrator_explicit_send(tmp_paths)
+    payload = _orchestrator_payload(transcript, session_id="sess-explicit")
+    with mock.patch("metasphere.telegram.api.send_message") as m:
+        rc = posthook.run_posthook(payload, tmp_paths)
+    assert rc == 0
+    m.assert_not_called()  # no auto-forward on either path
 
 
 # ---------- cli --dry-run / --help ----------

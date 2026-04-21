@@ -529,6 +529,20 @@ def send_message(
     except Exception:
         pass
 
+    # Session-hygiene hook: a !done from an ephemeral sender is the
+    # single terminal signal in the message protocol. Kill its tmux
+    # session (no-op if absent) and clear runtime state pointers so a
+    # future spawn re-bootstraps cleanly. Persistent senders are a
+    # strict no-op — their lifecycle is governed by idle-TTL dormancy.
+    # Failures must not break message delivery — the message is already
+    # written, indexed, and mirrored above.
+    if label == "!done":
+        try:
+            from . import agents as _agents
+            _agents.on_done_delivered(from_agent, paths=paths)
+        except Exception:
+            pass
+
     msg.path = inbox_file
     return msg
 

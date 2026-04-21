@@ -18,6 +18,7 @@ from typing import List, Optional
 from metasphere.gateway import (
     SESSION_NAME,
     ensure_session,
+    render_status as render_monitoring_status,
     restart_session,
     run_daemon,
     session_health,
@@ -52,6 +53,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     paths = resolve()
     alive, idle = session_health(paths)
     print(f"session={SESSION_NAME} alive={alive} idle={idle}s")
+    print(render_monitoring_status(paths))
     return 0 if alive else 1
 
 

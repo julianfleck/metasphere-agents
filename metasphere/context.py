@@ -569,6 +569,17 @@ def build_context(paths: Paths | None = None, *, budget: int = DEFAULT_SECTION_B
 
     sections: list[str] = []
 
+    # Host-health ALERT: goes at the TOP so the agent sees a zombie /
+    # tmux / PID-headroom trip before any other context. Empty string
+    # when nothing is tripped, which keeps the zero-impact invariant
+    # on normal turns.
+    try:
+        from .gateway.monitoring import render_alert as _render_alert
+        alert = _render_alert(paths)
+    except Exception:
+        alert = ""
+    sections.append(truncate_section(alert, budget) if alert else "")
+
     sections.append(truncate_section(_render_status_header(paths, agent), budget))
     voice = _render_voice_capsule(paths, agent)
     sections.append(truncate_section(voice, budget) if voice else "")

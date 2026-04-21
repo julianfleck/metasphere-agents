@@ -22,6 +22,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from . import breadcrumbs as _bc
 from .events import log_event
 from .identity import resolve_agent_id
 from .io import atomic_write_text, file_lock, read_json, write_json
@@ -116,6 +117,64 @@ def _last_sent_path(paths: Paths) -> Path:
 
 def _telegram_error_log(paths: Paths) -> Path:
     return paths.state / "posthook_telegram_errors.log"
+
+
+def _suppression_log_path(paths: Paths) -> Path:
+    """Per-turn fail-closed suppression log.
+
+    Lives under ``paths.logs`` (not ``paths.state``) because operators
+    grep this during postmortems — keep it next to the rest of the
+    operational logs, not buried in opaque runtime state.
+    """
+    return paths.logs / "posthook-suppressions.log"
+
+
+def _log_suppression(paths: Paths, *, session_id: str, reason: str, agent: str) -> None:
+    """Append a single suppression entry. Best-effort, never raises."""
+    try:
+        log = _suppression_log_path(paths)
+        log.parent.mkdir(parents=True, exist_ok=True)
+        ts = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        entry = (
+            f"[{ts}] suppressed forward "
+            f"agent={agent or '?'} session={session_id or '?'} reason={reason}\n"
+        )
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(entry)
+    except OSError:
+        pass
+
+
+def _notify_orchestrator_of_suppression(
+    paths: Paths, *, session_id: str, reason: str, agent: str
+) -> None:
+    """Send a single !info to @orchestrator's inbox so degraded-context
+    turns surface in the message stream. Best-effort, never raises.
+
+    We deliberately do NOT route the suppression notice through Telegram
+    — the whole point of failing closed is that we don't trust this
+    turn's output channel. The inbox message is enough to alert the
+    operator without re-introducing the failure mode we're guarding.
+    """
+    try:
+        from . import messages as _msgs
+        body = (
+            f"posthook fail-closed: session={session_id or '?'} "
+            f"agent={agent or '?'} reason={reason}\n"
+            "Telegram auto-forward suppressed for this turn — context-hook "
+            "breadcrumb missing or marked failed. See "
+            f"{_suppression_log_path(paths)} for the full log."
+        )
+        _msgs.send_message(
+            "@orchestrator",
+            "!info",
+            body,
+            from_agent="@posthook",
+            paths=paths,
+            wake=False,
+        )
+    except Exception:  # noqa: BLE001 — never raise from the hook
+        pass
 
 
 def _explicit_send_marker_path(paths: Paths) -> Path:
@@ -502,19 +561,52 @@ def run_posthook(stdin_bytes: bytes, paths: Paths | None = None) -> int:
             if transcript:
                 text = extract_last_assistant_text(Path(transcript))
                 if not should_skip_silent_tick(text):
-                    # Suppress if @orchestrator already sent something via
-                    # `metasphere-telegram send` during this turn — the
-                    # final assistant text is almost certainly a recap and
-                    # the user gets the same content twice. The CLI drops a
-                    # marker file with mtime=now on every explicit send.
-                    if not _explicit_send_marker_fresh(paths):
+                    explicit_fresh = _explicit_send_marker_fresh(paths)
+                    # Fail-closed gate: the UserPromptSubmit context hook
+                    # writes a per-turn success breadcrumb. If it's
+                    # missing or marked failed, the turn was generated
+                    # against a degraded context and we must not forward
+                    # the assistant text via the auto-forward path.
+                    # Explicit `metasphere-telegram send` calls during
+                    # the turn are independent (the marker is set by the
+                    # CLI, not the context hook) and remain unaffected.
+                    session_id = str(payload.get("session_id") or "")
+                    ok, reason = _bc.evaluate(
+                        paths,
+                        session_id=session_id,
+                        transcript_path=transcript,
+                    )
+                    if not ok:
+                        _log_suppression(
+                            paths,
+                            session_id=session_id,
+                            reason=reason,
+                            agent=agent,
+                        )
+                        _notify_orchestrator_of_suppression(
+                            paths,
+                            session_id=session_id,
+                            reason=reason,
+                            agent=agent,
+                        )
+                    elif not explicit_fresh:
+                        # Happy path: breadcrumb confirms context-hook
+                        # success and no explicit send already covered
+                        # this turn's reply.
                         route_to_telegram(text or "", paths)
-                    # Either way the user got something user-visible this
-                    # turn — flip 👀 → 👍 on the message that triggered it.
-                    try:
-                        consume_pending_ack(paths)
-                    except Exception:  # noqa: BLE001
-                        pass
+                    # Ack the user's triggering message whenever the user
+                    # got *something* user-visible this turn — that's the
+                    # auto-forward (when not suppressed) OR an explicit
+                    # send (when the marker is fresh). On a fail-closed
+                    # tick with no explicit send, the user did NOT get
+                    # the assistant text, so don't ack — the !info to
+                    # @orchestrator + the unacked 👀 reaction together
+                    # signal the degraded turn.
+                    if ok or explicit_fresh:
+                        try:
+                            consume_pending_ack(paths)
+                        except Exception:  # noqa: BLE001
+                            pass
 
         track_turn_completion(agent, paths)
 
