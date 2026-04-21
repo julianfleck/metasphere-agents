@@ -262,10 +262,97 @@ def test_run_daemon_continues_on_reap_dormant_error(tmp_paths: Paths):
             sleep_fn=lambda s: None,
             time_fn=lambda: 0.0,
             reap_dormant_fn=boom,
+            reap_crashed_fn=lambda p: [],
         )
 
     # If we got here without an unhandled exception, the loop survived.
     assert iterations["n"] == 4
+
+
+def test_run_daemon_reap_crashed_fires_on_dormancy_interval(tmp_paths: Paths):
+    """``reap_crashed`` must be wired into the same dormancy tick as
+    ``reap_dormant``: same cadence, same loop step, paths passed through."""
+    iterations = {"n": 0}
+    times = iter([0.0, 1.0, 2.0, 400.0, 401.0, 402.0, 403.0])
+
+    def stop():
+        iterations["n"] += 1
+        return iterations["n"] > 6
+
+    crash_calls: list = []
+    dorm_calls: list = []
+
+    def fake_reap_dormant(p, max_idle):
+        dorm_calls.append((p, max_idle))
+        return []
+
+    def fake_reap_crashed(p):
+        crash_calls.append(p)
+        return []
+
+    with patch.object(gw_daemon, "ensure_session"), \
+         patch.object(gw_daemon, "run_watchdog"):
+        gw_daemon.run_daemon(
+            tmp_paths,
+            poll_interval=0.01,
+            watchdog_interval=0.01,
+            dormancy_interval=300.0,
+            dormancy_max_idle_seconds=86400,
+            stop=stop,
+            poll_fn=lambda: 0,
+            sleep_fn=lambda s: None,
+            time_fn=lambda: next(times),
+            reap_dormant_fn=fake_reap_dormant,
+            reap_crashed_fn=fake_reap_crashed,
+        )
+
+    # reap_crashed must fire on the same ticks as reap_dormant.
+    assert len(crash_calls) == len(dorm_calls) == 2, (
+        f"expected 2 each, got crash={len(crash_calls)} "
+        f"dorm={len(dorm_calls)}"
+    )
+    # Paths handed through unchanged.
+    for p in crash_calls:
+        assert p is tmp_paths
+
+
+def test_run_daemon_continues_on_reap_crashed_error(tmp_paths: Paths):
+    """A failure inside reap_crashed must NOT exit the daemon AND must
+    NOT prevent reap_dormant from firing on the same tick."""
+    iterations = {"n": 0}
+
+    def stop():
+        iterations["n"] += 1
+        return iterations["n"] > 3
+
+    dorm_calls: list = []
+
+    def fake_reap_dormant(p, max_idle):
+        dorm_calls.append(max_idle)
+        return []
+
+    def boom_crashed(p):
+        raise RuntimeError("simulated reap_crashed failure")
+
+    with patch.object(gw_daemon, "ensure_session"), \
+         patch.object(gw_daemon, "run_watchdog"):
+        gw_daemon.run_daemon(
+            tmp_paths,
+            poll_interval=0.01,
+            watchdog_interval=0.01,
+            dormancy_interval=0.0,  # fire on every tick
+            stop=stop,
+            poll_fn=lambda: 0,
+            sleep_fn=lambda s: None,
+            time_fn=lambda: 0.0,
+            reap_dormant_fn=fake_reap_dormant,
+            reap_crashed_fn=boom_crashed,
+        )
+
+    # Loop survived all stop() probes.
+    assert iterations["n"] == 4
+    # And reap_dormant kept firing despite the sibling sweep blowing up.
+    assert len(dorm_calls) >= 3
 
 
 # ---------------------------------------------------------------------------

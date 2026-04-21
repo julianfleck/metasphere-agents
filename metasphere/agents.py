@@ -732,6 +732,138 @@ def reap_dormant(
 
 
 # ---------------------------------------------------------------------------
+# Crash reaper (silent-death detection)
+#
+# Counterpart to ``reap_dormant``: that handles the well-behaved case
+# where a persistent agent's tmux session is alive but idle. This handles
+# the misbehaved case where the agent process died without writing a
+# terminal status — leaving a stale ``status: spawned: ...`` (or
+# ``working:``) on disk while the pid is gone and no tmux session
+# exists. Without this hook, silent-death agents are invisible until a
+# human notices the orphan status file.
+#
+# 2026-04-21 spawn-stall incidents (PR #35 followup): @service-restart-impl
+# died at spawn-time before writing any output; the only signal was a
+# stale ``status=spawned`` with no tmux session. ``reap_crashed`` closes
+# that gap by promoting the implicit "no pid + no session" state to an
+# explicit ``crashed:`` status and pushing a ``!alert`` to the parent.
+# ---------------------------------------------------------------------------
+
+#: Status prefixes treated as terminal — ``reap_crashed`` will not
+#: re-transition an agent already in one of these states. Membership
+#: only; order is irrelevant.
+_TERMINAL_STATUS_PREFIXES = (
+    "complete:",
+    "dormant:",
+    "crashed:",
+    "failed:",
+)
+
+
+def _pid_alive(pid: int) -> bool:
+    """True iff process ``pid`` exists.
+
+    Uses signal-0 — the canonical no-op liveness probe (see kill(2)).
+    A ``PermissionError`` means the process exists but is owned by
+    another uid; that still counts as alive (we cannot disprove it).
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def reap_crashed(paths: Paths | None = None) -> list[str]:
+    """Detect agents that died silently and promote them to ``crashed:``.
+
+    For every non-terminal agent with a recorded pid file:
+    - If both the pid is dead (``os.kill(pid, 0)`` → ``ProcessLookupError``)
+      AND the agent's tmux session is gone, atomically rewrite ``status``
+      to ``crashed: pid <N> dead, session gone`` and send a ``!alert``
+      message to the agent's parent (read from the ``parent`` sidecar)
+      via :func:`metasphere.messages.send_message`.
+    - Skips agents already in a terminal status
+      (``complete:`` / ``dormant:`` / ``crashed:`` / ``failed:``).
+    - Skips agents with no pid file (no liveness signal recorded — this
+      is the legacy ``METASPHERE_SPAWN_NO_EXEC`` case and the
+      pre-pid-write window during spawn).
+    - Skips the parent ``!alert`` if the ``parent`` sidecar is missing
+      (no addressee), but still writes the ``crashed:`` status.
+
+    Per-agent failures are swallowed — this runs on a daemon tick and
+    must never abort the gateway loop. Returns the list of agent names
+    that were transitioned this sweep.
+    """
+    paths = paths or resolve()
+    out: list[str] = []
+    for agent in list_agents(paths):
+        status = agent.status or ""
+        if any(status.startswith(p) for p in _TERMINAL_STATUS_PREFIXES):
+            continue
+        if agent.pid_file is None:
+            continue
+        try:
+            pid = int(agent.pid_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            continue
+        if _pid_alive(pid):
+            continue
+        session = agent.session_name
+        if session_alive(session):
+            continue
+
+        # Both signals say the agent is gone — silent death.
+        reason = f"crashed: pid {pid} dead, session gone"
+        if agent.agent_dir is None:
+            continue
+        try:
+            _atomic_meta_write(agent.agent_dir, "status", reason)
+        except OSError:
+            # If we can't even write the status, the alert would be
+            # misleading — bail on this agent and let the next sweep
+            # try again.
+            continue
+
+        if agent.parent:
+            try:
+                from . import messages as _messages
+                _messages.send_message(
+                    target=agent.parent,
+                    label="!alert",
+                    body=(
+                        f"{agent.name} silent death detected by "
+                        f"reap_crashed: pid {pid} no longer running and "
+                        f"tmux session {session} not present. Status "
+                        "transitioned to crashed."
+                    ),
+                    from_agent=agent.name,
+                    paths=paths,
+                    wake=False,
+                )
+            except Exception:
+                pass
+
+        try:
+            log_event(
+                "agent.crashed",
+                f"{agent.name} silent death — pid {pid} dead, "
+                f"session {session} gone",
+                agent=agent.name,
+                meta={"pid": pid, "session": session, "parent": agent.parent},
+                paths=paths,
+            )
+        except Exception:
+            pass
+        out.append(agent.name)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # !done delivery hook (session hygiene)
 #
 # When an ephemeral agent sends !done it has no reason to keep its
