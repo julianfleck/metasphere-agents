@@ -59,7 +59,7 @@ def test_submit_prefixes_single_escape_before_typing(monkeypatch):
     into the rewind menu's filter and Enter rolled back to a random prior
     turn. Exactly one Escape.
 
-    Order: pre-flush C-m → Escape → typing → submit C-m.
+    Order: pre-flush C-m → Escape → paste-buffer → submit C-m.
     """
     calls = _capture_calls(monkeypatch)
     assert T.submit_to_tmux("sess", "hello") is True
@@ -73,22 +73,25 @@ def test_submit_prefixes_single_escape_before_typing(monkeypatch):
     )
     # First call is the pre-flush C-m (Julian's 2026-04-20 idea:
     # submit any legit pending content as its own user-turn before
-    # we type our new payload).
+    # we paste our new payload).
     assert sendkeys[0][-1] == "C-m", (
         f"first send-keys must be the pre-flush C-m, got {sendkeys[0]}"
     )
     # Escape is second (after pre-flush).
     assert "Escape" in sendkeys[1]
-    # Escape must precede any literal-text typing.
-    literal_idx = next((i for i, c in enumerate(sendkeys) if "-l" in c), -1)
-    escape_idx = next((i for i, c in enumerate(sendkeys) if "Escape" in c), -1)
-    assert literal_idx > escape_idx > 0
+    # Escape must precede the paste-buffer step.
+    paste_idx = next((i for i, c in enumerate(calls) if "paste-buffer" in c), -1)
+    escape_idx = next((i for i, c in enumerate(calls)
+                       if "send-keys" in c and "Escape" in c), -1)
+    assert paste_idx > escape_idx > 0
 
 
 def test_submit_typing_sequence_unchanged_after_prefix(monkeypatch):
-    """Body-typing behavior (``-l -- line``, ``C-j`` between lines,
-    settle then Enter) is preserved. Order: pre-flush C-m → Escape →
-    typing → submit C-m.
+    """Content delivery uses tmux load-buffer + paste-buffer (atomic
+    paste, bracketed-paste event that TUI commits reliably). Order:
+    pre-flush C-m → Escape → load-buffer → paste-buffer → submit C-m.
+    2026-04-20: switched from send-keys -l per line + C-j because the
+    char-burst path left TUI in a paste-detection race that ate C-m.
     """
     calls = _capture_calls(monkeypatch)
     T.submit_to_tmux("sess", "line1\nline2")
@@ -97,11 +100,17 @@ def test_submit_typing_sequence_unchanged_after_prefix(monkeypatch):
     assert sendkeys[0][-1] == "C-m"
     # Second: Escape prefix.
     assert "Escape" in sendkeys[1]
-    # Then literal typing for "line1", then C-j, then literal "line2".
-    types = [c for c in sendkeys if "-l" in c]
-    assert any("line1" in c for c in types)
-    assert any("line2" in c for c in types)
-    assert any("C-j" in c for c in sendkeys)
+    # load-buffer was called with the multi-line content.
+    load_buf = [c for c in calls if "load-buffer" in c]
+    assert load_buf, f"expected load-buffer call, got {calls}"
+    # paste-buffer landed the content in the target session.
+    paste = [c for c in calls if "paste-buffer" in c]
+    assert paste, f"expected paste-buffer call, got {calls}"
+    # No more send-keys -l (we paste instead of char-type).
+    assert not any("-l" in c for c in sendkeys), (
+        "submit_to_tmux should not use send-keys -l anymore "
+        "(replaced by paste-buffer 2026-04-20)"
+    )
     # Final submit uses C-m (ASCII 0x0D), NOT the Enter keysym.
     assert any(c[-1] == "C-m" for c in sendkeys)
 
@@ -172,8 +181,10 @@ def test_submit_skips_escape_prefix_when_disabled(monkeypatch):
     assert escapes == [], (
         f"auto-injector must not send Escape, got {escapes}"
     )
-    # Still typed and Enter'd
-    assert any("hello" in c for c in sendkeys)
+    # Content delivered via paste-buffer, then submit C-m.
+    assert any("paste-buffer" in c for c in calls), (
+        f"expected paste-buffer delivery, got {calls}"
+    )
     assert any(c[-1] == "C-m" for c in sendkeys)
 
 
@@ -386,7 +397,10 @@ def test_submit_defer_if_busy_proceeds_on_bare_prompt(monkeypatch):
     assert T.submit_to_tmux("sess", "hello", defer_if_busy=True) is True
     sendkeys = [c for c in calls if "send-keys" in c]
     assert sendkeys, "expected send-keys to fire on clean pane"
-    assert any("-l" in c for c in sendkeys), "expected literal typing"
+    # Content delivered via paste-buffer (not send-keys -l anymore).
+    assert any("paste-buffer" in c for c in calls), (
+        "expected paste-buffer content delivery"
+    )
 
 
 def test_submit_defer_if_busy_default_false_ignores_typing(monkeypatch):
@@ -425,7 +439,10 @@ def test_submit_defer_if_busy_default_false_ignores_typing(monkeypatch):
     assert T.submit_to_tmux("sess", "hello") is True
     sendkeys = [c for c in calls if "send-keys" in c]
     assert sendkeys, "manual submit must not be gated on input-buffer"
-    assert any("-l" in c for c in sendkeys), "expected literal typing"
+    # Content delivered via paste-buffer.
+    assert any("paste-buffer" in c for c in calls), (
+        "expected paste-buffer content delivery"
+    )
 
 
 # --- Enter-race post-submit verification (2026-04-16 P0) -------------------

@@ -256,41 +256,42 @@ def submit_to_tmux(
             # consistently lost; 0.5s pre-type settle eliminates it.
             time.sleep(0.5)
 
-        # Split message into lines, preserving empty trailing lines
-        lines = message.split("\n")
-
-        for i, line in enumerate(lines):
-            if line:
-                subprocess.run(
-                    [tmux, "send-keys", "-t", session, "-l", "--", line],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-            if i < len(lines) - 1:
-                # Newline-in-buffer (does NOT submit in claude TUI)
-                subprocess.run(
-                    [tmux, "send-keys", "-t", session, "C-j"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
+        # Deliver message via tmux paste-buffer (single atomic paste)
+        # instead of per-line send-keys -l + C-j. Two advantages:
+        #
+        # 1. The TUI sees a proper bracketed-paste event, not a rapid
+        #    char-stream that gets heuristically flagged as "suspicious
+        #    paste." Both paths eventually converge on a [Pasted text #N]
+        #    placeholder for long content, but paste-buffer's placeholder
+        #    commits reliably on C-m; send-keys -l char bursts left the
+        #    TUI in a mid-detection state that ate the C-m submit.
+        # 2. One subprocess call instead of N (N = line_count × 2),
+        #    reducing latency + the window where a heartbeat could
+        #    interleave mid-paste.
+        #
+        # 2026-04-20 repro: 79-line wake via send-keys -l → buffered
+        # for >15s (C-m eaten); 60-line via load-buffer + paste-buffer →
+        # committed in <8s on single C-m. Root-cause fix.
+        subprocess.run(
+            [tmux, "load-buffer", "-b", "_metasphere_submit", "-"],
+            input=message,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        subprocess.run(
+            [tmux, "paste-buffer", "-b", "_metasphere_submit",
+             "-d", "-t", session],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
 
         # Settle, then single C-m. The TUI's submit handler can take
-        # 3-5 seconds to process a multi-line buffer (rendering catches
-        # up first, then commit, then the agent starts processing).
-        # The previous code fired retry C-m every 400ms, which spammed
-        # extra submits while the TUI was still working on the first
-        # one — those extra C-m landed mid-process and either reset
-        # the input, produced duplicate user-turns, or left dirt that
-        # future wakes stacked on. That stacking is the 2026-04-20
-        # frame-semantics + common-law buffered-not-submitted incident.
-        #
-        # 2026-04-20 repro: typed 30 lines, fired single C-m, captured
-        # at t+1.5s ("still dirty") and t+4.5s ("agent has replied").
-        # The C-m landed at t=0; the dirty-check at t+0.4s was a false
-        # positive caused by render lag. One C-m is enough — we just
-        # need to wait for it.
+        # up to 8-10s to process a multi-line paste (bracketed-paste
+        # event fires → TUI renders as [Pasted text #N] placeholder →
+        # commit processes content → submits).
         time.sleep(0.3)
         subprocess.run(
             # C-m (ASCII 0x0D) raw byte. tmux 3.3a's 'Enter' keysym
@@ -302,16 +303,17 @@ def submit_to_tmux(
             check=False,
         )
 
-        # Poll for clean input box, up to 6s. Fast path returns in
-        # <1s on the common case; patient on slow TUI processing.
-        # No retry C-m firing — single submit, just wait for it.
-        for _ in range(12):
+        # Poll for clean input box, up to 12s. Fast path returns in
+        # <1s on the common case; patient on slow TUI processing
+        # (large payloads can take 5-8s from paste → commit → render
+        # clean). No retry C-m firing — single submit, just wait.
+        for _ in range(24):
             time.sleep(0.5)
             if (not _has_pending_paste(tmux, session)
                     and not _input_line_has_typing(tmux, session)):
                 return True
 
-        # 6s elapsed and the input is still dirty. Don't fire a recovery
+        # 12s elapsed and the input is still dirty. Don't fire a recovery
         # C-m here — that's what created the stacking bug. Leave the
         # buffered content for submit_watchdog to handle on its next
         # daemon tick, OR for the next intentional caller to overwrite.
