@@ -23,6 +23,19 @@ telegram polling uses ``metasphere.telegram.poller``.
 from __future__ import annotations
 
 from .daemon import run_daemon
+from .monitoring import (
+    MonitoringSnapshot,
+    PidHeadroom,
+    TmuxCounters,
+    ZombieCounters,
+    evaluate_alert,
+    pid_headroom,
+    render_alert,
+    render_status,
+    snapshot,
+    tmux_counters,
+    zombie_counters,
+)
 from .session import (
     SESSION_NAME,
     ensure_session,
@@ -46,4 +59,15 @@ __all__ = [
     "check_safety_hooks_confirmation",
     "run_watchdog",
     "run_daemon",
+    "MonitoringSnapshot",
+    "PidHeadroom",
+    "TmuxCounters",
+    "ZombieCounters",
+    "evaluate_alert",
+    "pid_headroom",
+    "render_alert",
+    "render_status",
+    "snapshot",
+    "tmux_counters",
+    "zombie_counters",
 ]

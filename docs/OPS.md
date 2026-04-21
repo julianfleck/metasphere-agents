@@ -163,3 +163,86 @@ daemon start time:
 
 For testing, `reap_dormant_fn` can be injected directly (see the
 `test_run_daemon_reap_dormant_fires_on_interval` gateway test).
+
+## Host-health monitoring
+
+The gateway exposes three host-health counters through
+`metasphere gateway status` and surfaces a single-line ALERT at the
+top of every per-turn context injection when any counter exceeds a
+threshold. The probes live in `metasphere.gateway.monitoring` and are
+pure-python (no subprocess for zombies / pid headroom; tmux counters
+shell out to `tmux list-sessions`).
+
+### Counters
+
+- **zombies** — total procfs state=`Z` processes on the host, plus a
+  dedicated `npm_root_g` breakdown because Claude Code's orphaned
+  `npm root -g` children are the dominant historical source. Read
+  from `/proc/<pid>/status` + `/proc/<pid>/cmdline` + `/proc/<pid>/comm`.
+- **tmux** — live tmux sessions split into `persistent` vs
+  `ephemeral`. A session counts as persistent when the matching agent
+  directory contains `MISSION.md`. Works for both global agents
+  (`metasphere-<name>` → `~/.metasphere/agents/@<name>`) and
+  project-scoped ones (`metasphere-<project>-<name>` →
+  `~/.metasphere/projects/<project>/agents/@<name>`).
+- **pid_headroom** — configured PID limit, current process count,
+  and percent of slots still available. Cgroup `pids.max` wins when
+  it is a finite number (real container ceiling); falls back to
+  `/proc/sys/kernel/pid_max`. `source=` in the status output records
+  which file was authoritative (`cgroup` / `kernel` / `unknown`).
+
+### Thresholds
+
+A single-line `## ALERT: ...` block is prepended to the per-turn
+context when ANY condition is tripped (conditions are joined with
+`; `, and the block stays absent when nothing trips — zero-impact on
+normal turns):
+
+| Counter                | Trip condition          |
+|------------------------|-------------------------|
+| `zombies.total`        | > 20                    |
+| `tmux.total`           | > 10                    |
+| `pids.free_pct`        | < 20 %                  |
+
+Boundaries are intentionally strict (`>`, `<`): a counter sitting
+exactly at the threshold is silent. Change the constants in
+`metasphere/gateway/monitoring.py` (`ZOMBIE_THRESHOLD`,
+`TMUX_THRESHOLD`, `PID_HEADROOM_PCT_THRESHOLD`) to retune.
+
+### Observing
+
+Inspect live counters:
+
+```bash
+metasphere gateway status
+```
+
+Example output:
+
+```
+session=metasphere-orchestrator alive=True idle=0s
+zombies total=0 npm_root_g=0
+tmux total=5 persistent=2 ephemeral=3
+pid_headroom limit=4194304 current=312 free_pct=100.0 source=kernel
+```
+
+### Reproducible alert demo
+
+Set `METASPHERE_MONITORING_OVERRIDE` to force the ALERT renderer with
+synthetic numbers — useful for verifying the injection path without
+actually overloading the host:
+
+```bash
+METASPHERE_MONITORING_OVERRIDE='zombies=50,tmux=3,pid_pct=99.0' \
+  python -m metasphere.cli.context
+```
+
+The override takes the form `zombies=N,tmux=M,pid_pct=P`. Unparseable
+values fall through to the live probes.
+
+### Failure mode
+
+Every probe is wrapped in try/except and falls back to an empty
+ALERT. A broken `/proc` walk or a missing `tmux` binary must never
+break context assembly. The `test_render_alert_swallows_probe_exceptions`
+test pins this invariant.
