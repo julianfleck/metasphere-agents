@@ -1,0 +1,12 @@
+[Unit]
+Description=Metasphere reaper timer (every 60s)
+Documentation=file:///home/openclaw/projects/metasphere-agents/docs/OPS.md
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+AccuracySec=1s
+Unit=metasphere-reaper.service
+
+[Install]
+WantedBy=timers.target

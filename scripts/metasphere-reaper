@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# metasphere-reaper: kill stale `npm root -g` processes.
+#
+# Claude Code occasionally spawns `npm root -g` which can hang and
+# accumulate over time. This script kills any such process whose
+# elapsed time exceeds REAPER_THRESHOLD seconds (default 60).
+#
+# Installed as a systemd user oneshot driven by metasphere-reaper.timer.
+# See docs/OPS.md for install/enable steps.
+
+set -uo pipefail
+
+THRESHOLD="${REAPER_THRESHOLD:-60}"
+LOG_FILE="${REAPER_LOG:-${HOME}/.metasphere/logs/reaper.log}"
+SELF_PID=$$
+killed=0
+pids_killed=()
+
+mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+
+while read -r pid etimes rest; do
+    [[ -z "${pid:-}" ]] && continue
+    [[ "$pid" == "$SELF_PID" ]] && continue
+    case "$rest" in
+        *reaper*|*"grep "*) continue ;;
+    esac
+    if [[ "$rest" =~ (^|[/[:space:]])(npm|npm-cli\.js)[[:space:]]+root[[:space:]]+-g([[:space:]]|$) ]]; then
+        if (( etimes >= THRESHOLD )); then
+            if kill -9 "$pid" 2>/dev/null; then
+                killed=$((killed + 1))
+                pids_killed+=("$pid")
+            fi
+        fi
+    fi
+done < <(ps -eo pid=,etimes=,args=)
+
+ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+pids_str="${pids_killed[*]:-}"
+line="${ts} metasphere-reaper killed=${killed} pids=${pids_str}"
+echo "$line"
+printf '%s\n' "$line" >> "$LOG_FILE" 2>/dev/null || true
