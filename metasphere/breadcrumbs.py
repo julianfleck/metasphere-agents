@@ -1,11 +1,17 @@
 """Per-turn context-hook success breadcrumbs.
 
 Both the UserPromptSubmit context hook and the Stop posthook receive
-``session_id`` and ``transcript_path`` in their stdin JSON. The user
-prompt is appended to the transcript BEFORE UserPromptSubmit fires; no
-new user message is added between UserPromptSubmit and Stop. So a
-``(session_id, user_msg_count)`` pair uniquely identifies a turn from
-both sides.
+``session_id`` and ``transcript_path`` in their stdin JSON. In practice
+the Claude Code client (observed on 2.1.116) does NOT flush the
+current turn's user-prompt record to the JSONL transcript file before
+invoking the UserPromptSubmit hook — it lands sometime between
+UserPromptSubmit and Stop. So the breadcrumb's stored
+``user_msg_count`` reflects only the *prior* turns at write time,
+while the Stop-time count reflects prior + current. The expected
+delta between the two is therefore ``fresh - stored`` ∈ ``{0, 1}``:
+0 if the prompt was already on disk at hook-fire time, 1 if it lands
+afterwards. ``evaluate()`` accepts both as valid matches; any other
+delta (negative, or ≥2) still trips the fail-closed gate.
 
 The breadcrumb file lets the posthook *fail closed*: if the context
 hook crashed (or was never invoked) for the turn we're stopping on,
@@ -242,6 +248,11 @@ def evaluate(
         return False, "session-mismatch"
     expected = int(bc.get("user_msg_count") or 0)
     actual = count_user_messages(transcript_path)
-    if expected != actual:
+    # The current turn's user-prompt record may or may not be flushed
+    # to the transcript at UserPromptSubmit-hook time, so the legitimate
+    # delta is {0, 1}. Anything else (stale breadcrumb from a prior
+    # session, or genuinely missing context-hook turn) is a clobber.
+    delta = actual - expected
+    if delta not in (0, 1):
         return False, "count-mismatch"
     return True, "ok"
