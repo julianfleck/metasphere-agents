@@ -674,3 +674,136 @@ def gc_dormant(paths: Paths | None = None, max_idle_seconds: int = 86400) -> lis
         if idle is not None and idle > max_idle_seconds:
             out.append(agent.name)
     return out
+
+
+def reap_dormant(
+    paths: Paths | None = None,
+    max_idle_seconds: int = 86400,
+) -> list[str]:
+    """Transition persistent agents to dormant when their tmux session
+    has been idle longer than ``max_idle_seconds``.
+
+    For each qualifying agent:
+    - Write ``status = "dormant: idle Ns (auto-ttl at <utc>)"`` to the
+      agent dir so ``metasphere status`` and human observers can see
+      why the session went away.
+    - ``tmux kill-session -t <session>`` (silent no-op if already gone).
+    - Persona files (``MISSION.md``, ``SOUL.md``, ``LEARNINGS.md``,
+      ``HEARTBEAT.md``, contract sidecars) are preserved — a future
+      ``metasphere agent wake <name>`` restarts cleanly from them.
+
+    Returns the list of agent names transitioned. Failures on a single
+    agent do not abort the others: this runs on a daemon tick and must
+    never exit the gateway loop.
+    """
+    paths = paths or resolve()
+    out: list[str] = []
+    for agent in list_agents(paths):
+        if not agent.is_persistent:
+            continue
+        session = agent.session_name
+        if not session_alive(session):
+            continue
+        idle = _session_idle_seconds(session)
+        if idle is None or idle <= max_idle_seconds:
+            continue
+        if agent.agent_dir is not None:
+            try:
+                _atomic_meta_write(
+                    agent.agent_dir,
+                    "status",
+                    f"dormant: idle {idle}s (auto-ttl at {_utcnow()})",
+                )
+            except OSError:
+                pass
+        _tmux_run("kill-session", "-t", session)
+        try:
+            log_event(
+                "agent.dormant",
+                f"{agent.name} dormant after {idle}s idle — tmux session killed",
+                agent=agent.name,
+                meta={"idle_seconds": idle, "session": session},
+                paths=paths,
+            )
+        except Exception:
+            pass
+        out.append(agent.name)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# !done delivery hook (session hygiene)
+#
+# When an ephemeral agent sends !done it has no reason to keep its
+# tmux pane (if any) or process linkage around — the parent's
+# Accountability check runs against artifacts on disk, not against the
+# child process. Persistent agents must NOT be killed on !done:
+# they're long-lived collaborators and may well send multiple !dones
+# over their lifetime. Their session lifecycle is governed by
+# ``reap_dormant`` (idle-TTL) instead.
+# ---------------------------------------------------------------------------
+
+def on_done_delivered(sender: str, paths: Paths | None = None) -> Optional[str]:
+    """Fired from :func:`metasphere.messages.send_message` right after a
+    ``!done`` message is delivered to its target. Kills the sender's
+    tmux session and clears runtime state pointers iff the sender is
+    an ephemeral agent (no ``MISSION.md``). Persistent senders are a
+    no-op — their lifecycle is governed by idle-TTL dormancy.
+
+    Returns the killed session name if an ephemeral cleanup ran, else
+    ``None``. Persona files (``harness.md``, ``authority``,
+    ``responsibility``, ``accountability``, ``scope``, ``parent``,
+    ``spawned_at``) are preserved so the GC log and later audits can
+    still reconstruct what the agent was contracted to do.
+    """
+    paths = paths or resolve()
+    if not sender or not isinstance(sender, str):
+        return None
+    # Skip non-agent senders: user, scope targets, parent aliases.
+    # A real agent id looks like "@name" (no slash, no dots).
+    if not sender.startswith("@"):
+        return None
+    if sender in ("@user", "@.", "@.."):
+        return None
+    if "/" in sender:  # scope-path like "@/abs/path/"
+        return None
+    agent_id = _normalize_name(sender)
+    agent_dir = _find_agent_dir(agent_id, paths)
+    if agent_dir is None:
+        return None
+    project = _read_text(agent_dir / "project")
+    rec = _agent_record_from_dir(agent_dir, project=project)
+    if rec.is_persistent:
+        return None  # persistent agents are not killed on !done
+
+    session = rec.session_name
+    # Kill-session is idempotent: rc=1 when session absent, which is
+    # exactly what we want for headless-Popen ephemerals that never
+    # had a tmux pane in the first place.
+    _tmux_run("kill-session", "-t", session)
+
+    # Clear runtime state pointers so a future spawn with the same name
+    # bootstraps from scratch. Persona/contract/harness files survive.
+    for name in ("pid", "task_id"):
+        try:
+            f = agent_dir / name
+            if f.exists():
+                f.unlink()
+        except OSError:
+            pass
+    try:
+        _atomic_meta_write(agent_dir, "status", "complete: !done delivered")
+    except OSError:
+        pass
+
+    try:
+        log_event(
+            "agent.ephemeral_done",
+            f"{agent_id} !done delivered — tmux killed + runtime state cleared",
+            agent=agent_id,
+            meta={"session": session},
+            paths=paths,
+        )
+    except Exception:
+        pass
+    return session

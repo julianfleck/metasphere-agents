@@ -328,6 +328,245 @@ def test_gc_dormant_returns_idle_agents(tmp_paths: Paths):
 
 
 # ---------------------------------------------------------------------------
+# reap_dormant (session hygiene: idle-TTL dormancy)
+# ---------------------------------------------------------------------------
+
+def test_reap_dormant_kills_idle_session_preserves_persona(tmp_paths: Paths):
+    """A persistent agent whose tmux session has been idle longer than
+    ``max_idle_seconds`` is:
+      - transitioned to ``status: dormant: ...``
+      - tmux session killed
+      - MISSION / SOUL / LEARNINGS / contract sidecars preserved on disk
+    """
+    _make_persistent(tmp_paths, "@idle-boss")
+    d = tmp_paths.agents / "@idle-boss"
+    # Seed persona + contract sidecars that MUST survive the reap.
+    (d / "SOUL.md").write_text("soul content")
+    (d / "LEARNINGS.md").write_text("learnings content")
+    (d / "HEARTBEAT.md").write_text("heartbeat content")
+    (d / "authority").write_text("may read")
+    (d / "responsibility").write_text("ship")
+    (d / "accountability").write_text("verify")
+    (d / "harness.md").write_text("# Agent: @idle-boss")
+    (d / "status").write_text("active: persistent session\n")
+
+    kill_sessions: list[str] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "has-session" in cmd:
+            cp.returncode = 0  # alive
+        elif "display-message" in cmd:
+            cp.returncode = 0
+            cp.stdout = "1000000000"  # very old → idle ≫ TTL
+        elif "kill-session" in cmd:
+            cp.returncode = 0
+            kill_sessions.append(cmd[cmd.index("-t") + 1])
+        else:
+            cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        reaped = agents.reap_dormant(paths=tmp_paths, max_idle_seconds=3600)
+
+    assert "@idle-boss" in reaped
+    assert kill_sessions == ["metasphere-idle-boss"], (
+        f"expected exactly metasphere-idle-boss killed, got {kill_sessions}"
+    )
+    status = (d / "status").read_text().strip()
+    assert status.startswith("dormant:"), f"expected dormant: status, got {status!r}"
+    assert "idle" in status and "s" in status
+
+    # Persona + contract files preserved — next ``metasphere agent wake``
+    # must restart cleanly from these.
+    for preserved in (
+        "MISSION.md", "SOUL.md", "LEARNINGS.md", "HEARTBEAT.md",
+        "authority", "responsibility", "accountability", "harness.md",
+    ):
+        assert (d / preserved).exists(), (
+            f"persona/contract file {preserved} must survive reap"
+        )
+
+
+def test_reap_dormant_skips_fresh_persistent_and_ephemerals(tmp_paths: Paths):
+    """Only idle persistent agents are transitioned. Fresh persistent
+    agents (idle < TTL) stay alive with unchanged state, and ephemerals
+    (no MISSION.md) are never swept by reap_dormant regardless of idle.
+    """
+    _make_persistent(tmp_paths, "@fresh-boss")
+    # Ephemeral: exists in agents/ but has no MISSION.md.
+    ephemeral_dir = tmp_paths.agents / "@ephemeral-one"
+    ephemeral_dir.mkdir(parents=True)
+    (ephemeral_dir / "scope").write_text(str(tmp_paths.project_root))
+    (ephemeral_dir / "status").write_text("spawned: do stuff\n")
+
+    kill_sessions: list[str] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "has-session" in cmd:
+            cp.returncode = 0  # alive
+        elif "display-message" in cmd:
+            cp.returncode = 0
+            cp.stdout = str(2_000_000_000)  # future-ish → idle ≈ 0
+        elif "kill-session" in cmd:
+            cp.returncode = 0
+            kill_sessions.append(cmd[cmd.index("-t") + 1])
+        else:
+            cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        reaped = agents.reap_dormant(paths=tmp_paths, max_idle_seconds=3600)
+
+    assert reaped == [], f"expected no reaps, got {reaped}"
+    assert kill_sessions == [], f"expected no kills, got {kill_sessions}"
+    # _make_persistent doesn't seed a status file; reap_dormant must not
+    # have created one for the fresh agent (no transition fired).
+    fresh_status = tmp_paths.agents / "@fresh-boss" / "status"
+    if fresh_status.exists():
+        assert "dormant" not in fresh_status.read_text()
+    # Ephemeral status untouched (no MISSION.md → not even considered).
+    assert "spawned:" in (ephemeral_dir / "status").read_text()
+
+
+def test_reap_dormant_no_op_when_session_already_dead(tmp_paths: Paths):
+    """If the persistent agent has no live tmux session, reap_dormant
+    must NOT write a dormant status — there's nothing to transition."""
+    _make_persistent(tmp_paths, "@dead-one")
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "has-session" in cmd:
+            cp.returncode = 1  # NOT alive
+        elif "kill-session" in cmd:
+            cp.returncode = 1
+        else:
+            cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        reaped = agents.reap_dormant(paths=tmp_paths, max_idle_seconds=1)
+
+    assert reaped == []
+
+
+# ---------------------------------------------------------------------------
+# on_done_delivered (session hygiene: ephemeral-!done cleanup)
+# ---------------------------------------------------------------------------
+
+def _make_ephemeral(tmp_paths: Paths, name: str = "@ephi") -> "Path":
+    d = tmp_paths.agents / name
+    d.mkdir(parents=True)
+    (d / "scope").write_text(str(tmp_paths.project_root))
+    (d / "parent").write_text("@orchestrator")
+    (d / "spawned_at").write_text("2026-04-21T00:00:00Z")
+    (d / "task").write_text("do a thing")
+    (d / "status").write_text("working: doing a thing")
+    (d / "harness.md").write_text(f"# Agent: {name}\n")
+    (d / "authority").write_text("read-only")
+    (d / "responsibility").write_text("ship a note")
+    (d / "accountability").write_text("verify note exists")
+    (d / "pid").write_text("12345\n")
+    (d / "task_id").write_text("task-abc\n")
+    return d
+
+
+def test_on_done_delivered_ephemeral_kills_tmux_and_clears_state(tmp_paths: Paths):
+    """An ephemeral sender's !done triggers:
+      - ``tmux kill-session -t metasphere-<sender>`` (no-op if absent)
+      - removal of pid + task_id pointers
+      - status rewritten to ``complete: !done delivered``
+      - harness/contract/persona-equivalent files preserved
+    """
+    d = _make_ephemeral(tmp_paths, "@ephi")
+
+    kill_sessions: list[str] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "kill-session" in cmd:
+            cp.returncode = 0  # pretend session was alive and got killed
+            kill_sessions.append(cmd[cmd.index("-t") + 1])
+        else:
+            cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        killed = agents.on_done_delivered("@ephi", paths=tmp_paths)
+
+    assert killed == "metasphere-ephi", f"expected session name returned, got {killed!r}"
+    assert kill_sessions == ["metasphere-ephi"], (
+        f"expected single kill-session call for metasphere-ephi, got {kill_sessions}"
+    )
+    # Runtime pointers cleared
+    assert not (d / "pid").exists()
+    assert not (d / "task_id").exists()
+    # Status transitioned
+    assert (d / "status").read_text().strip() == "complete: !done delivered"
+    # Harness + contract preserved
+    for survived in ("harness.md", "authority", "responsibility",
+                     "accountability", "scope", "parent", "spawned_at", "task"):
+        assert (d / survived).exists(), f"{survived} must survive ephemeral done"
+
+
+def test_on_done_delivered_persistent_does_NOT_kill_tmux(tmp_paths: Paths):
+    """A persistent sender's !done is a strict no-op: tmux stays up,
+    no status change, no pointer removal. Persistent lifecycle is
+    governed by ``reap_dormant`` idle-TTL, not by !done delivery."""
+    d = _make_persistent(tmp_paths, "@boss")
+    # Simulate a persistent agent that also happens to have runtime
+    # pointers (e.g. a pid from an externally-supervised REPL).
+    (d / "pid").write_text("77777\n")
+    (d / "task_id").write_text("task-xyz\n")
+    (d / "status").write_text("active: persistent session\n")
+
+    any_calls: list[list[str]] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        any_calls.append(list(cmd))
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        killed = agents.on_done_delivered("@boss", paths=tmp_paths)
+
+    assert killed is None
+    # No subprocess call at all — persistent branch returns early.
+    kill_calls = [c for c in any_calls if "kill-session" in c]
+    assert kill_calls == [], f"persistent !done must never kill-session, got {kill_calls}"
+    # Runtime state untouched.
+    assert (d / "pid").read_text().strip() == "77777"
+    assert (d / "task_id").read_text().strip() == "task-xyz"
+    assert (d / "status").read_text().strip() == "active: persistent session"
+
+
+def test_on_done_delivered_ignores_user_and_scope_senders(tmp_paths: Paths):
+    """Non-agent senders (``@user``, ``@..``, ``@.``, ``@/scope/``) are
+    skipped — the hook is strictly about ephemeral AGENT cleanup."""
+    for bogus in ("@user", "@..", "@.", "@/abs/path/", "", "not-an-at-prefix"):
+        killed = agents.on_done_delivered(bogus, paths=tmp_paths)
+        assert killed is None, f"expected no-op for sender={bogus!r}, got {killed!r}"
+
+
+def test_on_done_delivered_unknown_agent_is_noop(tmp_paths: Paths):
+    """Sender with no corresponding agent dir → nothing to clean up."""
+    killed = agents.on_done_delivered("@ghost-sender", paths=tmp_paths)
+    assert killed is None
+
+
+# ---------------------------------------------------------------------------
 # contract_main (contract retrieval)
 # ---------------------------------------------------------------------------
 

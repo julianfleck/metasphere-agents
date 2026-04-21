@@ -45,23 +45,36 @@ def run_daemon(
     paths: Optional[Paths] = None,
     poll_interval: float = 3.0,
     watchdog_interval: float = 5.0,
+    dormancy_interval: float = 300.0,
+    dormancy_max_idle_seconds: int = 86400,
     *,
     stop: Optional[Callable[[], bool]] = None,
     poll_fn: Optional[Callable[[], int]] = None,
     sleep_fn: Optional[Callable[[float], None]] = None,
     time_fn: Optional[Callable[[], float]] = None,
+    reap_dormant_fn: Optional[Callable[[Paths, int], list[str]]] = None,
 ) -> None:
     """Run the gateway daemon forever.
 
     The injection points (``poll_fn``, ``sleep_fn``, ``time_fn``,
-    ``stop``) exist for tests so a single iteration failure can be
-    asserted to NOT exit the daemon. Production callers leave them at
-    None and the daemon never returns.
+    ``stop``, ``reap_dormant_fn``) exist for tests so a single iteration
+    failure can be asserted to NOT exit the daemon. Production callers
+    leave them at None and the daemon never returns.
+
+    ``dormancy_interval`` is how often ``reap_dormant`` is swept (default
+    5 min); ``dormancy_max_idle_seconds`` is the per-session idle TTL
+    before a persistent agent is transitioned to ``dormant:`` status and
+    its tmux session killed (default 24h).
     """
     paths = paths or resolve()
     poll_fn = poll_fn or _poll_once
     sleep_fn = sleep_fn or time.sleep
     time_fn = time_fn or time.time
+    if reap_dormant_fn is None:
+        from ..agents import reap_dormant as _reap_dormant
+
+        def reap_dormant_fn(p: Paths, idle: int) -> list[str]:
+            return _reap_dormant(p, max_idle_seconds=idle)
 
     # Refresh harness hash baseline at boot so an existing-on-startup
     # session uses the latest harness as its drift reference.
@@ -107,6 +120,7 @@ def run_daemon(
     # the daemon no longer flap-restarts; the 10s rate-limit marker inside
     # check_safety_hooks_confirmation is the defence-in-depth.
     last_watchdog = -float("inf")
+    last_dormancy = -float("inf")
     while True:
         if stop is not None and stop():
             return
@@ -142,7 +156,35 @@ def run_daemon(
                     pass
             last_watchdog = now
 
-        # 3) Sleep.
+        # 3) Dormancy tick: sweep idle persistent agents on a longer
+        # cadence than the watchdog (default 5 min). The per-sweep cost
+        # is O(N) tmux probes where N = persistent agents alive, so 5
+        # min is ample; finer cadence wastes cycles without catching
+        # the 24h-idle transition any sooner.
+        if now - last_dormancy >= dormancy_interval:
+            try:
+                reaped = reap_dormant_fn(paths, dormancy_max_idle_seconds)
+                if reaped:
+                    log_event(
+                        "agent.dormant.reap",
+                        f"reap_dormant transitioned {len(reaped)} agent(s): {reaped}",
+                        agent="@daemon-supervisor",
+                        meta={"agents": reaped},
+                        paths=paths,
+                    )
+            except Exception as e:
+                try:
+                    log_event(
+                        "supervisor.daemon_error",
+                        f"reap_dormant raised: {e}",
+                        agent="@daemon-supervisor",
+                        paths=paths,
+                    )
+                except Exception:
+                    pass
+            last_dormancy = now
+
+        # 4) Sleep.
         try:
             sleep_fn(poll_interval)
         except Exception:

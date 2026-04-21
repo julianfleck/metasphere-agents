@@ -201,6 +201,73 @@ def test_run_daemon_honors_watchdog_interval(tmp_paths: Paths):
     assert wd.call_count == 2
 
 
+def test_run_daemon_reap_dormant_fires_on_interval(tmp_paths: Paths):
+    """Daemon must invoke ``reap_dormant`` on the dormancy cadence and
+    pass through ``max_idle_seconds``. Longer-interval tick than the
+    watchdog: first tick at t=0, next after crossing the interval."""
+    iterations = {"n": 0}
+    # Times: 0, 1, 2 (under interval), 400 (crosses 300s interval), 401, 402
+    times = iter([0.0, 1.0, 2.0, 400.0, 401.0, 402.0, 403.0])
+
+    def stop():
+        iterations["n"] += 1
+        return iterations["n"] > 6
+
+    reap_calls: list[tuple] = []
+
+    def fake_reap(p, max_idle):
+        reap_calls.append((p, max_idle))
+        return []
+
+    with patch.object(gw_daemon, "ensure_session"), \
+         patch.object(gw_daemon, "run_watchdog"):
+        gw_daemon.run_daemon(
+            tmp_paths,
+            poll_interval=0.01,
+            watchdog_interval=0.01,
+            dormancy_interval=300.0,
+            dormancy_max_idle_seconds=86400,
+            stop=stop,
+            poll_fn=lambda: 0,
+            sleep_fn=lambda s: None,
+            time_fn=lambda: next(times),
+            reap_dormant_fn=fake_reap,
+        )
+
+    # Two dormancy ticks expected: first at t=0 (last=-inf), second at t=400.
+    assert len(reap_calls) == 2, f"expected 2 reap ticks, got {len(reap_calls)}"
+    assert all(mi == 86400 for _, mi in reap_calls)
+
+
+def test_run_daemon_continues_on_reap_dormant_error(tmp_paths: Paths):
+    """A failure inside reap_dormant must not exit the gateway loop."""
+    iterations = {"n": 0}
+
+    def stop():
+        iterations["n"] += 1
+        return iterations["n"] > 3
+
+    def boom(p, max_idle):
+        raise RuntimeError("simulated tmux failure in reap_dormant")
+
+    with patch.object(gw_daemon, "ensure_session"), \
+         patch.object(gw_daemon, "run_watchdog"):
+        gw_daemon.run_daemon(
+            tmp_paths,
+            poll_interval=0.01,
+            watchdog_interval=0.01,
+            dormancy_interval=0.0,  # fire on every tick
+            stop=stop,
+            poll_fn=lambda: 0,
+            sleep_fn=lambda s: None,
+            time_fn=lambda: 0.0,
+            reap_dormant_fn=boom,
+        )
+
+    # If we got here without an unhandled exception, the loop survived.
+    assert iterations["n"] == 4
+
+
 # ---------------------------------------------------------------------------
 # _poll_once — end-to-end attachment routing through the shared handler
 #
