@@ -155,15 +155,93 @@ def test_evaluate_failed_status(tmp_paths: Paths, tmp_path: Path):
 
 def test_evaluate_count_mismatch(tmp_paths: Paths, tmp_path: Path):
     transcript = tmp_path / "t.jsonl"
-    _write_jsonl(transcript, [{"type": "user"}, {"type": "user"}])  # count=2
+    _write_jsonl(
+        transcript,
+        [{"type": "user"}, {"type": "user"}, {"type": "user"}],
+    )  # count=3
     _bc.write_breadcrumb(
         tmp_paths,
         session_id="s",
         status=_bc.STATUS_SUCCESS,
-        user_msg_count=1,  # stale
+        user_msg_count=1,  # stale, delta=+2 → must still fail
         agent="@orchestrator",
     )
     ok, reason = _bc.evaluate(tmp_paths, session_id="s", transcript_path=transcript)
+    assert ok is False
+    assert reason == "count-mismatch"
+
+
+def test_evaluate_accepts_plus_one_race_delta(tmp_paths: Paths, tmp_path: Path):
+    """Regression: the UserPromptSubmit hook fires before Claude Code
+    flushes the current turn's user-prompt record to the JSONL
+    transcript. The breadcrumb's stored count therefore lags the
+    Stop-time fresh count by exactly 1 on every non-empty turn (root
+    cause documented at
+    /home/openclaw/.metasphere/audits/2026-04-21/count-mismatch-diagnostic.md).
+    evaluate() must accept fresh - stored ∈ {0, 1} as a valid match
+    while still rejecting any other delta — otherwise the fail-closed
+    gate suppresses every orchestrator turn.
+    """
+    # (a) fresh == stored: the prompt was already flushed at hook time.
+    transcript_a = tmp_path / "a.jsonl"
+    _write_jsonl(transcript_a, [{"type": "user"}, {"type": "user"}])
+    _bc.write_breadcrumb(
+        tmp_paths,
+        session_id="sa",
+        status=_bc.STATUS_SUCCESS,
+        user_msg_count=2,
+        agent="@orchestrator",
+    )
+    ok, reason = _bc.evaluate(tmp_paths, session_id="sa", transcript_path=transcript_a)
+    assert ok is True, reason
+    assert reason == "ok"
+
+    # (b) fresh == stored + 1: the racing case — current turn's prompt
+    # landed between UserPromptSubmit and Stop. Must pass.
+    transcript_b = tmp_path / "b.jsonl"
+    _write_jsonl(transcript_b, [{"type": "user"}, {"type": "user"}])
+    _bc.write_breadcrumb(
+        tmp_paths,
+        session_id="sb",
+        status=_bc.STATUS_SUCCESS,
+        user_msg_count=1,
+        agent="@orchestrator",
+    )
+    ok, reason = _bc.evaluate(tmp_paths, session_id="sb", transcript_path=transcript_b)
+    assert ok is True, reason
+    assert reason == "ok"
+
+    # (c) fresh == stored - 1: transcript shrank since the breadcrumb
+    # was written (impossible under normal Claude Code behavior — points
+    # at a clobbered breadcrumb or a swapped transcript). Must fail.
+    transcript_c = tmp_path / "c.jsonl"
+    _write_jsonl(transcript_c, [{"type": "user"}])
+    _bc.write_breadcrumb(
+        tmp_paths,
+        session_id="sc",
+        status=_bc.STATUS_SUCCESS,
+        user_msg_count=2,
+        agent="@orchestrator",
+    )
+    ok, reason = _bc.evaluate(tmp_paths, session_id="sc", transcript_path=transcript_c)
+    assert ok is False
+    assert reason == "count-mismatch"
+
+    # (d) fresh == stored + 2: a turn was added without a corresponding
+    # context-hook breadcrumb refresh — the gate must still fail closed.
+    transcript_d = tmp_path / "d.jsonl"
+    _write_jsonl(
+        transcript_d,
+        [{"type": "user"}, {"type": "user"}, {"type": "user"}],
+    )
+    _bc.write_breadcrumb(
+        tmp_paths,
+        session_id="sd",
+        status=_bc.STATUS_SUCCESS,
+        user_msg_count=1,
+        agent="@orchestrator",
+    )
+    ok, reason = _bc.evaluate(tmp_paths, session_id="sd", transcript_path=transcript_d)
     assert ok is False
     assert reason == "count-mismatch"
 
