@@ -567,6 +567,14 @@ def _restart_daemons() -> None:
             _sc("stop", stale)
             _sc("disable", stale)
 
+    # Order matters: gateway LAST. Gateway supervises the tmux session
+    # that this update is running inside; restarting it first kills the
+    # caller before heartbeat+schedule get their turn (2026-04-21 incident
+    # on commit ddf421e — deploy silently half-finished).
+    for daemon in ("metasphere-heartbeat", "metasphere-schedule"):
+        if _sc("is-active", daemon) == 0:
+            _sc("restart", daemon)
+
     if _sc("is-active", "metasphere-gateway") == 0:
         _sc("restart", "metasphere-gateway")
     elif _sc("is-active", "metasphere") == 0:

@@ -268,6 +268,40 @@ def test_run_update_restart_skipped_when_cfg_disables(tmp_paths, monkeypatch):
     assert restart_calls == []
 
 
+def test_restart_daemons_orders_gateway_last(monkeypatch):
+    """Gateway supervises the tmux session this update runs inside;
+    it MUST be restarted last so heartbeat+schedule get their turn
+    before the caller dies. Regression: 2026-04-21 half-finished deploy."""
+    monkeypatch.setattr(_update.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_update.shutil, "which", lambda _: "/usr/bin/systemctl")
+
+    calls: list[tuple[str, ...]] = []
+
+    class _FakeProc:
+        def __init__(self, rc: int) -> None:
+            self.returncode = rc
+
+    def fake_run(args, **_kwargs):
+        assert args[:2] == ["systemctl", "--user"]
+        rest = tuple(args[2:])
+        calls.append(rest)
+        # is-enabled for stale services → nonzero (not enabled); everything else ok.
+        if rest and rest[0] == "is-enabled":
+            return _FakeProc(1)
+        return _FakeProc(0)
+
+    monkeypatch.setattr(_update.subprocess, "run", fake_run)
+
+    _update._restart_daemons()
+
+    restart_order = [r[1] for r in calls if r and r[0] == "restart"]
+    assert restart_order == [
+        "metasphere-heartbeat",
+        "metasphere-schedule",
+        "metasphere-gateway",
+    ]
+
+
 def test_run_update_test_gate_failure(tmp_paths, monkeypatch):
     head_seq = iter(["aaaa", "bbbb"])
     _patch_update_helpers(monkeypatch)
