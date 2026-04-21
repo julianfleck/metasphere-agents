@@ -246,3 +246,144 @@ Every probe is wrapped in try/except and falls back to an empty
 ALERT. A broken `/proc` walk or a missing `tmux` binary must never
 break context assembly. The `test_render_alert_swallows_probe_exceptions`
 test pins this invariant.
+
+## Posthook fail-closed (context-hook breadcrumb)
+
+The `UserPromptSubmit` context hook (`python -m metasphere.cli.context`)
+writes a per-turn **success breadcrumb** that the `Stop` posthook
+(`python -m metasphere.posthook`) reads before deciding whether to
+forward the assistant's final reply to Telegram. If the breadcrumb is
+missing or marked failed, the posthook *fail-closes*: the auto-forward
+is suppressed, an entry is written to a local log, and a single `!info`
+is queued in `@orchestrator`'s inbox so the degraded-context turn
+surfaces.
+
+This guards the case where the context hook crashed (out-of-memory,
+file-lock contention, regex blow-up, etc.) and the agent generated its
+reply against a context block missing messages, tasks, the voice
+capsule, or the host-health ALERT. Sending such a reply to Telegram
+makes the agent look amnesic; suppressing it costs one turn but keeps
+trust in the channel.
+
+### Files
+
+- `metasphere/breadcrumbs.py` — breadcrumb read/write/evaluate helpers
+- `metasphere/cli/context.py` — UserPromptSubmit hook (writes the
+  breadcrumb at end of `build_context()`, or a `failed` marker on
+  exception)
+- `metasphere/posthook.py::run_posthook` — Stop hook (calls
+  `breadcrumbs.evaluate()` before `route_to_telegram`)
+- `metasphere/tests/test_breadcrumbs.py`,
+  `metasphere/tests/test_cli_context.py`,
+  `metasphere/tests/test_posthook.py` — unit tests for the three
+  scenarios + count-mismatch defense-in-depth
+
+### Breadcrumb location
+
+```
+~/.metasphere/state/context-breadcrumbs/<session_id>.json
+```
+
+One file per claude-code `session_id`, overwritten at the end of every
+UserPromptSubmit hook in that session. Pruning happens opportunistically
+on each successful write — files older than `BREADCRUMB_MAX_AGE_SECONDS`
+(7 days) are deleted so orphaned sessions don't accumulate forever.
+
+Schema:
+
+```json
+{
+  "session_id": "<uuid>",
+  "user_msg_count": 12,
+  "status": "success" | "failed",
+  "agent": "@orchestrator",
+  "timestamp": "2026-04-21T14:30:00Z",
+  "reason": "<set only on failed: e.g. 'OSError: [Errno 11] EAGAIN'>"
+}
+```
+
+The posthook's correlation rule: a breadcrumb matches the current turn
+when its `session_id` equals the Stop payload's `session_id` AND its
+`user_msg_count` equals the count of `type=="user"` records in the
+transcript at Stop time. This catches the case where the context hook
+crashed *before* writing — the breadcrumb is then stale (count from the
+previous turn) and `evaluate()` returns `count-mismatch`.
+
+### Suppression log location
+
+```
+~/.metasphere/logs/posthook-suppressions.log
+```
+
+One line per suppression. Format:
+
+```
+[2026-04-21T14:18:58Z] suppressed forward agent=@orchestrator session=demo-failed reason=context-hook-failed
+```
+
+`reason` is one of: `no-session-id`, `breadcrumb-missing`,
+`context-hook-failed`, `count-mismatch`, `session-mismatch`.
+
+For postmortems: tail the suppression log to see whether the silence
+on Telegram is a fail-closed event or a genuine silent tick. Cross-
+reference the timestamp with `~/.metasphere/state/posthook_telegram_errors.log`
+to distinguish "context hook died" from "telegram API rejected the
+send".
+
+### Reproducible demo
+
+Force a context-hook failure and observe the suppression:
+
+```bash
+python - <<'PY'
+import os, json, sys
+from unittest import mock
+from metasphere.cli import context as cli_context
+from metasphere import posthook, breadcrumbs as _bc
+from metasphere.paths import resolve
+
+paths = resolve()
+session_id = "demo-failclose"
+transcript = paths.root / "demo.jsonl"
+transcript.write_text(json.dumps({"type": "user"}) + "\n")
+
+class FakeStdin:
+    def __init__(self, p): self.buffer = type("B", (), {"read": lambda s: p})()
+    def isatty(self): return False
+
+# 1) Force the context hook to crash → writes a 'failed' breadcrumb.
+sys.stdin = FakeStdin(json.dumps({
+    "session_id": session_id, "transcript_path": str(transcript),
+    "hook_event_name": "UserPromptSubmit", "prompt": "x",
+}).encode())
+with mock.patch("metasphere.cli.context.build_context",
+                side_effect=RuntimeError("simulated")):
+    cli_context.main([])
+
+print("breadcrumb:", _bc.read_breadcrumb(paths, session_id))
+
+# 2) Run the Stop hook → must NOT call telegram-send.
+stop_payload = json.dumps({
+    "session_id": session_id, "transcript_path": str(transcript),
+    "stop_hook_active": False,
+}).encode()
+with mock.patch("metasphere.telegram.api.send_message") as m:
+    posthook.run_posthook(stop_payload, paths)
+print("send_message called:", m.called, "(expected False)")
+PY
+
+tail -1 ~/.metasphere/logs/posthook-suppressions.log
+```
+
+### Failure mode
+
+The breadcrumb itself can fail to write (disk full, permissions,
+EAGAIN). In that case, the next posthook tick will see no breadcrumb
+and fail-close — that's the *correct* default: when in doubt, don't
+forward. The cost of a false positive (one suppressed turn the user
+didn't see) is much lower than a false negative (the user gets a reply
+generated against an incomplete context and the agent looks broken).
+
+The whole module is wrapped in try/except so a breadcrumb glitch can
+never break the host turn — the worst case is "turn doesn't reach
+Telegram + entry in suppressions log".
