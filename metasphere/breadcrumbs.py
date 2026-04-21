@@ -84,7 +84,15 @@ def breadcrumb_path(paths: Paths, session_id: str) -> Path:
 # ---------- transcript counting ----------
 
 def count_user_messages(transcript_path: Path | str | None) -> int:
-    """Count ``type=="user"`` records in a JSONL transcript.
+    """Count real user-prompt records in a JSONL transcript.
+
+    Both real user prompts and tool-call results are stored with
+    ``type=="user"`` by Claude Code. Tool results are distinguishable
+    by shape: ``message.content`` is a list containing a dict whose
+    own ``type`` is ``"tool_result"``. Counting them inflates the
+    Stop-time count above the UserPromptSubmit-time count by exactly
+    the number of tool calls in the turn, which trips the breadcrumb
+    ``count-mismatch`` gate on every tool-using turn.
 
     Returns 0 when the transcript is missing, empty, unreadable, or has
     no user messages — the posthook treats 0 as "no transcript info"
@@ -109,8 +117,17 @@ def count_user_messages(transcript_path: Path | str | None) -> int:
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(obj, dict) and obj.get("type") == "user":
-            n += 1
+        if not (isinstance(obj, dict) and obj.get("type") == "user"):
+            continue
+        msg = obj.get("message")
+        if isinstance(msg, dict):
+            content = msg.get("content")
+            if isinstance(content, list) and any(
+                isinstance(item, dict) and item.get("type") == "tool_result"
+                for item in content
+            ):
+                continue
+        n += 1
     return n
 
 

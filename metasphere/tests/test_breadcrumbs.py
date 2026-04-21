@@ -39,6 +39,41 @@ def test_count_user_messages_mixed(tmp_path: Path):
     assert _bc.count_user_messages(p) == 3
 
 
+def test_count_user_messages_skips_tool_results(tmp_path: Path):
+    """Regression: Claude Code emits tool-call results as records with
+    type=='user' and message.content=[{type:'tool_result', ...}]. These
+    must NOT be counted as real user prompts — otherwise the Stop-time
+    count exceeds the UserPromptSubmit-time count by the number of tool
+    calls in the turn and the breadcrumb fail-closed gate suppresses
+    every tool-using turn (observed: 26/26 posthook fires today for
+    @orchestrator with reason=count-mismatch).
+    """
+    p = tmp_path / "t.jsonl"
+    _write_jsonl(
+        p,
+        [
+            # 2 real user prompts (mix of legacy string-content and the
+            # newer list-of-text-blocks shape).
+            {"type": "user", "message": {"content": "hi"}},
+            {"type": "user", "message": {"content": [{"type": "text", "text": "hi again"}]}},
+            # 3 tool_result records — these are also type=='user' but
+            # must be skipped.
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
+            ]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t2", "content": "ok"}
+            ]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t3", "content": "ok"}
+            ]}},
+            # 1 assistant record (never counted).
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "hello"}]}},
+        ],
+    )
+    assert _bc.count_user_messages(p) == 2
+
+
 def test_count_user_messages_handles_garbage_lines(tmp_path: Path):
     p = tmp_path / "t.jsonl"
     p.write_text(
