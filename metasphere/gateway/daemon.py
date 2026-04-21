@@ -53,18 +53,23 @@ def run_daemon(
     sleep_fn: Optional[Callable[[float], None]] = None,
     time_fn: Optional[Callable[[], float]] = None,
     reap_dormant_fn: Optional[Callable[[Paths, int], list[str]]] = None,
+    reap_crashed_fn: Optional[Callable[[Paths], list[str]]] = None,
 ) -> None:
     """Run the gateway daemon forever.
 
     The injection points (``poll_fn``, ``sleep_fn``, ``time_fn``,
-    ``stop``, ``reap_dormant_fn``) exist for tests so a single iteration
-    failure can be asserted to NOT exit the daemon. Production callers
-    leave them at None and the daemon never returns.
+    ``stop``, ``reap_dormant_fn``, ``reap_crashed_fn``) exist for tests
+    so a single iteration failure can be asserted to NOT exit the
+    daemon. Production callers leave them at None and the daemon never
+    returns.
 
-    ``dormancy_interval`` is how often ``reap_dormant`` is swept (default
-    5 min); ``dormancy_max_idle_seconds`` is the per-session idle TTL
-    before a persistent agent is transitioned to ``dormant:`` status and
-    its tmux session killed (default 24h).
+    ``dormancy_interval`` is how often ``reap_dormant`` AND
+    ``reap_crashed`` are swept (default 5 min). They share the cadence
+    because both are session-hygiene sweeps with the same per-tick
+    cost shape (O(N) over agent dirs); splitting them would only
+    duplicate the bookkeeping. ``dormancy_max_idle_seconds`` is the
+    per-session idle TTL before a persistent agent is transitioned to
+    ``dormant:`` status and its tmux session killed (default 24h).
     """
     paths = paths or resolve()
     poll_fn = poll_fn or _poll_once
@@ -75,6 +80,11 @@ def run_daemon(
 
         def reap_dormant_fn(p: Paths, idle: int) -> list[str]:
             return _reap_dormant(p, max_idle_seconds=idle)
+    if reap_crashed_fn is None:
+        from ..agents import reap_crashed as _reap_crashed
+
+        def reap_crashed_fn(p: Paths) -> list[str]:
+            return _reap_crashed(p)
 
     # Refresh harness hash baseline at boot so an existing-on-startup
     # session uses the latest harness as its drift reference.
@@ -177,6 +187,32 @@ def run_daemon(
                     log_event(
                         "supervisor.daemon_error",
                         f"reap_dormant raised: {e}",
+                        agent="@daemon-supervisor",
+                        paths=paths,
+                    )
+                except Exception:
+                    pass
+            # Crash sweep shares the dormancy cadence — silent-death
+            # detection is the same shape of session-hygiene scan and
+            # there's no reason to wake the daemon more often for it.
+            # A failure here MUST NOT prevent reap_dormant from running
+            # again next tick (and vice-versa) — hence the independent
+            # try/except blocks rather than one wrapping both.
+            try:
+                crashed = reap_crashed_fn(paths)
+                if crashed:
+                    log_event(
+                        "agent.crashed.reap",
+                        f"reap_crashed transitioned {len(crashed)} agent(s): {crashed}",
+                        agent="@daemon-supervisor",
+                        meta={"agents": crashed},
+                        paths=paths,
+                    )
+            except Exception as e:
+                try:
+                    log_event(
+                        "supervisor.daemon_error",
+                        f"reap_crashed raised: {e}",
                         agent="@daemon-supervisor",
                         paths=paths,
                     )

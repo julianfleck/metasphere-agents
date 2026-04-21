@@ -458,6 +458,227 @@ def test_reap_dormant_no_op_when_session_already_dead(tmp_paths: Paths):
 
 
 # ---------------------------------------------------------------------------
+# reap_crashed (silent-death detection)
+# ---------------------------------------------------------------------------
+
+
+def _seed_ephemeral_with_pid(
+    tmp_paths: Paths,
+    name: str,
+    *,
+    pid: int = 99999,
+    status: str = "spawned: do work",
+    parent: str = "@orchestrator",
+    write_pid: bool = True,
+) -> Path:
+    """Make a minimal ephemeral agent dir for reap_crashed exercises.
+
+    Mirrors the on-disk shape spawn_ephemeral produces (no MISSION.md,
+    no harness.md needed), with explicit knobs for the cases the spec
+    enumerates: live/dead pid, terminal/non-terminal status,
+    missing-pid, missing-parent.
+    """
+    d = tmp_paths.agents / name
+    d.mkdir(parents=True)
+    (d / "scope").write_text(str(tmp_paths.project_root))
+    if parent:
+        (d / "parent").write_text(parent)
+    (d / "spawned_at").write_text("2026-04-21T00:00:00Z")
+    (d / "task").write_text("do work")
+    (d / "status").write_text(status)
+    if write_pid:
+        (d / "pid").write_text(f"{pid}\n")
+    return d
+
+
+def test_reap_crashed_live_pid_no_op(tmp_paths: Paths):
+    """An agent whose pid is alive must NOT be transitioned, even if its
+    tmux session happens to be missing — pid liveness alone keeps it
+    out of the silent-death bucket."""
+    d = _seed_ephemeral_with_pid(tmp_paths, "@still-alive", pid=12345)
+
+    sent: list[tuple] = []
+
+    def fake_send(target, label, body, from_agent, paths=None, **kwargs):
+        sent.append((target, label, from_agent))
+        return MagicMock(id="msg-x")
+
+    with patch("metasphere.agents._pid_alive", return_value=True), \
+         patch("metasphere.agents.session_alive", return_value=False), \
+         patch("metasphere.messages.send_message", side_effect=fake_send):
+        reaped = agents.reap_crashed(paths=tmp_paths)
+
+    assert reaped == [], f"live pid must not be reaped, got {reaped}"
+    assert sent == [], f"no parent alert expected, got {sent}"
+    # Status untouched.
+    assert (d / "status").read_text() == "spawned: do work"
+
+
+def test_reap_crashed_dead_pid_marks_crashed_and_alerts_parent(tmp_paths: Paths):
+    """Both pid AND tmux session gone, status non-terminal:
+      - status rewritten to ``crashed: pid <N> dead, session gone``
+      - !alert message sent from agent to its parent
+      - agent name returned in the reaped list
+    """
+    d = _seed_ephemeral_with_pid(
+        tmp_paths, "@silent-dead", pid=99999, parent="@orchestrator",
+    )
+
+    sent: list[dict] = []
+
+    def fake_send(target, label, body, from_agent, paths=None, **kwargs):
+        sent.append({
+            "target": target, "label": label, "body": body,
+            "from": from_agent, "wake": kwargs.get("wake"),
+        })
+        m = MagicMock()
+        m.id = "msg-fake"
+        return m
+
+    with patch("metasphere.agents._pid_alive", return_value=False), \
+         patch("metasphere.agents.session_alive", return_value=False), \
+         patch("metasphere.messages.send_message", side_effect=fake_send):
+        reaped = agents.reap_crashed(paths=tmp_paths)
+
+    assert reaped == ["@silent-dead"]
+    new_status = (d / "status").read_text().strip()
+    assert new_status.startswith("crashed:"), (
+        f"expected crashed: status, got {new_status!r}"
+    )
+    assert "pid 99999" in new_status and "session gone" in new_status
+
+    assert len(sent) == 1, f"expected one !alert, got {sent}"
+    msg = sent[0]
+    assert msg["target"] == "@orchestrator"
+    assert msg["label"] == "!alert"
+    assert msg["from"] == "@silent-dead"
+    assert "@silent-dead" in msg["body"] and "99999" in msg["body"]
+    # wake=False to avoid triggering tmux side-effects on the parent
+    # session from inside a daemon tick.
+    assert msg["wake"] is False, f"expected wake=False, got {msg['wake']!r}"
+
+
+def test_reap_crashed_terminal_status_no_op(tmp_paths: Paths):
+    """Status already in a terminal bucket (complete/dormant/crashed/failed)
+    short-circuits the sweep — even if pid+session would otherwise look
+    dead. Idempotency: a second sweep over an already-crashed agent must
+    not re-mark it or re-alert."""
+    sent: list[tuple] = []
+
+    def fake_send(*a, **k):
+        sent.append((a, k))
+        return MagicMock(id="x")
+
+    for terminal_status in (
+        "complete: !done delivered",
+        "dormant: idle 90000s (auto-ttl at 2026-04-21T00:00:00Z)",
+        "crashed: pid 1 dead, session gone",
+        "failed: harness load error",
+    ):
+        # Fresh agent name per iteration so they don't collide.
+        name = "@term-" + terminal_status.split(":", 1)[0]
+        d = _seed_ephemeral_with_pid(
+            tmp_paths, name, pid=99999, status=terminal_status,
+        )
+        with patch("metasphere.agents._pid_alive", return_value=False), \
+             patch("metasphere.agents.session_alive", return_value=False), \
+             patch("metasphere.messages.send_message", side_effect=fake_send):
+            reaped = agents.reap_crashed(paths=tmp_paths)
+        assert name not in reaped, (
+            f"{name} with status={terminal_status!r} must not be reaped"
+        )
+        # Status untouched verbatim.
+        assert (d / "status").read_text() == terminal_status, (
+            f"terminal status {terminal_status!r} was rewritten"
+        )
+
+    assert sent == [], f"no alerts expected for terminal agents, got {sent}"
+
+
+def test_reap_crashed_missing_pid_file_no_op(tmp_paths: Paths):
+    """No pid file → no recorded liveness signal → reap_crashed must not
+    transition. This is the legacy ``METASPHERE_SPAWN_NO_EXEC`` shape
+    and the pre-pid-write window during spawn — both cases would
+    otherwise be misclassified as silent deaths."""
+    d = _seed_ephemeral_with_pid(
+        tmp_paths, "@no-pid", write_pid=False, status="spawned: do work",
+    )
+    assert not (d / "pid").exists()
+
+    sent: list[tuple] = []
+
+    def fake_send(*a, **k):
+        sent.append((a, k))
+        return MagicMock(id="x")
+
+    with patch("metasphere.agents._pid_alive", return_value=False), \
+         patch("metasphere.agents.session_alive", return_value=False), \
+         patch("metasphere.messages.send_message", side_effect=fake_send):
+        reaped = agents.reap_crashed(paths=tmp_paths)
+
+    assert reaped == [], f"agent without pid file must not be reaped, got {reaped}"
+    assert sent == []
+    assert (d / "status").read_text() == "spawned: do work"
+
+
+def test_reap_crashed_missing_parent_marks_status_skips_alert(tmp_paths: Paths):
+    """Silent-death detection still fires when the ``parent`` sidecar is
+    missing — the status transition is the local effect, the parent
+    !alert is the network effect. Skip the alert (no addressee), keep
+    the transition."""
+    d = _seed_ephemeral_with_pid(
+        tmp_paths, "@orphan", pid=99999, parent="",  # no parent sidecar
+    )
+    # Sanity: parent file should not exist (helper writes it iff parent truthy).
+    assert not (d / "parent").exists()
+
+    sent: list[tuple] = []
+
+    def fake_send(*a, **k):
+        sent.append((a, k))
+        return MagicMock(id="x")
+
+    with patch("metasphere.agents._pid_alive", return_value=False), \
+         patch("metasphere.agents.session_alive", return_value=False), \
+         patch("metasphere.messages.send_message", side_effect=fake_send):
+        reaped = agents.reap_crashed(paths=tmp_paths)
+
+    assert reaped == ["@orphan"]
+    assert (d / "status").read_text().strip().startswith("crashed:")
+    assert sent == [], f"no parent → no alert, got {sent}"
+
+
+def test_reap_crashed_swallows_send_message_failure(tmp_paths: Paths):
+    """A send_message failure (broken inbox dir, IO error) must NOT
+    prevent the status transition or other agents from being processed.
+    Reaper runs on a daemon tick; one bad agent cannot abort the sweep."""
+    d_bad = _seed_ephemeral_with_pid(tmp_paths, "@bad-alert", pid=11111)
+    d_ok = _seed_ephemeral_with_pid(tmp_paths, "@ok-alert", pid=22222)
+
+    call_targets: list[str] = []
+
+    def flaky_send(target, label, body, from_agent, paths=None, **kwargs):
+        call_targets.append(from_agent)
+        if from_agent == "@bad-alert":
+            raise OSError("simulated inbox write failure")
+        m = MagicMock()
+        m.id = "msg-ok"
+        return m
+
+    with patch("metasphere.agents._pid_alive", return_value=False), \
+         patch("metasphere.agents.session_alive", return_value=False), \
+         patch("metasphere.messages.send_message", side_effect=flaky_send):
+        reaped = agents.reap_crashed(paths=tmp_paths)
+
+    # Both agents must be transitioned regardless of alert success.
+    assert sorted(reaped) == ["@bad-alert", "@ok-alert"]
+    assert (d_bad / "status").read_text().strip().startswith("crashed:")
+    assert (d_ok / "status").read_text().strip().startswith("crashed:")
+    # Both alerts were attempted — flaky_send saw both senders.
+    assert sorted(call_targets) == ["@bad-alert", "@ok-alert"]
+
+
+# ---------------------------------------------------------------------------
 # on_done_delivered (session hygiene: ephemeral-!done cleanup)
 # ---------------------------------------------------------------------------
 
