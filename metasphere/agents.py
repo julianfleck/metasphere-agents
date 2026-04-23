@@ -39,6 +39,15 @@ _SESSION_PREFIX = "metasphere-"
 _READY_TIMEOUT_S = 15
 _READY_MARKER = "bypass permissions"
 
+# If a tmux session is "alive" but has had no activity for longer than
+# this, wake_persistent treats it as a zombie (crashed/hung claude REPL)
+# and cold-starts instead of injecting into the stale session. The old
+# inject-path silently failed, leaving reap_dormant to kill the session
+# moments later while the scheduler thought the task had been delivered.
+_STALE_SESSION_THRESHOLD_SEC = int(
+    os.environ.get("METASPHERE_STALE_SESSION_THRESHOLD_SEC", "7200")
+)
+
 
 def _utcnow() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -607,9 +616,30 @@ def wake_persistent(
     session = rec.session_name  # uses project-aware naming
 
     if session_alive(session):
-        if first_task:
-            _submit_via_tmux(session, f"[task] {first_task}")
-        return rec
+        idle = _session_idle_seconds(session)
+        if idle is not None and idle > _STALE_SESSION_THRESHOLD_SEC:
+            try:
+                log_event(
+                    "agent.session",
+                    f"{agent_id} stale session {session} killed before "
+                    f"cold-start (idle={idle}s > {_STALE_SESSION_THRESHOLD_SEC}s)",
+                    agent=agent_id,
+                    meta={
+                        "session": session,
+                        "idle_seconds": idle,
+                        "threshold_seconds": _STALE_SESSION_THRESHOLD_SEC,
+                        "reason": "stale-wake",
+                    },
+                    paths=paths,
+                )
+            except Exception:
+                pass
+            _tmux_run("kill-session", "-t", session)
+            # Fall through to cold-start below.
+        else:
+            if first_task:
+                _submit_via_tmux(session, f"[task] {first_task}")
+            return rec
 
     # Cold start.
     _tmux_run("new-session", "-d", "-s", session, "-c", scope_str, check=False)
