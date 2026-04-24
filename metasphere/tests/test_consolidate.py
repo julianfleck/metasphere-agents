@@ -127,6 +127,17 @@ def test_classify_unowned_when_no_owner_and_old(repo, tmp_paths):
     assert _con.classify_task(t, stale_window_minutes=15) == _con.VERDICT_UNOWNED
 
 
+def test_classify_unassigned_sentinel_is_unowned(repo, tmp_paths):
+    # @unassigned is the CLI-written sentinel for "no owner" — it must
+    # classify as UNOWNED, not STALE. Otherwise these tasks fire
+    # STALE→escalate_to_user every cooldown cycle (seen in prod: 10
+    # tasks each accumulating 64-243 pings over 3 days).
+    t = _create_task(repo, "cli-unassigned")
+    t = _tasks.start_task(t.id, "@unassigned", repo)
+    t = _set_updated(t, _iso(60), repo)
+    assert _con.classify_task(t, stale_window_minutes=15) == _con.VERDICT_UNOWNED
+
+
 def test_classify_blocked_on_status(repo, tmp_paths):
     t = _create_task(repo, "waiting")
     _tasks.update_task(t.id, repo, status="blocked: upstream")

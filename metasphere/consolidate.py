@@ -382,7 +382,13 @@ def classify_task(
     if last_ping and (now - last_ping) < window:
         return VERDICT_ACTIVE
 
-    if not task.assignee:
+    # "@unassigned" is a sentinel the CLI writes when `metasphere task new`
+    # is called without an owner — it is semantically equivalent to an
+    # empty assignee (see cli/tasks.py:248 which treats them identically
+    # for the --unassigned filter). Classify it through the UNOWNED path
+    # so it goes quiet after ping_escalate_threshold instead of firing
+    # STALE→escalate_to_user every cooldown cycle.
+    if not task.assignee or task.assignee == "@unassigned":
         # Terminal ABANDONED: orphan task that has already been pinged
         # out AND is older than the abandon window. Without this branch,
         # the task ping-bounces forever between UNOWNED → noop-pinged-out
