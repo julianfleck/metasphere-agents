@@ -51,15 +51,15 @@ the line — history is signal). Newest at top of each section.
 
 ## Normal
 
-- [ ] **Memory maintenance not encoded in CLAUDE.md** — there's no explicit protocol telling the orchestrator when to prune `LEARNINGS.md`, rotate `HEARTBEAT.md`, summarize old daily logs, etc. The persona-index is lazy-loaded but the maintenance loop isn't documented.
-      Where: `CLAUDE.md`, `~/.metasphere/agents/@orchestrator/`
-      Notes: needs a "Memory Hygiene" section near Completion Protocol.
+- [x] **Memory maintenance not encoded in CLAUDE.md** — there's no explicit protocol telling the orchestrator when to prune `LEARNINGS.md`, rotate `HEARTBEAT.md`, summarize old daily logs, etc.
+      Fix: "Memory Hygiene" section landed in CLAUDE.md with a file/cadence/action table covering LEARNINGS, HEARTBEAT, MISSION, SOUL/IDENTITY, daily logs.
 
 - [ ] **Daemon status accuracy** — `metasphere status` reports stale/wrong session state.
       Related task: `fix-metasphere-daemon-status-accuracy-20260406`
+      Progress (@explorer 2026-04-24): one case resolved — `Tasks: (unavailable)` was a silent TypeError in `status.py:26` (call to `list_tasks(project_root)` missing the `scope` arg, masked by `except Exception`). Fixed, regression test in `tests/test_status.py`. Full suite pass. Session-state accuracy is the remaining original symptom — still open.
 
-- [ ] **Task slug sanitization** — slashes in titles produce broken slugs/paths.
-      Related task: `fix-tasks-slug-sanitization-for-slash-chars-20260406`
+- [x] **Task slug sanitization** — slashes in titles produce broken slugs/paths.
+      Fix: `tasks.slugify()` replaces `/` with `-` and strips punctuation; covered by `test_slugify_replaces_slashes`. Live tasks dir has no nested-dir leaks as of 2026-04-24.
 
 ## Low
 

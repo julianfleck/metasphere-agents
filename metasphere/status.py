@@ -23,7 +23,7 @@ def summary() -> str:
     try:
         from .tasks import list_tasks
 
-        tasks = list_tasks(paths.project_root)
+        tasks = list_tasks(paths.scope, paths.project_root)
         active = [t for t in tasks if t.status in ("pending", "in-progress", "in_progress")]
         lines.append(f"\nTasks: {len(active)} active")
     except Exception:
