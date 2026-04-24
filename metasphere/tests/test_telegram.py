@@ -106,6 +106,84 @@ def test_escape_html_round_trip():
     assert api.escape_html("&lt;") == "&amp;lt;"
 
 
+# --- send_with_cc --------------------------------------------------------
+
+def _read_orchestrator_inbox(tmp_paths) -> list[str]:
+    inbox = tmp_paths.root / "projects" / "testproj" / ".messages" / "inbox"
+    if not inbox.is_dir():
+        return []
+    return [p.read_text(encoding="utf-8") for p in inbox.glob("*.msg")]
+
+
+def test_send_with_cc_orchestrator_sender_skips_cc(fake_post, tmp_paths, monkeypatch):
+    """When METASPHERE_AGENT_ID is @orchestrator, send_with_cc performs
+    the telegram send but MUST NOT write a !info to the orchestrator
+    inbox (the orchestrator doesn't CC itself)."""
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    api.send_with_cc(123, "hello from orchestrator")
+    # Telegram send happened.
+    assert len(fake_post.calls) == 1
+    assert fake_post.calls[0]["data"]["text"] == "hello from orchestrator"
+    # No CC landed in the orchestrator inbox.
+    assert _read_orchestrator_inbox(tmp_paths) == []
+
+
+def test_send_with_cc_non_orchestrator_sender_produces_one_cc(
+    fake_post, tmp_paths, monkeypatch
+):
+    """A non-orchestrator agent's send_with_cc call lands (1) one
+    telegram sendMessage call AND (2) exactly one !info .msg file in
+    the @orchestrator inbox, labeled !info, whose body quotes the
+    outbound telegram text.
+    """
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@ww-migrate-010")
+    api.send_with_cc(123, "migration applied")
+    # Exactly one telegram call.
+    assert len(fake_post.calls) == 1
+    assert fake_post.calls[0]["data"]["text"] == "migration applied"
+    # Exactly one !info message in the orchestrator inbox.
+    msgs = _read_orchestrator_inbox(tmp_paths)
+    assert len(msgs) == 1
+    body = msgs[0]
+    assert "label: '!info'" in body or "label: \"!info\"" in body or "label: !info" in body
+    assert "to: '@orchestrator'" in body or "to: \"@orchestrator\"" in body or "to: '@orchestrator'" in body
+    assert "from: '@ww-migrate-010'" in body or "from: \"@ww-migrate-010\"" in body
+    # Prefix + the original telegram body both present.
+    assert "[telegram-cc from @ww-migrate-010]" in body
+    assert "migration applied" in body
+
+
+def test_send_with_cc_cc_failure_does_not_break_telegram_send(
+    fake_post, tmp_paths, monkeypatch
+):
+    """If writing the CC !info to @orchestrator's inbox blows up for
+    any reason, the telegram send path must still succeed — the CC is
+    best-effort. Regression guard: a mis-configured messages store
+    must not silence the user-facing channel.
+    """
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@ww-cortex-bounce-push")
+
+    # Force messages.send_message to raise, simulating a broken
+    # message store (permissions issue, disk full, etc).
+    from metasphere import messages as _messages
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("messages store unreachable")
+
+    monkeypatch.setattr(_messages, "send_message", boom)
+
+    # Must not raise.
+    responses = api.send_with_cc(123, "user-facing text")
+
+    # Telegram send still happened and succeeded.
+    assert len(fake_post.calls) == 1
+    assert fake_post.calls[0]["data"]["text"] == "user-facing text"
+    assert responses  # non-empty list of API responses
+
+    # No message was written (the CC failed silently).
+    assert _read_orchestrator_inbox(tmp_paths) == []
+
+
 # --- Offset persistence --------------------------------------------------
 
 def test_offset_round_trip(tmp_path):
