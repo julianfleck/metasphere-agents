@@ -227,6 +227,8 @@ def test_heartbeat_once_dry_run(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_posthook_routes_and_dedupes(tmp_path, monkeypatch):
+    from metasphere import breadcrumbs as _bc
+
     paths = _make_paths(tmp_path)
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
     # chat_id config so route_to_telegram has a target.
@@ -240,6 +242,20 @@ def test_posthook_routes_and_dedupes(tmp_path, monkeypatch):
     }
     transcript.write_text(json.dumps(msg_obj) + "\n")
 
+    # The fail-closed breadcrumb gate (metasphere.posthook.run_posthook)
+    # requires a session_id and a matching success breadcrumb or the
+    # assistant text is suppressed. Emulate what the UserPromptSubmit
+    # context hook would have written: success status, user_msg_count
+    # matching the transcript (0 user records here).
+    session_id = "test-session-posthook-routes"
+    _bc.write_breadcrumb(
+        paths,
+        session_id=session_id,
+        status=_bc.STATUS_SUCCESS,
+        user_msg_count=0,
+        agent="@orchestrator",
+    )
+
     calls: list[tuple] = []
 
     def fake_send(chat_id, text, **kw):
@@ -248,7 +264,9 @@ def test_posthook_routes_and_dedupes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(tg_api, "send_message", fake_send)
 
-    payload = json.dumps({"transcript_path": str(transcript)}).encode()
+    payload = json.dumps(
+        {"transcript_path": str(transcript), "session_id": session_id}
+    ).encode()
     rc1 = PH.run_posthook(payload, paths=paths)
     assert rc1 == 0
     assert len(calls) == 1
