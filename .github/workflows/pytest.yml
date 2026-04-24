@@ -30,4 +30,7 @@ jobs:
           python -m pip install pytest
 
       - name: Run pytest
-        run: python -m pytest --tb=short
+        # Exclude real_corpus tests: they read live ~/.metasphere/ state
+        # (scheduled jobs, memory corpus) that a fresh CI runner lacks.
+        # Live tests are already excluded by pyproject.toml addopts.
+        run: python -m pytest --tb=short -m "not live and not real_corpus"
