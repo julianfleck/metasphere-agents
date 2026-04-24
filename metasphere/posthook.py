@@ -275,7 +275,7 @@ def route_to_telegram(text: str, paths: Paths) -> None:
         if chat_id is None:
             _log_telegram_error(paths, "no chat_id configured (telegram_chat_id missing)")
             return
-        telegram_api.send_message(chat_id, text)
+        telegram_api.send_with_cc(chat_id, text)
     except Exception as exc:  # noqa: BLE001 — must never raise
         # Persist nothing on failure: a transient send error must not
         # poison the dedupe state and silently swallow the next retry.

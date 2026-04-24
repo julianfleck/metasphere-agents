@@ -293,3 +293,79 @@ def send_document(chat_id: int | str, file_path: str,
     if not resp.get("ok"):
         raise TelegramAPIError("sendDocument", resp.get("description", "unknown error"), resp)
     return resp
+
+
+def _cc_outbound_to_orchestrator(body: str) -> None:
+    """Best-effort: mirror an outbound telegram send into @orchestrator's
+    inbox as a !info message. No-op when the sender is @orchestrator
+    (or unset). Never raises — the telegram send is authoritative, and
+    a failure to CC must not break the user-facing send path.
+
+    This is the only place that writes the CC. Callers that need to
+    both send to Telegram and CC the orchestrator should go through
+    :func:`send_with_cc`; the doc path additionally calls this helper
+    directly after its multipart send.
+    """
+    sender = (os.environ.get("METASPHERE_AGENT_ID") or "").strip()
+    if not sender or sender == "@orchestrator":
+        return
+    try:
+        from metasphere import messages as _messages  # lazy to avoid cycle
+
+        cc_body = f"[telegram-cc from {sender}]\n{body}"
+        _messages.send_message(
+            "@orchestrator",
+            "!info",
+            cc_body,
+            from_agent=sender,
+            wake=False,
+        )
+    except Exception:  # noqa: BLE001 — CC is best-effort
+        pass
+
+
+def send_with_cc(
+    chat_id: int | str,
+    text: Optional[str] = None,
+    *,
+    parse_mode: Optional[str] = None,
+    message_thread_id: Optional[int] = None,
+    reply_to_message_id: Optional[int] = None,
+    disable_notification: Optional[bool] = None,
+    document_path: Optional[str] = None,
+    caption: Optional[str] = None,
+    filename: Optional[str] = None,
+) -> List[dict] | dict:
+    """Single choke-point wrapper that sends to Telegram AND mirrors
+    the content into @orchestrator's inbox as !info when the sender
+    agent is not @orchestrator.
+
+    Exactly one of ``text`` or ``document_path`` must be provided.
+    For text sends this forwards to :func:`send_message`; for document
+    sends it forwards to :func:`send_document` (``caption``/``filename``
+    are honored only in that branch).
+
+    The CC fires only on a successful telegram send — if the send
+    raises, nothing is written to the orchestrator inbox. The CC
+    itself is best-effort and never raises.
+    """
+    if document_path is not None:
+        if text is not None:
+            raise ValueError("send_with_cc: pass text OR document_path, not both")
+        resp = send_document(chat_id, document_path, caption=caption, filename=filename)
+        cc_body = caption if caption else f"[sent document: {document_path}]"
+        _cc_outbound_to_orchestrator(cc_body)
+        return resp
+
+    if text is None:
+        raise ValueError("send_with_cc: text or document_path required")
+    responses = send_message(
+        chat_id,
+        text,
+        parse_mode=parse_mode,
+        message_thread_id=message_thread_id,
+        reply_to_message_id=reply_to_message_id,
+        disable_notification=disable_notification,
+    )
+    _cc_outbound_to_orchestrator(text)
+    return responses

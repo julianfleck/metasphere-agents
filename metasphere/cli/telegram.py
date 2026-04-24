@@ -84,7 +84,7 @@ def cmd_send(args: argparse.Namespace) -> int:
     text = args.text
     if agent != "@orchestrator":
         text = f"[{agent.lstrip('@')}]\n\n{text}"
-    api.send_message(chat_id, text)
+    api.send_with_cc(chat_id, text)
     archiver.archive_outgoing(agent, text, chat_id)
     # Suppress the next Stop-hook auto-forward of the assistant text:
     # the user already got this content explicitly. Without this, every
@@ -129,7 +129,7 @@ def cmd_send_document(args: argparse.Namespace) -> int:
     caption = args.caption
     if agent != "@orchestrator" and caption:
         caption = f"[{agent.lstrip('@')}] {caption}"
-    resp = api.send_document(chat_id, args.path, caption=caption, filename=args.filename)
+    resp = api.send_with_cc(chat_id, document_path=args.path, caption=caption, filename=args.filename)
     # Same dedupe-marker treatment as text sends — the user already got the
     # file, so the Stop hook should not also forward the assistant text.
     if agent == "@orchestrator":
