@@ -742,24 +742,31 @@ def apply_verdict(
             else:
                 result.update(escalate_to_orchestrator(task, reason, project_root, paths, sender=sender))
 
-    # Always emit an event for the audit trail.
-    try:
-        log_event(
-            "task.consolidate",
-            f"{task.id}: {verdict} → {result['action']}",
-            meta={
-                "task_id": task.id,
-                "title": task.title,
-                "verdict": verdict,
-                "action": result["action"],
-                "target": result.get("target", ""),
-                "dry_run": dry_run,
-                "ping_count": task.ping_count,
-            },
-            paths=paths,
-        )
-    except Exception:
-        pass
+    # Emit an event when something actually happened. Skip pure
+    # "noop" actions (ACTIVE/BLOCKED/PAUSED tasks classified, no
+    # side effect taken) — at one consolidate fire every 5 minutes
+    # × N active tasks, those events drown out actionable signal
+    # (measured 12.5k/day on spot 2026-04-25, 78% of task events).
+    # noop-pinged-out is preserved because it carries throttle
+    # signal; archives, escalations, pings remain emitted as before.
+    if result["action"] != "noop":
+        try:
+            log_event(
+                "task.consolidate",
+                f"{task.id}: {verdict} → {result['action']}",
+                meta={
+                    "task_id": task.id,
+                    "title": task.title,
+                    "verdict": verdict,
+                    "action": result["action"],
+                    "target": result.get("target", ""),
+                    "dry_run": dry_run,
+                    "ping_count": task.ping_count,
+                },
+                paths=paths,
+            )
+        except Exception:
+            pass
 
     return result
 
@@ -1005,23 +1012,28 @@ def apply_message_verdict(
             else:
                 result.update(_ping_msg_recipient(msg, paths, sender=sender))
 
-    try:
-        log_event(
-            "message.consolidate",
-            f"{msg.id}: {verdict} → {result['action']}",
-            meta={
-                "msg_id": msg.id,
-                "label": msg.label,
-                "verdict": verdict,
-                "action": result["action"],
-                "target": result.get("target", ""),
-                "dry_run": dry_run,
-                "ping_count": msg.ping_count,
-            },
-            paths=paths,
-        )
-    except Exception:
-        pass
+    # Skip events for the pure-noop case (ACTIVE/PINNED messages
+    # classified, no side effect). At ~30k/day on spot 2026-04-25
+    # those drown the events log (55% of all events). Archives,
+    # escalations, and pings still emit.
+    if result["action"] != "noop":
+        try:
+            log_event(
+                "message.consolidate",
+                f"{msg.id}: {verdict} → {result['action']}",
+                meta={
+                    "msg_id": msg.id,
+                    "label": msg.label,
+                    "verdict": verdict,
+                    "action": result["action"],
+                    "target": result.get("target", ""),
+                    "dry_run": dry_run,
+                    "ping_count": msg.ping_count,
+                },
+                paths=paths,
+            )
+        except Exception:
+            pass
     return result
 
 

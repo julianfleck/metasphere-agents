@@ -1014,6 +1014,44 @@ def test_msg_run_pass_archives_old_info(repo, tmp_paths):
     assert m2.path.exists()
 
 
+def test_pinned_message_noop_emits_no_event(repo, tmp_paths):
+    # PINNED messages are seen every consolidate cycle but require no
+    # action; emitting per-cycle events for them buries actionable
+    # signal (~30k/day on prod 2026-04-25). Result still records noop
+    # for renderers, but the events log stays quiet.
+    m_ = _send_msg(tmp_paths, "!task")
+    result = _con.apply_message_verdict(
+        m_, _con.MSG_VERDICT_PINNED, tmp_paths
+    )
+    assert result["action"] == "noop"
+
+    log = tmp_paths.events_log
+    if log.exists():
+        lines = [json.loads(l) for l in log.read_text().splitlines() if l.strip()]
+        for e in lines:
+            if e["type"] == "message.consolidate":
+                assert e["meta"]["msg_id"] != m_.id
+
+
+def test_active_task_noop_emits_no_event(repo, tmp_paths):
+    # ACTIVE tasks are visited every cycle and need no action; suppress
+    # their per-cycle events (12.5k/day measured on prod) so the log is
+    # actionable. Counterpart to test_apply_abandoned_emits_consolidate_event
+    # — non-noop verdicts still emit.
+    _make_persistent(tmp_paths, "@worker")
+    t = _create_task(repo, "active task")
+    t = _tasks.start_task(t.id, "@worker", repo)
+    # Fresh updated_at → ACTIVE → noop.
+    _con.apply_verdict(t, _con.VERDICT_ACTIVE, repo, tmp_paths)
+
+    log = tmp_paths.events_log
+    if log.exists():
+        lines = [json.loads(l) for l in log.read_text().splitlines() if l.strip()]
+        for e in lines:
+            if e["type"] == "task.consolidate":
+                assert e["meta"]["task_id"] != t.id
+
+
 def test_unregister_job(repo, tmp_paths):
     _con.register_job(tmp_paths)
     assert _con.unregister_job(tmp_paths) is True
