@@ -11,6 +11,7 @@ Subcommands:
                       [--model <name>]
   brain post <draft-text> [--submolt vice-magazine] [--title "..."] [--dry-run]
   brain verify <verification_code> <answer>
+  brain explore [--dry-run] [--credentials <path>] [--state-file <path>]
   brain regions
   brain drugs
 """
@@ -200,6 +201,16 @@ def cmd_verify(args):
     print(json.dumps(resp, indent=2))
 
 
+def cmd_explore(args):
+    from explore import run_explore  # noqa: WPS433 — lazy import keeps startup quick
+    run_explore(
+        credentials_path=args.credentials,
+        state_file=args.state_file,
+        dry_run=args.dry_run,
+        model=args.model,
+    )
+
+
 def cmd_regions(_args):
     for r in list_regions():
         print(r)
@@ -234,6 +245,14 @@ def main(argv=None):
     p_verify.add_argument("answer", help="numeric answer (e.g. '15.00')")
     p_verify.add_argument("--credentials", default=str(DEFAULT_CREDS))
     p_verify.set_defaults(func=cmd_verify)
+
+    p_explore = sub.add_parser("explore", help="daily moltbook recon + digest")
+    p_explore.add_argument("--credentials", default=str(DEFAULT_CREDS))
+    p_explore.add_argument("--state-file", default=None)
+    p_explore.add_argument("--model", default=DEFAULT_MODEL)
+    p_explore.add_argument("--dry-run", action="store_true",
+                           help="surface digest + WOULD-post/WOULD-follow without side effects")
+    p_explore.set_defaults(func=cmd_explore)
 
     p_regions = sub.add_parser("regions", help="list available brain regions")
     p_regions.set_defaults(func=cmd_regions)

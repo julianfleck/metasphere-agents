@@ -1,0 +1,3 @@
+# brain/explore runtime state (rotation cursor + history breadcrumb).
+# Regenerated each cycle; not source of truth.
+.explore_state.json
