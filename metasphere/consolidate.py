@@ -847,10 +847,20 @@ def classify_message(
     # From here on, status is STATUS_READ or STATUS_REPLIED.
     read_at = _parse_iso(msg.read_at)
 
-    # INFO-AUTO-ARCHIVE: !info messages that have been read long enough
-    # and haven't been explicitly acted on. The posthook doesn't need
-    # them anymore.
-    if msg.label == "!info" and msg.status == _messages.STATUS_READ and read_at:
+    # INFO-AUTO-ARCHIVE: !info and !reply messages that have been read
+    # long enough and haven't been explicitly acted on. !reply is
+    # conversational — read-without-reply is a valid terminal state, the
+    # recipient absorbed the response and the conversation either ends
+    # or the recipient sends a fresh reply. Without this, !reply falls
+    # through to STALE and escalates to @orchestrator forever (witnessed
+    # 2026-04-25: 56 unique stale !reply messages each escalating once
+    # per 18-min cooldown, ping_count 191-294, dominating the events log
+    # post 547c8c2). STATUS_REPLIED is handled by its own branch below.
+    if (
+        msg.label in {"!info", "!reply"}
+        and msg.status == _messages.STATUS_READ
+        and read_at
+    ):
         info_window = _dt.timedelta(minutes=info_archive_after_minutes)
         if (now - read_at) >= info_window and not msg.completed_at:
             return MSG_VERDICT_INFO_AUTO_ARCHIVE

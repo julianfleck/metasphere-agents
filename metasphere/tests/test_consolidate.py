@@ -771,6 +771,23 @@ def test_msg_classify_info_read_recent_is_active(repo, tmp_paths):
     assert _con.classify_message(m_) == _con.MSG_VERDICT_ACTIVE
 
 
+def test_msg_classify_reply_auto_archive(repo, tmp_paths):
+    """!reply messages share the !info auto-archive window: read-without-
+    reply is a valid terminal state for a conversational response. Before
+    this fix, !reply fell through to MSG-STALE and escalated to
+    @orchestrator on every cooldown forever (witnessed 2026-04-25).
+    """
+    m_ = _send_msg(tmp_paths, "!reply")
+    m_ = _age_msg(m_, read_min_ago=120)
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_INFO_AUTO_ARCHIVE
+
+
+def test_msg_classify_reply_read_recent_is_active(repo, tmp_paths):
+    m_ = _send_msg(tmp_paths, "!reply")
+    m_ = _age_msg(m_, read_min_ago=5)
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_ACTIVE
+
+
 def test_msg_classify_done_auto_archive(repo, tmp_paths):
     """``!done`` notifications: terminal once aged past the auto-archive
     window regardless of read status. Previously required STATUS_READ +
@@ -851,8 +868,10 @@ def test_msg_done_does_not_compound_over_simulated_24h(repo, tmp_paths):
 
 
 def test_msg_classify_stale_nonpinned(repo, tmp_paths):
-    # A !reply that was read long ago and never followed up on
-    m_ = _send_msg(tmp_paths, "!reply")
+    # A !urgent that was read long ago and never followed up on. Uses
+    # !urgent rather than !reply because !reply now auto-archives on the
+    # !info path (read-without-reply is conversational, not stale).
+    m_ = _send_msg(tmp_paths, "!urgent")
     m_ = _age_msg(m_, read_min_ago=60)
     assert _con.classify_message(m_) == _con.MSG_VERDICT_STALE
 
@@ -934,7 +953,9 @@ def test_msg_apply_unread_old_threshold_archives(repo, tmp_paths):
 
 
 def test_msg_classify_stale_cooldown(repo, tmp_paths):
-    m_ = _send_msg(tmp_paths, "!reply")
+    # Uses !urgent (not !reply) since !reply now auto-archives via the
+    # !info path before the cooldown check is reached.
+    m_ = _send_msg(tmp_paths, "!urgent")
     m_ = _age_msg(m_, read_min_ago=60)
     _msgs.update_status(m_.path, "last_pinged_at", _iso(5))
     m_ = _msgs.read_message(m_.path)
