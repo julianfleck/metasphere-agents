@@ -401,6 +401,83 @@ def test_classify_abandoned_respects_custom_age(repo, tmp_paths):
     )
 
 
+# ---------------------------------------------------------------------------
+# Orphan-assignee — task assigned to a GC'd ephemeral whose dir is gone
+# ---------------------------------------------------------------------------
+
+
+def test_classify_orphan_when_assignee_dir_missing_is_unowned(repo, tmp_paths):
+    # Assignee names a now-defunct ephemeral (dir GC'd). With paths
+    # passed, classify_task must route through UNOWNED, not STALE —
+    # otherwise the task fires STALE escalations forever pinging
+    # nobody. Reproduces the 25 worldwire-orphan tasks at ping 280-294
+    # observed 2026-04-25T10:00Z.
+    t = _create_task(repo, "orphan ephemeral")
+    t = _tasks.start_task(t.id, "@ww-access-check", repo)
+    t = _set_updated(t, _iso(60), repo)
+    # No agent dir at any layout — global or project-scoped.
+    assert _con.classify_task(
+        t, stale_window_minutes=15, paths=tmp_paths
+    ) == _con.VERDICT_UNOWNED
+
+
+def test_classify_orphan_assignee_old_pinged_out_abandons(repo, tmp_paths):
+    # Same orphan path must ride the ABANDONED progression: pinged out
+    # AND created > 3 days ago → ABANDONED, archives out of active/.
+    # This is the path that drains the 25 ww-orphan tasks naturally on
+    # the next consolidate cycle instead of leaving them in active/.
+    t = _create_task(repo, "ancient ephemeral orphan")
+    t = _tasks.start_task(t.id, "@ww-cortex-bounce-push", repo)
+    t = _set_updated(t, _iso(60), repo)
+    t = _set_created(t, _iso_days(4), repo)
+    _tasks.update_task(t.id, repo, ping_count=5)
+    t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    t = _set_updated(t, _iso(60), repo)
+    assert _con.classify_task(
+        t, stale_window_minutes=15, paths=tmp_paths
+    ) == _con.VERDICT_ABANDONED
+
+
+def test_classify_stale_when_assignee_dir_present_global(repo, tmp_paths):
+    # Live assignee (dir exists) at global scope must still classify
+    # STALE — orphan check must NOT swallow live ephemerals or
+    # persistent agents that are simply slow to respond.
+    t = _create_task(repo, "alive owner")
+    t = _tasks.start_task(t.id, "@worldwire-eng", repo)
+    t = _set_updated(t, _iso(60), repo)
+    (tmp_paths.agent_dir("@worldwire-eng")).mkdir(parents=True, exist_ok=True)
+    (tmp_paths.agent_dir("@worldwire-eng") / "MISSION.md").write_text("x")
+    assert _con.classify_task(
+        t, stale_window_minutes=15, paths=tmp_paths
+    ) == _con.VERDICT_STALE
+
+
+def test_classify_stale_when_assignee_dir_present_project(repo, tmp_paths):
+    # Same, but the agent dir lives under a project (e.g. @explorer
+    # under projects/metasphere-agents/agents/) — must also classify
+    # STALE, not UNOWNED.
+    t = _create_task(repo, "project-scoped owner")
+    t = _tasks.start_task(t.id, "@explorer", repo)
+    t = _set_updated(t, _iso(60), repo)
+    proj_agents = tmp_paths.projects / "metasphere-agents" / "agents" / "@explorer"
+    proj_agents.mkdir(parents=True, exist_ok=True)
+    (proj_agents / "status").write_text("working")
+    assert _con.classify_task(
+        t, stale_window_minutes=15, paths=tmp_paths
+    ) == _con.VERDICT_STALE
+
+
+def test_classify_stale_without_paths_keeps_legacy_semantics(repo, tmp_paths):
+    # Backwards compat: when paths is not supplied, the orphan check is
+    # disabled. Named assignees still classify STALE even if no agent
+    # exists. Existing call sites that don't thread paths through must
+    # not silently change behaviour.
+    t = _create_task(repo, "no-paths orphan")
+    t = _tasks.start_task(t.id, "@vanished-agent", repo)
+    t = _set_updated(t, _iso(60), repo)
+    assert _con.classify_task(t, stale_window_minutes=15) == _con.VERDICT_STALE
+
+
 def test_apply_abandoned_archives_to_abandoned_bucket(repo, tmp_paths):
     t = _create_task(repo, "to be abandoned")
     src = t.path

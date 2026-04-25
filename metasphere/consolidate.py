@@ -352,8 +352,17 @@ def classify_task(
     stale_window_minutes: int = STALE_WINDOW_MINUTES_DEFAULT,
     ping_escalate_threshold: int = PING_ESCALATE_THRESHOLD_DEFAULT,
     abandoned_age_days: int = ABANDONED_AGE_DAYS_DEFAULT,
+    paths: Paths | None = None,
 ) -> str:
-    """Return one of the lifecycle verdicts for ``task``."""
+    """Return one of the lifecycle verdicts for ``task``.
+
+    When ``paths`` is supplied, an assignee that names an agent whose
+    directory no longer exists (a GC'd ephemeral) is treated as orphan
+    and routed through the UNOWNED branch — same abandon-after-ping-out
+    behaviour as ``@unassigned``. Without ``paths`` the orphan check is
+    skipped (existing tests run with no Paths and must keep STALE
+    semantics for named assignees).
+    """
     now = now or _utcnow()
     window = _dt.timedelta(minutes=stale_window_minutes)
 
@@ -388,7 +397,20 @@ def classify_task(
     # for the --unassigned filter). Classify it through the UNOWNED path
     # so it goes quiet after ping_escalate_threshold instead of firing
     # STALE→escalate_to_user every cooldown cycle.
-    if not task.assignee or task.assignee == "@unassigned":
+    #
+    # Same for tasks assigned to a GC'd ephemeral whose agent dir no
+    # longer exists anywhere — pinging a vanished assignee accomplishes
+    # nothing, escalating to orchestrator forever fills the inbox.
+    # Verified live 2026-04-25T10:00Z: 25 worldwire-orphan tasks at
+    # ping_count 280-294, age 4d, all assigned to @ww-* ephemerals
+    # whose dirs were rmtree'd by the standard ephemeral GC.
+    is_orphan_assignee = (
+        paths is not None
+        and task.assignee
+        and task.assignee != "@unassigned"
+        and not _agent_exists_anywhere(task.assignee, paths)
+    )
+    if not task.assignee or task.assignee == "@unassigned" or is_orphan_assignee:
         # Terminal ABANDONED: orphan task that has already been pinged
         # out AND is older than the abandon window. Without this branch,
         # the task ping-bounces forever between UNOWNED → noop-pinged-out
@@ -421,6 +443,33 @@ def _is_persistent_agent(agent_id: str, paths: Paths) -> bool:
     # signal closes the GC race that reaped 9 newly-created personas
     # on 2026-04-14.
     return (agent_dir / "MISSION.md").exists() or (agent_dir / "persona-index.md").exists()
+
+
+def _agent_exists_anywhere(agent_id: str, paths: Paths) -> bool:
+    """True if the agent dir exists in global agents/ or any project agents/.
+
+    Distinguishes a GC'd ephemeral (returns False — task is orphan) from
+    a live ephemeral (dir still present with status/task/etc) or a
+    persistent agent. Ephemerals can live either at the global root
+    (~/.metasphere/agents/@x/) or under a project (e.g.
+    ~/.metasphere/projects/<proj>/agents/@x/, where @explorer lives),
+    so both locations must be checked.
+    """
+    if not agent_id or agent_id == "@unassigned":
+        return False
+    name = agent_id if agent_id.startswith("@") else "@" + agent_id
+    if paths.agent_dir(name).exists():
+        return True
+    projects_root = paths.projects
+    if not projects_root.exists():
+        return False
+    try:
+        for project_dir in projects_root.iterdir():
+            if project_dir.is_dir() and (project_dir / "agents" / name).exists():
+                return True
+    except OSError:
+        pass
+    return False
 
 
 def _bump_ping(task: _tasks.Task, project_root: Path) -> _tasks.Task:
@@ -1217,6 +1266,7 @@ def run_pass(
             stale_window_minutes=stale_window_minutes,
             ping_escalate_threshold=ping_escalate_threshold,
             abandoned_age_days=abandoned_age_days,
+            paths=paths,
         )
         result = apply_verdict(
             t, verdict, project_root, paths,
