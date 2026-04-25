@@ -545,11 +545,12 @@ def test_run_pass_archives_abandoned_orphan(repo, tmp_paths):
     assert sender.calls == []
 
 
-def test_ping_count_threshold_escalates_to_user(repo, tmp_paths):
+def test_ping_count_at_threshold_escalates_to_user_once(repo, tmp_paths):
+    # ping_count EXACTLY at threshold → escalate user, single-shot.
     _make_persistent(tmp_paths, "@worker")
     t = _create_task(repo, "loud")
     t = _tasks.start_task(t.id, "@worker", repo)
-    _tasks.update_task(t.id, repo, ping_count=5)
+    _tasks.update_task(t.id, repo, ping_count=_con.PING_ESCALATE_THRESHOLD_DEFAULT)
     t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
     t = _set_updated(t, _iso(60), repo)
 
@@ -567,6 +568,41 @@ def test_ping_count_threshold_escalates_to_user(repo, tmp_paths):
     assert result["action"] == "escalated-user"
     assert telegrams
     assert t.id in telegrams[0]
+    # ping_count is bumped past threshold so the next fire goes silent
+    reloaded = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    assert reloaded.ping_count > _con.PING_ESCALATE_THRESHOLD_DEFAULT
+
+
+def test_ping_count_past_threshold_goes_silent(repo, tmp_paths):
+    # ping_count ABOVE threshold → noop-pinged-out, no telegram.
+    # Mirrors MSG_VERDICT_STALE noop-pinged-out (c8a5110). Without
+    # this arm the task escalates to @user every cooldown cycle
+    # forever (witnessed 2026-04-25: 26 tasks, 104 escalations/h).
+    _make_persistent(tmp_paths, "@worker")
+    t = _create_task(repo, "chronic")
+    t = _tasks.start_task(t.id, "@worker", repo)
+    _tasks.update_task(t.id, repo, ping_count=_con.PING_ESCALATE_THRESHOLD_DEFAULT + 1)
+    t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    t = _set_updated(t, _iso(60), repo)
+
+    sender = _FakeSender()
+    telegrams: list[str] = []
+
+    def fake_tg(body: str) -> bool:
+        telegrams.append(body)
+        return True
+
+    result = _con.apply_verdict(
+        t, _con.VERDICT_STALE, repo, tmp_paths,
+        sender=sender, telegram_sender=fake_tg,
+    )
+    assert result["action"] == "noop-pinged-out"
+    # Critically: no telegram, no orchestrator !info sent.
+    assert telegrams == []
+    assert sender.calls == []
+    # ping_count still bumps so the branch stays hit on next fire.
+    reloaded = _tasks.Task.from_text(t.path.read_text(), path=t.path)
+    assert reloaded.ping_count > _con.PING_ESCALATE_THRESHOLD_DEFAULT + 1
 
 
 def test_done_task_is_archived(repo, tmp_paths):

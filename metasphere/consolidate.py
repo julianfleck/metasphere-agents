@@ -715,10 +715,23 @@ def apply_verdict(
             else:
                 result.update(escalate_to_orchestrator(task, reason, project_root, paths, sender=sender))
     elif verdict == VERDICT_STALE:
-        # If we already pinged enough times, go up one level. Otherwise
-        # either ping the assignee (if persistent) or escalate right away.
+        # Three-phase ladder, mirroring MSG_VERDICT_STALE
+        # (consolidate.py:1011-1039) and the c8a5110 message-side fix:
+        #   ping_count <  threshold   → ping persistent / escalate orch
+        #   ping_count == threshold   → escalate to @user (last resort, once)
+        #   ping_count >  threshold   → silent (noop-pinged-out)
+        # Without the third arm the task re-escalates to @user every
+        # cooldown cycle forever (witnessed 2026-04-25T19:00Z+:
+        # 26 stale tasks each escalating 4×/h, 104 escalations/h
+        # flooding @user via telegram).
         reason = f"stale>{STALE_WINDOW_MINUTES_DEFAULT}m"
-        if task.ping_count >= ping_escalate_threshold:
+        if task.ping_count > ping_escalate_threshold:
+            result["action"] = "noop-pinged-out"
+            # Bump ping_count once more so this branch stays hit and
+            # the task doesn't drift back to a lower-arm classification
+            # if something else mutates the task without resetting it.
+            _bump_ping(task, project_root)
+        elif task.ping_count == ping_escalate_threshold:
             if dry_run:
                 result["action"] = "would-escalate-user"
                 result["target"] = "@user"
@@ -726,8 +739,9 @@ def apply_verdict(
                 result.update(escalate_to_user(
                     task, reason, project_root, paths, telegram_sender=telegram_sender
                 ))
-                # Also bump ping count via orchestrator path so we don't
-                # re-fire at the user next cycle either.
+                # escalate_to_user does not bump ping_count itself;
+                # bump explicitly so the next fire moves to the
+                # noop-pinged-out arm rather than re-firing here.
                 _bump_ping(task, project_root)
         elif _is_persistent_agent(task.assignee, paths):
             if dry_run:
