@@ -1011,10 +1011,12 @@ def test_msg_apply_stale_pings_recipient(repo, tmp_paths):
     assert reloaded.last_pinged_at != ""
 
 
-def test_msg_apply_stale_threshold_escalates(repo, tmp_paths):
-    m_ = _send_msg(tmp_paths, "!reply")
+def test_msg_apply_stale_at_threshold_escalates_once(repo, tmp_paths):
+    # Boundary cycle: ping_count == threshold → single escalation to
+    # @orchestrator. The cycles before were pings to the recipient.
+    m_ = _send_msg(tmp_paths, "!urgent")
     m_ = _age_msg(m_, read_min_ago=60)
-    _msgs.update_status(m_.path, "ping_count", "5")
+    _msgs.update_status(m_.path, "ping_count", "3")
     m_ = _msgs.read_message(m_.path)
     sender = _FakeSender()
     result = _con.apply_message_verdict(
@@ -1022,6 +1024,27 @@ def test_msg_apply_stale_threshold_escalates(repo, tmp_paths):
     )
     assert result["action"] == "escalated-orchestrator"
     assert sender.calls[0]["target"] == "@orchestrator"
+
+
+def test_msg_apply_stale_above_threshold_goes_silent(repo, tmp_paths):
+    # Above-threshold cycles must not re-escalate. Witnessed bug
+    # (2026-04-25): 19 !urgent messages stuck at ping_count 141-167
+    # generated ~133 escalations in 3.4h flooding @orchestrator. The
+    # first crossing already notified; subsequent cycles are
+    # amplification, not signal. Mirrors task UNOWNED-pinged-out.
+    m_ = _send_msg(tmp_paths, "!urgent")
+    m_ = _age_msg(m_, read_min_ago=60)
+    _msgs.update_status(m_.path, "ping_count", "10")
+    m_ = _msgs.read_message(m_.path)
+    sender = _FakeSender()
+    result = _con.apply_message_verdict(
+        m_, _con.MSG_VERDICT_STALE, tmp_paths, sender=sender
+    )
+    assert result["action"] == "noop-pinged-out"
+    assert len(sender.calls) == 0
+    # ping_count still bumped so the verdict tracks cycle counts.
+    reloaded = _msgs.read_message(m_.path)
+    assert reloaded.ping_count == 11
 
 
 def test_msg_run_pass_archives_old_info(repo, tmp_paths):

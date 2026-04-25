@@ -1009,7 +1009,23 @@ def apply_message_verdict(
             else:
                 result.update(_escalate_msg_to_orchestrator(msg, "unread-old", paths, sender=sender))
     elif verdict == MSG_VERDICT_STALE:
-        if msg.ping_count >= ping_escalate_threshold:
+        # Three-phase ladder, mirroring task UNOWNED-pinged-out
+        # (consolidate.py:696-710):
+        #   ping_count <  threshold   → ping the recipient
+        #   ping_count == threshold   → escalate to @orchestrator (once)
+        #   ping_count >  threshold   → silent (noop-pinged-out)
+        # Without the third arm the message re-escalates every cooldown
+        # cycle forever (witnessed 2026-04-25: 19 stuck !urgent
+        # messages at ping_count 141-167, ~133 escalations / 3.4h
+        # flooding @orchestrator's inbox).
+        if msg.ping_count > ping_escalate_threshold:
+            result["action"] = "noop-pinged-out"
+            if msg.path is not None:
+                try:
+                    _messages.bump_ping(msg.path, msg.ping_count)
+                except Exception:
+                    pass
+        elif msg.ping_count == ping_escalate_threshold:
             if dry_run:
                 result["action"] = "would-escalate-orchestrator"
                 result["target"] = "@orchestrator"
