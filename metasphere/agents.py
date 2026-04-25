@@ -698,6 +698,73 @@ def _session_idle_seconds(session: str) -> Optional[int]:
     return max(0, int(time.time()) - activity)
 
 
+# ---------------------------------------------------------------------------
+# Last-input activity tracking (input-side counterpart to tmux activity).
+#
+# tmux's #{session_activity} reflects last terminal output, which can lag
+# real input arbitrarily — a REPL fielding hooks while the model is
+# thinking writes nothing visible to tmux for minutes at a time. Relying
+# on it alone produced evt-1777144985427 (2026-04-25T19:23:05Z), which
+# reaped @orchestrator's session after 86466s "idle" while Julian was
+# actively chatting via telegram-inject. ``last_active`` is refreshed by
+# every signal the agent actually processes — UserPromptSubmit, Stop,
+# telegram-inject, heartbeat-tick — so ``reap_dormant`` can see input
+# the tmux pane never displayed. tmux activity remains the fallback for
+# agents whose sidecar predates this file.
+# ---------------------------------------------------------------------------
+
+_LAST_ACTIVE_FILENAME = "last_active"
+
+#: Resident agent that the dormancy reaper is forbidden to time-reap.
+#: Crash detection (``reap_crashed``) and explicit operator kills still
+#: apply; this carve-out is strictly about the idle-time pathway.
+_REAP_DORMANT_EXEMPT = ("@orchestrator",)
+
+
+def touch_last_active(agent: str, paths: Paths | None = None) -> None:
+    """Refresh ``<agent_dir>/last_active`` to now (UTC ISO).
+
+    Called from every hook signal the agent actually processes:
+    UserPromptSubmit, Stop, telegram-inject, heartbeat-tick. Best-effort
+    by contract — these call sites run inside hook handlers that must
+    never raise into the host, so any OS / lookup failure is silently
+    swallowed.
+    """
+    try:
+        paths = paths or resolve()
+        name = _normalize_name(agent)
+        agent_dir = paths.agent_dir(name)
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        _atomic_meta_write(agent_dir, _LAST_ACTIVE_FILENAME, _utcnow())
+    except Exception:  # noqa: BLE001 — hook-path; never raise
+        pass
+
+
+def _last_active_idle_seconds(agent_dir: Path) -> Optional[int]:
+    """Seconds since ``agent_dir/last_active`` was touched, or ``None``
+    if the file is absent / empty / unparseable. ``None`` lets the
+    caller fall back to the tmux activity signal so agents predating
+    the file aren't permanently exempted from reap.
+    """
+    p = agent_dir / _LAST_ACTIVE_FILENAME
+    if not p.is_file():
+        return None
+    try:
+        raw = p.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        ts = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=_dt.timezone.utc)
+    delta = _dt.datetime.now(_dt.timezone.utc) - ts
+    return max(0, int(delta.total_seconds()))
+
+
 def gc_dormant(paths: Paths | None = None, max_idle_seconds: int = 86400) -> list[str]:
     """Return persistent agent names whose tmux session has been idle
     longer than ``max_idle_seconds``. Does NOT kill — caller decides.
@@ -720,8 +787,20 @@ def reap_dormant(
     paths: Paths | None = None,
     max_idle_seconds: int = 86400,
 ) -> list[str]:
-    """Transition persistent agents to dormant when their tmux session
-    has been idle longer than ``max_idle_seconds``.
+    """Transition persistent agents to dormant when they have been idle
+    longer than ``max_idle_seconds``.
+
+    Idle is taken from ``<agent_dir>/last_active`` when present (refreshed
+    by hook signals: UserPromptSubmit, Stop, telegram-inject,
+    heartbeat-tick) and falls back to the tmux ``session_activity`` field
+    only when the sidecar is missing. The previous tmux-only path was
+    blind to inputs the REPL processed without producing visible terminal
+    output (see evt-1777144985427).
+
+    @orchestrator is unconditionally exempt from time-based reap. Crash
+    detection (``reap_crashed``) and operator-driven kills still apply,
+    but the dormancy daemon never transitions the resident agent on any
+    idle threshold.
 
     For each qualifying agent:
     - Write ``status = "dormant: idle Ns (auto-ttl at <utc>)"`` to the
@@ -741,10 +820,19 @@ def reap_dormant(
     for agent in list_agents(paths):
         if not agent.is_persistent:
             continue
+        # Resident-agent carve-out: @orchestrator never time-reaps.
+        if agent.name in _REAP_DORMANT_EXEMPT:
+            continue
         session = agent.session_name
         if not session_alive(session):
             continue
-        idle = _session_idle_seconds(session)
+        # Prefer input-side activity (refreshed by every hook signal
+        # the agent processes); fall back to tmux output activity.
+        idle: Optional[int] = None
+        if agent.agent_dir is not None:
+            idle = _last_active_idle_seconds(agent.agent_dir)
+        if idle is None:
+            idle = _session_idle_seconds(session)
         if idle is None or idle <= max_idle_seconds:
             continue
         if agent.agent_dir is not None:

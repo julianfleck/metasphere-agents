@@ -419,6 +419,12 @@ def track_turn_completion(agent: str, paths: Paths) -> None:
     except OSError:
         return
 
+    # Refresh last_active so reap_dormant sees this Stop signal as input
+    # the agent actually processed (the tmux #{session_activity} field
+    # alone misses turns where the model produced no terminal output).
+    from .agents import touch_last_active
+    touch_last_active(agent, paths)
+
     if turns > 0 and turns % 10 == 0:
         try:
             log_event(

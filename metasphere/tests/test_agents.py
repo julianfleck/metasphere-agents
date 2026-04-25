@@ -504,6 +504,224 @@ def test_reap_dormant_no_op_when_session_already_dead(tmp_paths: Paths):
 
 
 # ---------------------------------------------------------------------------
+# touch_last_active + last_active idle pathway
+#
+# Directive (2026-04-25, evt-1777144985427): reap_dormant must derive
+# idle from input the agent actually processed (UserPromptSubmit, Stop,
+# telegram-inject, heartbeat-tick), not from tmux session_activity which
+# misses turns the model produced no terminal output for. AND
+# @orchestrator is unconditionally exempt from time-based reap.
+# ---------------------------------------------------------------------------
+
+
+def test_touch_last_active_writes_iso_timestamp(tmp_paths: Paths):
+    """The helper writes a parseable UTC ISO timestamp, creates the
+    agent dir if missing, and never raises on a clean call."""
+    agents.touch_last_active("@touched", paths=tmp_paths)
+    p = tmp_paths.agents / "@touched" / "last_active"
+    assert p.is_file()
+    raw = p.read_text(encoding="utf-8").strip()
+    assert raw.endswith("Z"), f"expected UTC ISO with Z suffix, got {raw!r}"
+    # Round-trips through fromisoformat (the read path's parser).
+    import datetime as _dt
+    parsed = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    assert parsed.tzinfo is not None
+
+
+def test_touch_last_active_normalises_missing_at_prefix(tmp_paths: Paths):
+    """Hook callers may pass agent ids with or without the @ prefix;
+    the file must land in the canonical @-prefixed dir either way."""
+    agents.touch_last_active("bare-name", paths=tmp_paths)
+    assert (tmp_paths.agents / "@bare-name" / "last_active").is_file()
+
+
+def test_reap_dormant_skips_when_last_active_is_fresh(tmp_paths: Paths):
+    """Hook-event refresh blocks the reap. Even if tmux reports the
+    session has been idle for hours (the session_activity-only path
+    that produced evt-1777144985427), a recent touch_last_active call
+    keeps the agent alive — that is the whole point of the input-side
+    timestamp."""
+    _make_persistent(tmp_paths, "@hook-touched")
+    # Simulate the four hook signal paths: each calls touch_last_active.
+    agents.touch_last_active("@hook-touched", paths=tmp_paths)
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "has-session" in cmd:
+            cp.returncode = 0  # alive
+        elif "display-message" in cmd:
+            # tmux says ancient — without the input-side override this
+            # would cross the threshold and reap the session.
+            cp.returncode = 0
+            cp.stdout = "1000000000"
+        elif "kill-session" in cmd:
+            cp.returncode = 0
+        else:
+            cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        reaped = agents.reap_dormant(paths=tmp_paths, max_idle_seconds=3600)
+
+    assert "@hook-touched" not in reaped, (
+        f"fresh last_active must block reap; got {reaped}"
+    )
+    status = tmp_paths.agents / "@hook-touched" / "status"
+    if status.exists():
+        assert "dormant" not in status.read_text()
+
+
+def test_reap_dormant_falls_back_to_tmux_when_no_last_active(tmp_paths: Paths):
+    """Backward compat: agents whose dir predates the last_active file
+    still get reaped via the tmux session_activity signal."""
+    _make_persistent(tmp_paths, "@legacy-idle")
+    # No touch_last_active call: simulates an agent dir that predates
+    # the input-side timestamp.
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "has-session" in cmd:
+            cp.returncode = 0
+        elif "display-message" in cmd:
+            cp.returncode = 0
+            cp.stdout = "1000000000"  # ancient
+        elif "kill-session" in cmd:
+            cp.returncode = 0
+        else:
+            cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        reaped = agents.reap_dormant(paths=tmp_paths, max_idle_seconds=3600)
+
+    assert "@legacy-idle" in reaped, (
+        f"missing last_active must fall through to tmux signal; got {reaped}"
+    )
+
+
+def test_reap_dormant_unparseable_last_active_falls_back_to_tmux(tmp_paths: Paths):
+    """A corrupt/empty last_active file must not pin an agent alive
+    forever — the parser returns None and the tmux fallback decides."""
+    _make_persistent(tmp_paths, "@corrupt-active")
+    d = tmp_paths.agents / "@corrupt-active"
+    (d / "last_active").write_text("not-a-timestamp\n")
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "has-session" in cmd:
+            cp.returncode = 0
+        elif "display-message" in cmd:
+            cp.returncode = 0
+            cp.stdout = "1000000000"
+        elif "kill-session" in cmd:
+            cp.returncode = 0
+        else:
+            cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        reaped = agents.reap_dormant(paths=tmp_paths, max_idle_seconds=3600)
+
+    assert "@corrupt-active" in reaped
+
+
+def test_reap_dormant_exempts_orchestrator_unconditionally(tmp_paths: Paths):
+    """@orchestrator is never time-reaped. Repro: 2026-04-25T19:23:05Z
+    evt-1777144985427 logged 'orchestrator dormant after 86466s idle'
+    and killed the active session despite Julian actively chatting.
+    Crash detection (reap_crashed) and explicit kills still apply, but
+    the dormancy daemon must never transition the resident agent on
+    any idle threshold — even with NO last_active sidecar AND ancient
+    tmux activity (the worst-case shape of the original incident)."""
+    _make_persistent(tmp_paths, "@orchestrator")
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "has-session" in cmd:
+            cp.returncode = 0  # alive
+        elif "display-message" in cmd:
+            cp.returncode = 0
+            cp.stdout = "1000000000"  # ancient — would otherwise reap
+        elif "kill-session" in cmd:
+            cp.returncode = 0
+        else:
+            cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        reaped = agents.reap_dormant(paths=tmp_paths, max_idle_seconds=3600)
+
+    assert "@orchestrator" not in reaped, (
+        f"@orchestrator must be exempt from idle-time reap; got {reaped}"
+    )
+    status = tmp_paths.agents / "@orchestrator" / "status"
+    if status.exists():
+        assert "dormant" not in status.read_text(), (
+            "exempt agent must not be transitioned to dormant status"
+        )
+
+
+def test_reap_dormant_exemption_does_not_spare_other_agents(tmp_paths: Paths):
+    """The @orchestrator carve-out is name-specific: a sibling
+    persistent agent in the same sweep with ancient tmux activity and
+    no last_active file still gets reaped."""
+    _make_persistent(tmp_paths, "@orchestrator")
+    _make_persistent(tmp_paths, "@sibling-stale")
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "has-session" in cmd:
+            cp.returncode = 0
+        elif "display-message" in cmd:
+            cp.returncode = 0
+            cp.stdout = "1000000000"
+        elif "kill-session" in cmd:
+            cp.returncode = 0
+        else:
+            cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        reaped = agents.reap_dormant(paths=tmp_paths, max_idle_seconds=3600)
+
+    assert "@orchestrator" not in reaped
+    assert "@sibling-stale" in reaped
+
+
+def test_touch_last_active_wired_into_all_signal_paths():
+    """All four hook signals named in the directive must call
+    touch_last_active. This guards against the helper landing without
+    a wire-up (the field-defined-but-never-updated failure mode the
+    accountability check explicitly looks for)."""
+    import metasphere.posthook as _ph
+    import metasphere.heartbeat as _hb
+    import metasphere.telegram.inject as _inj
+    import metasphere.cli.context as _ctx
+
+    for module, label in (
+        (_ph, "Stop hook (posthook.track_turn_completion)"),
+        (_ctx, "UserPromptSubmit hook (cli.context)"),
+        (_inj, "telegram-inject (telegram.inject.submit_to_tmux)"),
+        (_hb, "heartbeat-tick (heartbeat.invoke_agent_heartbeat)"),
+    ):
+        src = Path(module.__file__).read_text(encoding="utf-8")
+        assert "touch_last_active" in src, (
+            f"{label} must call touch_last_active; not found in "
+            f"{module.__file__}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # reap_crashed (silent-death detection)
 # ---------------------------------------------------------------------------
 

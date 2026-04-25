@@ -19,7 +19,13 @@ import subprocess
 import time
 from pathlib import Path
 
-from .agents import AgentRecord, list_agents, session_alive, session_name_for
+from .agents import (
+    AgentRecord,
+    list_agents,
+    session_alive,
+    session_name_for,
+    touch_last_active,
+)
 from .context import build_context
 from .events import log_event
 from .io import file_lock
@@ -201,6 +207,9 @@ def invoke_agent_heartbeat(
         )
         if not ok:
             return False
+        # Heartbeat tick is one of the four signals reap_dormant uses
+        # to confirm the agent is alive. Refresh on successful inject.
+        touch_last_active(agent, paths)
         try:
             log_event(
                 "heartbeat.invoke",
@@ -254,6 +263,7 @@ def invoke_agent_heartbeat(
         )
     except Exception:
         return False
+    touch_last_active(agent, paths)
     try:
         log_event(
             "heartbeat.invoke",

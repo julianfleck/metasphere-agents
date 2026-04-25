@@ -58,6 +58,13 @@ def main(argv: list[str] | None = None) -> int:
     agent = resolve_agent_id(paths)
     user_msg_count = _bc.count_user_messages(transcript_path) if transcript_path else 0
 
+    # UserPromptSubmit is one of the four hook signals reap_dormant
+    # uses to decide an agent is alive. Touch BEFORE the context build
+    # so even if the build crashes the supervisor still sees input
+    # arrived. Best-effort by contract — touch_last_active swallows.
+    from metasphere.agents import touch_last_active
+    touch_last_active(agent, paths)
+
     try:
         block = build_context()
         sys.stdout.write(block)

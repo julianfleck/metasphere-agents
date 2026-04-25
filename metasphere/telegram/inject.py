@@ -44,9 +44,20 @@ def submit_to_tmux(
     # REPL when the payload is rendered.
     safe_user = _USERNAME_RE.sub("", from_user) or "unknown"
     payload = f"[telegram from {safe_user}] {text}"
-    return _tmux_submit(
+    ok = _tmux_submit(
         session,
         payload,
         defer_if_busy=defer_if_busy,
         escape_prefix=escape_prefix,
     )
+    if ok and session == DEFAULT_SESSION:
+        # Telegram inject is the canonical "user just spoke to the
+        # orchestrator" signal — refresh last_active so reap_dormant
+        # treats this session as active even when no terminal output
+        # follows immediately (model thinking, deferred-busy paste).
+        try:
+            from ..agents import touch_last_active
+            touch_last_active("@orchestrator")
+        except Exception:
+            pass
+    return ok
