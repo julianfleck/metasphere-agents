@@ -1,14 +1,21 @@
 .claude/settings.local.json
 
-# Runtime state — fractal messages and tasks accumulate as files
-.messages/inbox/
-.messages/outbox/
-.messages/archive/
-.tasks/active/
-.tasks/completed/
-.tasks/archive/
+# Runtime state — fractal messages and tasks accumulate at any scope depth
+**/.messages/inbox/
+**/.messages/outbox/
+**/.messages/archive/
+**/.tasks/active/
+**/.tasks/completed/
+**/.tasks/archive/
 # Backup files
 *.bak
+
+# Credentials at any scope depth — never commit
+**/credentials/
+
+# Local-only metasphere projects nested under this repo
+# (these belong as siblings under ~/projects/ but live here for now)
+/vice-party/
 
 # Python build/cache artifacts (metasphere/ Python port)
 __pycache__/
