@@ -893,6 +893,17 @@ def classify_message(
     # on (no replied_at, no completed_at). Could mean the recipient
     # forgot to follow up. Ping them.
     if read_at and (now - read_at) >= window and not msg.replied_at and not msg.completed_at:
+        # !info and !reply are notification-shaped — read-without-action
+        # is a valid terminal state, and they have their own 60min
+        # INFO-AUTO-ARCHIVE path above. Pinging them in the 15-60min
+        # window between stale and auto-archive generates 3 noise
+        # !query escalations per !info before the archive lands
+        # (witnessed 2026-04-26 on msg-1777212455 + msg-1777219709, each
+        # of which got pinged at +15/+30/+45min before being archived
+        # at +60min). Skip the ping ladder for these labels — the
+        # auto-archive will catch them.
+        if msg.label in {"!info", "!reply"}:
+            return MSG_VERDICT_ACTIVE
         # If the recipient has no reader (built-in system agent or
         # GC'd ephemeral), pinging just spawns another no-reader
         # message that itself ages into STALE — a self-sustaining loop.

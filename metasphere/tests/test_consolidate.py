@@ -912,6 +912,32 @@ def test_msg_classify_stale_nonpinned(repo, tmp_paths):
     assert _con.classify_message(m_) == _con.MSG_VERDICT_STALE
 
 
+def test_msg_info_in_stale_window_does_not_ping(repo, tmp_paths):
+    # !info read between the 15min stale window and the 60min INFO-AUTO-
+    # ARCHIVE window must classify ACTIVE, not STALE. Witnessed
+    # 2026-04-26 on msg-1777212455 + msg-1777219709: each got 3 STALE
+    # pings at +15/+30/+45min (each ping = a !query message back to
+    # @orchestrator) before INFO-AUTO-ARCHIVE landed at +60min. !info is
+    # notification-shaped — read-without-action is fine, no ping
+    # ladder required, the auto-archive catches it.
+    for label in ("!info", "!reply"):
+        m_ = _send_msg(tmp_paths, label)
+        m_ = _age_msg(m_, read_min_ago=30)  # past stale, before auto-archive
+        assert _con.classify_message(m_) == _con.MSG_VERDICT_ACTIVE, (
+            f"{label} read 30min ago should be ACTIVE (auto-archive at 60m), "
+            f"got {_con.classify_message(m_)}"
+        )
+
+
+def test_msg_info_past_auto_archive_window_archives(repo, tmp_paths):
+    # Sanity: the auto-archive path still wins at +60min for !info.
+    # Guards against the previous test silently masking a regression
+    # where !info never archives.
+    m_ = _send_msg(tmp_paths, "!info")
+    m_ = _age_msg(m_, read_min_ago=70)
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_INFO_AUTO_ARCHIVE
+
+
 _NO_READER_AGE_MIN = (
     _con.STALE_WINDOW_MINUTES_DEFAULT + _con.INFO_AUTO_ARCHIVE_AFTER_MINUTES
 ) // 2  # past stale window (15), before !done auto-archive window (60)
