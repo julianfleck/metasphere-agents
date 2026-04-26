@@ -97,6 +97,30 @@ class TestResolveScope:
             == tmp_paths.project_root / "scripts"
         )
 
+    def test_cross_project_absolute_real_dir_resolves_as_is(
+        self, tmp_paths: Paths, tmp_path: Path
+    ):
+        # Bug: spawning @agent on /home/.../other.proj/ from cwd inside
+        # metasphere-agents produced scope=<project_root>/home/.../other.proj/.
+        # Fix: a leading-slash path that exists on disk and is outside
+        # project_root is used verbatim.
+        other_proj = tmp_path / "other_proj"
+        other_proj.mkdir()
+        assert (
+            agents._resolve_scope(str(other_proj), tmp_paths.project_root)
+            == other_proj
+        )
+
+    def test_absolute_nonexistent_path_falls_back_to_project_relative(
+        self, tmp_paths: Paths
+    ):
+        # /scripts (or any leading-slash path that does NOT exist as a real
+        # directory) keeps its conventional project-relative interpretation.
+        assert (
+            agents._resolve_scope("/scripts", tmp_paths.project_root)
+            == tmp_paths.project_root / "scripts"
+        )
+
 
 # ---------------------------------------------------------------------------
 # spawn_ephemeral

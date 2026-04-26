@@ -273,12 +273,22 @@ def _resolve_scope(scope_path: str, project_root: Path) -> Path:
     # project-relative path and produce
     # <project_root>/<project_root_without_leading_slash>.
     root_str = str(project_root)
-    if scope_path == root_str:
+    if scope_path == root_str or scope_path == "/":
         return project_root
     if scope_path.startswith(root_str + "/"):
         scope_path = scope_path[len(root_str):]
     if scope_path.startswith("/"):
-        # Project-relative absolute path.
+        # Two cases for a leading-slash form that did NOT match project_root:
+        # (a) a real absolute path to a directory in another project
+        #     (cross-project spawn, e.g. /home/.../other.proj/) — use as-is.
+        # (b) a project-relative absolute path by convention (e.g. "/scripts"
+        #     means project_root/scripts) — concatenate under project_root.
+        # Disambiguate by whether it exists on disk as a directory. Without
+        # this, (a) would be mis-routed to (b) and produce the scope-doubling
+        # bug: agent's scope sidecar gets <project_root>/home/.../other.proj/.
+        candidate = Path(scope_path)
+        if candidate.is_dir():
+            return Path(str(candidate).rstrip("/"))
         s = project_root / scope_path.lstrip("/")
     else:
         s = project_root / scope_path
