@@ -48,6 +48,8 @@ region.
 - `hippocampus` — callback, canon, "remember when." Archive-coded.
 - `dmn` — default mode network. Drifty first-person, makes the
   moment about its own meaning.
+- `worldsim` — world simulator. Renders imagined documents (focus
+  groups, wiki stubs, transcripts) on `<cmd>...</cmd>` syntax.
 
 A PFC draft and an amygdala draft on the same prompt should read
 *visibly* differently. If they don't, the region files have drifted
