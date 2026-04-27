@@ -6,12 +6,14 @@
     session stop <@agent>
     session restart <@agent> [reason]
     session send <@agent> <message>
+    session exit-self
 """
 
 from __future__ import annotations
 
 import sys
 
+from metasphere.posthook import request_deferred_command
 from metasphere.session import (
     attach_to,
     list_sessions,
@@ -101,6 +103,18 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"no session for {agent}", file=sys.stderr)
             return 1
+        return 0
+
+    if cmd in ("exit-self", "exit_self"):
+        # Write a deferred-command marker for the calling agent. The
+        # next Stop-hook tick will inject ``/exit`` as fresh user input,
+        # which terminates the Claude REPL cleanly. Intended for
+        # cron-fired persistent agents (research-monitor, briefing,
+        # rage-changelog) that should release their tmux session after
+        # delivering rather than sitting idle ~24h until the next fire.
+        # Caller's agent id is resolved from $METASPHERE_AGENT_ID.
+        request_deferred_command("/exit")
+        print("queued /exit for next Stop-hook tick")
         return 0
 
     print(f"unknown subcommand: {cmd}", file=sys.stderr)

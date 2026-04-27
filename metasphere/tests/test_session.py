@@ -97,3 +97,29 @@ def test_resolve_session_accepts_bare_name_without_at():
         assert sessmod._resolve_session("accelerator-programs") == (
             "metasphere-research-accelerator-programs"
         )
+
+
+def test_cli_exit_self_writes_deferred_command_marker(tmp_path, monkeypatch, capsys):
+    """``metasphere session exit-self`` must write the deferred-cmd
+    marker for the calling agent, so the next Stop-hook tick injects
+    ``/exit`` and the REPL terminates cleanly.
+
+    Regression for the cron-fired-zombie pattern: research-monitor
+    agents need a one-line shell call they can run at end-of-task to
+    release their tmux session.
+    """
+    from metasphere.cli import session as cli_session
+    from metasphere import paths as paths_mod
+
+    monkeypatch.setenv("METASPHERE_DIR", str(tmp_path))
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@brand-mentions")
+    paths_mod.resolve.cache_clear() if hasattr(paths_mod.resolve, "cache_clear") else None
+
+    rc = cli_session.main(["exit-self"])
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "queued" in out and "/exit" in out
+    marker = tmp_path / "state" / "brand-mentions_deferred_cmd"
+    assert marker.exists()
+    assert marker.read_text(encoding="utf-8").strip() == "/exit"
