@@ -43,3 +43,57 @@ def test_attach_missing_returns_1():
 def test_list_sessions_handles_no_tmux():
     with patch("metasphere.session.subprocess.run", side_effect=FileNotFoundError):
         assert sessmod.list_sessions() == []
+
+
+def _agent_record(name: str, project: str = "") -> object:
+    """Minimal AgentRecord stand-in. Only ``name`` and ``session_name``
+    are read by ``_resolve_session``."""
+    from metasphere.agents import AgentRecord
+
+    return AgentRecord(
+        name=name,
+        scope="",
+        parent="",
+        status="",
+        spawned_at="",
+        project=project,
+    )
+
+
+def test_resolve_session_uses_project_scoped_name():
+    """Regression: ``metasphere session stop @accelerator-programs``
+    must resolve to ``metasphere-research-accelerator-programs`` when
+    the agent's record carries a project, not the unscoped fallback
+    ``metasphere-accelerator-programs``."""
+    rec = _agent_record("@accelerator-programs", project="research")
+    with patch("metasphere.session.list_agents", return_value=[rec]):
+        assert sessmod._resolve_session("@accelerator-programs") == (
+            "metasphere-research-accelerator-programs"
+        )
+
+
+def test_resolve_session_passthrough_for_raw_tmux_name():
+    raw = "metasphere-research-accelerator-programs"
+    # Should not even consult the agent registry.
+    with patch("metasphere.session.list_agents", side_effect=AssertionError):
+        assert sessmod._resolve_session(raw) == raw
+
+
+def test_resolve_session_unknown_agent_falls_back_to_unscoped():
+    with patch("metasphere.session.list_agents", return_value=[]):
+        assert sessmod._resolve_session("@nobody") == "metasphere-nobody"
+
+
+def test_resolve_session_orchestrator_uses_historical_name():
+    from metasphere.gateway.session import SESSION_NAME
+
+    with patch("metasphere.session.list_agents", return_value=[]):
+        assert sessmod._resolve_session("@orchestrator") == SESSION_NAME
+
+
+def test_resolve_session_accepts_bare_name_without_at():
+    rec = _agent_record("@accelerator-programs", project="research")
+    with patch("metasphere.session.list_agents", return_value=[rec]):
+        assert sessmod._resolve_session("accelerator-programs") == (
+            "metasphere-research-accelerator-programs"
+        )

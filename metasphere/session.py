@@ -76,9 +76,7 @@ def list_sessions() -> list[SessionInfo]:
 
 def session_info(name_or_agent: str) -> Optional[SessionInfo]:
     """Look up a single session by tmux name or @agent id."""
-    target = name_or_agent
-    if target.startswith("@"):
-        target = session_name_for(target)
+    target = _resolve_session(name_or_agent)
     for s in list_sessions():
         if s.name == target:
             return s
@@ -90,9 +88,7 @@ def attach_to(name_or_agent: str) -> int:
 
     Returns 1 if no such session (does not exec).
     """
-    target = name_or_agent
-    if target.startswith("@"):
-        target = session_name_for(target)
+    target = _resolve_session(name_or_agent)
     if not session_alive(target):
         return 1
     os.execvp(_tmux_bin(), [_tmux_bin(), "attach-session", "-t", target])
@@ -113,15 +109,36 @@ def _tmux_run(*args: str) -> subprocess.CompletedProcess:
     )
 
 
-def _resolve_session(agent: str) -> str:
-    """Resolve agent name to tmux session name."""
-    if not agent.startswith("@"):
-        agent = "@" + agent
+def _resolve_session(name_or_agent: str) -> str:
+    """Resolve a tmux session name or @agent id to a tmux session name.
+
+    Inputs starting with ``metasphere-`` (the tmux session prefix) pass
+    through unchanged. Everything else is treated as an agent id (with
+    or without leading ``@``).
+
+    Project-scoped agents have session names of the form
+    ``metasphere-<project>-<agent>`` (see ``AgentRecord.session_name``);
+    ``session_name_for`` alone produces the unscoped form and misses
+    these. So look up the ``AgentRecord`` and prefer its
+    ``session_name`` over the canonical fallback.
+    """
+    if name_or_agent.startswith(_SESSION_PREFIX):
+        return name_or_agent
+
+    agent = name_or_agent if name_or_agent.startswith("@") else "@" + name_or_agent
+
     # Orchestrator uses the historical name (no @ prefix in session).
     from .gateway.session import SESSION_NAME
 
     if agent == "@orchestrator":
         return SESSION_NAME
+
+    for rec in list_agents():
+        if rec.name == agent:
+            return rec.session_name
+
+    # Unknown agent (e.g. ephemeral not in the registry): fall back to
+    # the canonical project-less name.
     return session_name_for(agent)
 
 
@@ -131,6 +148,8 @@ def stop_session(agent: str, paths: Paths | None = None) -> bool:
     Returns True if a session was stopped.
     """
     paths = paths or resolve()
+    if not agent.startswith("@"):
+        agent = "@" + agent
     target = _resolve_session(agent)
     if not session_alive(target):
         return False
@@ -138,10 +157,6 @@ def stop_session(agent: str, paths: Paths | None = None) -> bool:
     _tmux_run("send-keys", "-t", target, "/exit", "Enter")
     time.sleep(1)
     _tmux_run("kill-session", "-t", target)
-
-    # Update agent status
-    if not agent.startswith("@"):
-        agent = "@" + agent
     try:
         from .io import atomic_write_text
 
@@ -174,9 +189,9 @@ def restart_session(agent: str, reason: str, paths: Paths | None = None) -> bool
     """
     from .gateway.session import restart_agent_session
 
-    target = _resolve_session(agent)
     if not agent.startswith("@"):
         agent = "@" + agent
+    target = _resolve_session(agent)
     return restart_agent_session(agent, reason, target, paths)
 
 
