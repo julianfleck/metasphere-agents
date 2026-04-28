@@ -127,6 +127,55 @@ def test_run_due_jobs_updates_last_fired_at(tmp_paths):
     assert reloaded[0].last_fired_at == fixed_now
 
 
+def test_run_due_jobs_persists_last_fired_before_dispatch(tmp_paths):
+    """If a dispatch crashes the daemon mid-fire (e.g. metasphere update
+    restarting metasphere-schedule), last_fired_at must already be on
+    disk so the next tick doesn't re-fire within the cron window. This
+    is the 04:01-04:03Z 2026-04-27 auto-update storm scenario."""
+    j = _make_job(cron_expr="* * * * *", last_fired_at=0, payload_kind="command")
+    _sched.save_jobs([j], tmp_paths, _input_count=1)
+
+    fixed_now = int(time.time())
+    last_fired_during_dispatch: list[int] = []
+
+    def _crashing_dispatch(*_args, **_kwargs):
+        # Simulate the daemon being able to read jobs.json mid-dispatch
+        # (i.e. another process). Stamp must already be persisted.
+        reloaded = _sched.load_jobs(tmp_paths)
+        last_fired_during_dispatch.append(reloaded[0].last_fired_at)
+        raise RuntimeError("simulated daemon restart mid-dispatch")
+
+    with mock.patch("metasphere.schedule.dispatch_command", side_effect=_crashing_dispatch):
+        with pytest.raises(RuntimeError, match="simulated daemon restart"):
+            _sched.run_due_jobs(tmp_paths, now=fixed_now)
+
+    assert last_fired_during_dispatch == [fixed_now], (
+        "last_fired_at must be persisted BEFORE dispatch runs"
+    )
+
+    # Re-running run_due_jobs in the same cron window must NOT re-fire,
+    # because last_fired_at == prev_epoch (already-fired guard).
+    with mock.patch("metasphere.schedule.dispatch_command") as disp2:
+        results2 = _sched.run_due_jobs(tmp_paths, now=fixed_now + 15)
+    assert results2 == []
+    disp2.assert_not_called()
+
+
+def test_set_enabled_accepts_id_or_name(tmp_paths):
+    j = _make_job(id="metasphere-auto-update", name="metasphere:auto-update", enabled=True)
+    _sched.save_jobs([j], tmp_paths, _input_count=1)
+
+    assert _sched.set_enabled("metasphere-auto-update", False, tmp_paths) is True
+    assert _sched.load_jobs(tmp_paths)[0].enabled is False
+
+    # Re-enable using the displayed ``name`` (the inconsistency that bit
+    # users on 2026-04-27).
+    assert _sched.set_enabled("metasphere:auto-update", True, tmp_paths) is True
+    assert _sched.load_jobs(tmp_paths)[0].enabled is True
+
+    assert _sched.set_enabled("does-not-exist", False, tmp_paths) is False
+
+
 def test_dispatch_prefers_wake_persistent_when_global_mission_exists(tmp_paths):
     target = "@polymarket"
     agent_dir = tmp_paths.agent_dir(target)

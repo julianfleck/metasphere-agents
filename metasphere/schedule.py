@@ -413,13 +413,19 @@ def dispatch_to_agent(
 def run_due_jobs(paths: Paths | None = None, *, now: int | None = None) -> list[FireResult]:
     """Iterate jobs, fire those that are due, persist last_fired_at.
 
-    Single read-modify-write under the load_jobs/save_jobs lock cycle.
-    Disabled jobs and non-cron jobs are preserved untouched.
+    Two-phase: (1) under an exclusive lock, stamp ``last_fired_at = now``
+    on every due job and persist the file; (2) release the lock and
+    dispatch each stamped job. This is at-most-once: if a dispatch
+    (e.g. ``metasphere update``) restarts the schedule daemon mid-fire,
+    the stamp is already on disk so the next tick won't re-fire the same
+    job within its 180s cron window. Without this split, a self-restarting
+    job storms its window — the 04:01-04:03Z 2026-04-27 incident where
+    auto-update fired every ~15s.
     """
     paths = paths or resolve()
     now = int(now if now is not None else time.time())
-    results: list[FireResult] = []
 
+    due: list[tuple[Job, str]] = []
     with with_locked_jobs(paths) as jobs:
         input_count = len(jobs)
         for job in jobs:
@@ -427,44 +433,44 @@ def run_due_jobs(paths: Paths | None = None, *, now: int | None = None) -> list[
                 continue
             if not cron_should_fire(job.cron_expr, job.tz, job.last_fired_at, now=now):
                 continue
-
-            target = resolve_target_agent(job)
             job.last_fired_at = now
-
-            try:
-                log_event(
-                    "schedule.cron_fire",
-                    job.name or job.id,
-                    agent=target,
-                    meta={"job_id": job.id, "cron_expr": job.cron_expr, "tz": job.tz},
-                    paths=paths,
-                )
-            except Exception as e:  # pragma: no cover - defensive
-                logger.warning("log_event failed: %s", e)
-
-            if job.payload_kind == "command":
-                ok = dispatch_command(job.payload_message, paths=paths)
-            else:
-                ok = dispatch_to_agent(
-                    target,
-                    job.payload_message,
-                    paths=paths,
-                    job_name=job.name,
-                    model=job.model or "",
-                )
-            results.append(
-                FireResult(
-                    job_id=job.id,
-                    name=job.name,
-                    target_agent=target,
-                    fired=True,
-                    dispatched=ok,
-                    error="" if ok else "dispatch failed",
-                )
-            )
-
-        if results:
+            due.append((job, resolve_target_agent(job)))
+        if due:
             save_jobs(jobs, paths, _input_count=input_count)
+
+    results: list[FireResult] = []
+    for job, target in due:
+        try:
+            log_event(
+                "schedule.cron_fire",
+                job.name or job.id,
+                agent=target,
+                meta={"job_id": job.id, "cron_expr": job.cron_expr, "tz": job.tz},
+                paths=paths,
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("log_event failed: %s", e)
+
+        if job.payload_kind == "command":
+            ok = dispatch_command(job.payload_message, paths=paths)
+        else:
+            ok = dispatch_to_agent(
+                target,
+                job.payload_message,
+                paths=paths,
+                job_name=job.name,
+                model=job.model or "",
+            )
+        results.append(
+            FireResult(
+                job_id=job.id,
+                name=job.name,
+                target_agent=target,
+                fired=True,
+                dispatched=ok,
+                error="" if ok else "dispatch failed",
+            )
+        )
 
     return results
 
@@ -475,16 +481,23 @@ def list_jobs(paths: Paths | None = None) -> list[Job]:
     return load_jobs(paths)
 
 
-def set_enabled(job_id: str, enabled: bool, paths: Paths | None = None) -> bool:
+def set_enabled(job_ref: str, enabled: bool, paths: Paths | None = None) -> bool:
+    """Enable/disable a job by ``id`` or by ``name``.
+
+    ``metasphere schedule list`` displays the ``name`` field (e.g.
+    ``metasphere:auto-update``) but jobs are keyed in jobs.json by ``id``
+    (slug-form, e.g. ``metasphere-auto-update``). Accepting both forms
+    avoids the CLI inconsistency where users copy-paste the displayed
+    name and get ``job not found``. ``id`` wins on collision.
+    """
     paths = paths or resolve()
     with with_locked_jobs(paths) as jobs:
         input_count = len(jobs)
-        found = False
-        for j in jobs:
-            if j.id == job_id:
-                j.enabled = enabled
-                found = True
-                break
-        if found:
-            save_jobs(jobs, paths, _input_count=input_count)
-    return found
+        target = next((j for j in jobs if j.id == job_ref), None)
+        if target is None:
+            target = next((j for j in jobs if j.name == job_ref), None)
+        if target is None:
+            return False
+        target.enabled = enabled
+        save_jobs(jobs, paths, _input_count=input_count)
+    return True
