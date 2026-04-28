@@ -440,8 +440,14 @@ def _render_project(paths: Paths) -> str:
         for m in proj.members:
             marker = ""
             if m.persistent:
+                # ``_resolve_session`` walks the agent registry so
+                # project-scoped members (which is the common case in
+                # @project context) are checked under their actual
+                # ``metasphere-<project>-<agent>`` session name, not
+                # the bare form that misses them.
                 try:
-                    alive = _agents.session_alive(_agents.session_name_for(m.id))
+                    from .session import _resolve_session
+                    alive = _agents.session_alive(_resolve_session(m.id))
                 except Exception:
                     alive = False
                 marker = ", alive" if alive else ", dormant"

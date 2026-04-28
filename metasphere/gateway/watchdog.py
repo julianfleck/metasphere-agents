@@ -212,15 +212,14 @@ def _check_restart_marker(
     if age < _RESTART_GRACE_S:
         return False
 
-    # Resolve the session name for this agent.
-    from ..agents import session_name_for
-    from .session import _restart_marker_path
+    # Resolve the session name for this agent. ``_resolve_session``
+    # already special-cases @orchestrator → SESSION_NAME and walks the
+    # agent registry for project-scoped agents (so research-monitors
+    # in ``metasphere-<project>-<agent>`` sessions are found, not
+    # silently missed by the bare ``session_name_for`` form).
+    from ..session import _resolve_session
 
-    # For orchestrator, use the canonical SESSION_NAME (historical naming).
-    if agent == "@orchestrator":
-        target_session = SESSION_NAME
-    else:
-        target_session = session_name_for(agent)
+    target_session = _resolve_session(agent)
 
     if not session_alive(target_session):
         return False

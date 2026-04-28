@@ -1157,8 +1157,13 @@ def _gc_ephemeral_agents(
         except (OSError, FileNotFoundError):
             pass
 
-        # Check if agent is still running
-        session = _agents.session_name_for(agent_name)
+        # Check if agent is still running. ``_resolve_session`` is the
+        # project-aware resolver — bare ``session_name_for`` would miss
+        # project-scoped agents (research-monitors, etc.) and could
+        # mark them dead while their tmux session is still alive under
+        # ``metasphere-<project>-<agent>``.
+        from .session import _resolve_session
+        session = _resolve_session(agent_name)
         is_alive = _agents.session_alive(session)
 
         # Check for running pid

@@ -108,7 +108,12 @@ def _restart_agent_session(
             f"(ok={ok})"
         )
 
-    session = _agents.session_name_for(agent_id)
+    # ``_resolve_session`` is project-scope-aware; the bare
+    # ``session_name_for`` would miss research-monitors and other
+    # project-scoped persistent agents and skip the kill, leaving an
+    # orphan session when ``wake_persistent`` then spawns a new one.
+    from metasphere.session import _resolve_session
+    session = _resolve_session(agent_id)
     was_alive = _agents.session_alive(session)
     if was_alive:
         _tmux_kill(session)

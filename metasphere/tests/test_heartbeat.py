@@ -165,6 +165,43 @@ def test_log_status_to_disk_writes_marker(tmp_paths: Paths):
     assert "alive at" in p.read_text(encoding="utf-8")
 
 
+def test_invoke_agent_heartbeat_uses_project_scoped_session(tmp_paths: Paths):
+    """Regression: project-scoped persistent agents (research-monitors,
+    etc.) live in ``metasphere-<project>-<agent>`` sessions. Bare
+    ``session_name_for`` would target ``metasphere-<agent>``, miss the
+    real session, and silently fall through to the ``claude -p``
+    one-shot path — the persistent session never receives heartbeat
+    pastes. Sister-fix to the posthook deferred-cmd resolution bug.
+    """
+    from metasphere.agents import AgentRecord
+
+    _agent(tmp_paths, "@brand-mentions", "active")
+    rec = AgentRecord(
+        name="@brand-mentions",
+        scope="",
+        parent="",
+        status="",
+        spawned_at="",
+        project="research",
+    )
+
+    captured: list[str] = []
+
+    def fake_submit(session, message, **kwargs):
+        captured.append(session)
+        return True
+
+    with mock.patch("metasphere.session.list_agents", return_value=[rec]), \
+         mock.patch.object(hb, "session_alive", return_value=True), \
+         mock.patch("metasphere.tmux.submit_to_tmux", fake_submit):
+        ok = hb.invoke_agent_heartbeat("@brand-mentions", tmp_paths)
+
+    assert ok is True
+    assert captured == ["metasphere-research-brand-mentions"], (
+        f"expected project-aware session name, got {captured!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # scope normalization in daemon path
 # ---------------------------------------------------------------------------

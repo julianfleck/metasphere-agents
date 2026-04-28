@@ -1302,6 +1302,51 @@ def test_gc_skips_persistent_agent_mid_bootstrap(tmp_paths):
     assert (agent_dir / "persona-index.md").exists()
 
 
+def test_gc_uses_project_scoped_session_for_alive_check(tmp_paths):
+    """Regression: when a (root-level) ephemeral agent dir shares its
+    name with a project-scoped registry entry — e.g. a leftover stub
+    at ``~/.metasphere/agents/@x/`` while the live agent is registered
+    under ``project=research`` — the alive check must look at the
+    project-aware session name. Bare ``session_name_for`` would target
+    the wrong tmux session, mark the agent dead, and GC the stub
+    erroneously. Sister-fix to the posthook deferred-cmd resolution
+    bug; defends the GC classifier against the same project-scope
+    drift the other sites suffer from.
+    """
+    from unittest import mock as _mock
+    from metasphere.agents import AgentRecord
+
+    agent_dir = tmp_paths.agents / "@brand-mentions"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "harness.md").write_text("# Agent: @brand-mentions\n")
+
+    rec = AgentRecord(
+        name="@brand-mentions",
+        scope="",
+        parent="",
+        status="",
+        spawned_at="",
+        project="research",
+    )
+
+    checked: list[str] = []
+
+    def fake_alive(name: str) -> bool:
+        checked.append(name)
+        return True  # alive under project-aware name
+
+    with _mock.patch("metasphere.session.list_agents", return_value=[rec]), \
+         _mock.patch("metasphere.agents.session_alive", fake_alive):
+        results = _con._gc_ephemeral_agents(tmp_paths, dry_run=False)
+
+    assert checked == ["metasphere-research-brand-mentions"], (
+        f"expected project-aware session name, got {checked!r}"
+    )
+    # Agent is alive under project-aware name → must NOT be GC'd.
+    assert results == []
+    assert agent_dir.exists()
+
+
 def test_gc_reaps_ephemeral_without_persona_index(tmp_paths):
     """Sanity check the other half: a true ephemeral (no MISSION.md, no
     persona-index.md) past its dead window still gets GC'd. The fix
