@@ -69,6 +69,12 @@ class Job:
     next_run: int = 0
     command: str = ""
     full_command: str = ""
+    # When True, ``metasphere schedule wire-exit-self`` appends the
+    # session-cleanup stanza to this job's payload_message so the
+    # target agent calls ``metasphere session exit-self`` at the end
+    # of its turn. Set per-job rather than via a global allow-list so
+    # operators opt jobs in/out without editing library code.
+    wants_exit_self_cleanup: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

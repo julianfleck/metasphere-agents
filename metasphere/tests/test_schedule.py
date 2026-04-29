@@ -356,13 +356,23 @@ def test_dispatch_command_does_not_wake_for_non_send_command(tmp_paths):
 
 from metasphere.cli.wire_exit_self import (
     SENTINEL,
-    TARGET_JOB_NAMES,
     wire_exit_self,
+)
+
+# A representative set of job names for the per-job-flag tests. The
+# full historical list of 12 spot-deployed jobs lives in
+# scripts/migrate_schedule_exit_self_flag.py for the one-time migration
+# only; here we just need a few names to exercise the contract.
+_SAMPLE_FLAGGED_NAMES: tuple[str, ...] = (
+    "Morning briefing",
+    "rage-changelog-update",
+    "research-monitor:brand-mentions",
+    "research-monitor:memory-architectures",
 )
 
 
 def _seed_jobs_for_wire_test(tmp_paths, *, payloads=None):
-    """Seed jobs.json with one job per TARGET_JOB_NAMES + one off-target.
+    """Seed jobs.json with flagged jobs + one off-target control.
 
     ``payloads`` is an optional dict ``{name: payload_message}``; missing
     entries default to a short instructional body so the append has
@@ -370,7 +380,7 @@ def _seed_jobs_for_wire_test(tmp_paths, *, payloads=None):
     """
     payloads = payloads or {}
     jobs = []
-    for i, name in enumerate(TARGET_JOB_NAMES):
+    for i, name in enumerate(_SAMPLE_FLAGGED_NAMES):
         body = payloads.get(name, f"Run {name}\nStep 1: do thing\nStep 2: report")
         jobs.append(
             _make_job(
@@ -378,36 +388,36 @@ def _seed_jobs_for_wire_test(tmp_paths, *, payloads=None):
                 source_id=f"target-{i}",
                 name=name,
                 payload_message=body,
+                wants_exit_self_cleanup=True,
             )
         )
-    # Untouched control: bare-name persistent agent that should not be
-    # rewritten even though it's also a cron-fired agentTurn.
+    # Untouched control: persistent agent without the flag.
     jobs.append(
         _make_job(
             id="job-control-polymarket",
             source_id="control-polymarket",
             name="polymarket:trading-run",
             payload_message="run polymarket pipeline",
+            wants_exit_self_cleanup=False,
         )
     )
     _sched.save_jobs(jobs, tmp_paths, _input_count=len(jobs))
 
 
-def test_wire_exit_self_appends_to_named_jobs(tmp_paths):
+def test_wire_exit_self_appends_to_flagged_jobs(tmp_paths):
     _seed_jobs_for_wire_test(tmp_paths)
     result = wire_exit_self(tmp_paths)
 
-    assert sorted(result["modified"]) == sorted(TARGET_JOB_NAMES)
+    assert sorted(result["modified"]) == sorted(_SAMPLE_FLAGGED_NAMES)
     assert result["skipped"] == []
-    assert result["not_found"] == []
 
     saved = {j.name: j for j in _sched.load_jobs(tmp_paths)}
-    for name in TARGET_JOB_NAMES:
+    for name in _SAMPLE_FLAGGED_NAMES:
         assert SENTINEL in saved[name].payload_message, name
         # Original instructions still present at the head of the body.
         assert saved[name].payload_message.startswith(f"Run {name}")
 
-    # Control job — payload must be unchanged.
+    # Control job (flag unset) — payload must be unchanged.
     assert saved["polymarket:trading-run"].payload_message == "run polymarket pipeline"
     assert SENTINEL not in saved["polymarket:trading-run"].payload_message
 
@@ -415,14 +425,14 @@ def test_wire_exit_self_appends_to_named_jobs(tmp_paths):
 def test_wire_exit_self_is_idempotent(tmp_paths):
     _seed_jobs_for_wire_test(tmp_paths)
     first = wire_exit_self(tmp_paths)
-    assert len(first["modified"]) == len(TARGET_JOB_NAMES)
+    assert len(first["modified"]) == len(_SAMPLE_FLAGGED_NAMES)
 
     # Capture payload state after first run for byte-for-byte equality.
     after_first = {j.name: j.payload_message for j in _sched.load_jobs(tmp_paths)}
 
     second = wire_exit_self(tmp_paths)
     assert second["modified"] == []
-    assert sorted(second["skipped"]) == sorted(TARGET_JOB_NAMES)
+    assert sorted(second["skipped"]) == sorted(_SAMPLE_FLAGGED_NAMES)
 
     after_second = {j.name: j.payload_message for j in _sched.load_jobs(tmp_paths)}
     assert after_second == after_first
@@ -433,23 +443,23 @@ def test_wire_exit_self_dry_run_does_not_mutate(tmp_paths):
     before = {j.name: j.payload_message for j in _sched.load_jobs(tmp_paths)}
 
     result = wire_exit_self(tmp_paths, dry_run=True)
-    assert sorted(result["modified"]) == sorted(TARGET_JOB_NAMES)
+    assert sorted(result["modified"]) == sorted(_SAMPLE_FLAGGED_NAMES)
 
     after = {j.name: j.payload_message for j in _sched.load_jobs(tmp_paths)}
     assert before == after, "dry-run must not write to jobs.json"
 
 
-def test_wire_exit_self_reports_not_found_targets(tmp_paths):
-    # Empty jobs.json — every target reports as not_found.
+def test_wire_exit_self_no_flagged_jobs_is_no_op(tmp_paths):
+    """jobs.json with no wants_exit_self_cleanup=True jobs -> empty result."""
     _sched.save_jobs(
-        [_make_job(id="placeholder", name="other:job")],
+        [_make_job(id="placeholder", name="other:job",
+                   wants_exit_self_cleanup=False)],
         tmp_paths,
         _input_count=1,
     )
     result = wire_exit_self(tmp_paths)
     assert result["modified"] == []
     assert result["skipped"] == []
-    assert sorted(result["not_found"]) == sorted(TARGET_JOB_NAMES)
 
 
 def test_wire_exit_self_preserves_existing_funding_sink_stanza(tmp_paths):
@@ -467,6 +477,7 @@ def test_wire_exit_self_preserves_existing_funding_sink_stanza(tmp_paths):
         id="job-residency",
         name="research-monitor:residency-programs",
         payload_message=sink_payload,
+        wants_exit_self_cleanup=True,
     )
     _sched.save_jobs([job], tmp_paths, _input_count=1)
 
