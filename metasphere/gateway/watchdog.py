@@ -214,9 +214,9 @@ def _check_restart_marker(
 
     # Resolve the session name for this agent. ``_resolve_session``
     # already special-cases @orchestrator → SESSION_NAME and walks the
-    # agent registry for project-scoped agents (so research-monitors
-    # in ``metasphere-<project>-<agent>`` sessions are found, not
-    # silently missed by the bare ``session_name_for`` form).
+    # agent registry for project-scoped agents (so agents living in
+    # ``metasphere-<project>-<agent>`` sessions are found, not silently
+    # missed by the bare ``session_name_for`` form).
     from ..session import _resolve_session
 
     target_session = _resolve_session(agent)

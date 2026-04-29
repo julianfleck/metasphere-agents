@@ -15,8 +15,9 @@ of their turn — that's the wiring this tool does.
 
 Operators opt jobs in/out by editing the ``wants_exit_self_cleanup``
 field in jobs.json. Persistent collaborators whose cold-start cost
-exceeds the leak cost (e.g. polymarket:* + spot:autonomous-exploration)
-should keep the flag at its default (``False``).
+exceeds the leak cost (long-running interactive agents that fire
+multiple times per day) should keep the flag at its default
+(``False``).
 
 Usage::
 

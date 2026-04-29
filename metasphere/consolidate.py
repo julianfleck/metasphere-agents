@@ -1159,8 +1159,8 @@ def _gc_ephemeral_agents(
 
         # Check if agent is still running. ``_resolve_session`` is the
         # project-aware resolver — bare ``session_name_for`` would miss
-        # project-scoped agents (research-monitors, etc.) and could
-        # mark them dead while their tmux session is still alive under
+        # project-scoped agents and could mark them dead while their
+        # tmux session is still alive under
         # ``metasphere-<project>-<agent>``.
         from .session import _resolve_session
         session = _resolve_session(agent_name)
