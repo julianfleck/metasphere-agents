@@ -227,6 +227,15 @@ EOF
         ok "Seeded default auto-update.env (daily, enabled)"
     fi
 
+    # Seed ~/.metasphere/CLAUDE.md from the shipped user template.
+    # Auto-loaded by Claude Code at orchestrator session start when CWD
+    # is ~/.metasphere/. Idempotent: skips on re-run so operator edits
+    # are preserved.
+    if [[ ! -f "$METASPHERE_DIR/CLAUDE.md" ]] && [[ -f "$SCRIPT_DIR/templates/install/CLAUDE.md" ]]; then
+        cp "$SCRIPT_DIR/templates/install/CLAUDE.md" "$METASPHERE_DIR/CLAUDE.md"
+        ok "Seeded ~/.metasphere/CLAUDE.md from templates/install/"
+    fi
+
     ok "Created $METASPHERE_DIR"
 }
 
@@ -868,6 +877,15 @@ _Examples:_
 _What are you actively working on? Update this when your focus shifts.
 It gives the agent context for why you might be asking about X today._
 EOF
+    fi
+
+    # AGENTS.md — runtime guidelines for @orchestrator. Per-type
+    # template at templates/agents/orchestrator/AGENTS.md. Read by the
+    # agent at session start (per persona-index). Idempotent: skips if
+    # the file already exists so operator/agent edits are preserved.
+    if [[ ! -f "$agent_dir/AGENTS.md" ]] && [[ -f "$SCRIPT_DIR/templates/agents/orchestrator/AGENTS.md" ]]; then
+        cp "$SCRIPT_DIR/templates/agents/orchestrator/AGENTS.md" "$agent_dir/AGENTS.md"
+        ok "Seeded @orchestrator/AGENTS.md from templates/agents/orchestrator/"
     fi
 
     # Status
