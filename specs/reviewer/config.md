@@ -1,6 +1,6 @@
 ---
 name: reviewer
-role: code-reviewer
+role: critic
 description: Reviews code changes for correctness, security, and style
 sandbox: readonly
 persistent: true

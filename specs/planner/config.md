@@ -1,6 +1,6 @@
 ---
 name: planner
-role: architect
+role: lead
 description: Designs implementation plans and architecture decisions
 sandbox: readonly
 persistent: true
