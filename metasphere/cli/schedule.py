@@ -8,6 +8,7 @@ Usage::
     python -m metasphere.cli.schedule daemon [N]       # loop, default 60s
     python -m metasphere.cli.schedule enable <id>
     python -m metasphere.cli.schedule disable <id>
+    python -m metasphere.cli.schedule wire-exit-self [--dry-run]
 """
 
 from __future__ import annotations
@@ -114,6 +115,9 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_set_enabled(rest[0] if rest else "", True)
     if cmd == "disable":
         return _cmd_set_enabled(rest[0] if rest else "", False)
+    if cmd in ("wire-exit-self", "wire_exit_self"):
+        from metasphere.cli.wire_exit_self import main as _wire_main
+        return _wire_main(rest)
 
     print(__doc__, file=sys.stderr)
     return 2

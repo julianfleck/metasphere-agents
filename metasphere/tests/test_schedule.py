@@ -358,3 +358,135 @@ def test_dispatch_command_does_not_wake_for_non_send_command(tmp_paths):
 
     assert ok is True
     wake_mock.assert_not_called()
+
+
+# ---------- wire-exit-self migration tool ----------
+
+from metasphere.cli.wire_exit_self import (
+    SENTINEL,
+    TARGET_JOB_NAMES,
+    wire_exit_self,
+)
+
+
+def _seed_jobs_for_wire_test(tmp_paths, *, payloads=None):
+    """Seed jobs.json with one job per TARGET_JOB_NAMES + one off-target.
+
+    ``payloads`` is an optional dict ``{name: payload_message}``; missing
+    entries default to a short instructional body so the append has
+    something to attach to.
+    """
+    payloads = payloads or {}
+    jobs = []
+    for i, name in enumerate(TARGET_JOB_NAMES):
+        body = payloads.get(name, f"Run {name}\nStep 1: do thing\nStep 2: report")
+        jobs.append(
+            _make_job(
+                id=f"job-target-{i}",
+                source_id=f"target-{i}",
+                name=name,
+                payload_message=body,
+            )
+        )
+    # Untouched control: bare-name persistent agent that should not be
+    # rewritten even though it's also a cron-fired agentTurn.
+    jobs.append(
+        _make_job(
+            id="job-control-polymarket",
+            source_id="control-polymarket",
+            name="polymarket:trading-run",
+            payload_message="run polymarket pipeline",
+        )
+    )
+    _sched.save_jobs(jobs, tmp_paths, _input_count=len(jobs))
+
+
+def test_wire_exit_self_appends_to_named_jobs(tmp_paths):
+    _seed_jobs_for_wire_test(tmp_paths)
+    result = wire_exit_self(tmp_paths)
+
+    assert sorted(result["modified"]) == sorted(TARGET_JOB_NAMES)
+    assert result["skipped"] == []
+    assert result["not_found"] == []
+
+    saved = {j.name: j for j in _sched.load_jobs(tmp_paths)}
+    for name in TARGET_JOB_NAMES:
+        assert SENTINEL in saved[name].payload_message, name
+        # Original instructions still present at the head of the body.
+        assert saved[name].payload_message.startswith(f"Run {name}")
+
+    # Control job — payload must be unchanged.
+    assert saved["polymarket:trading-run"].payload_message == "run polymarket pipeline"
+    assert SENTINEL not in saved["polymarket:trading-run"].payload_message
+
+
+def test_wire_exit_self_is_idempotent(tmp_paths):
+    _seed_jobs_for_wire_test(tmp_paths)
+    first = wire_exit_self(tmp_paths)
+    assert len(first["modified"]) == len(TARGET_JOB_NAMES)
+
+    # Capture payload state after first run for byte-for-byte equality.
+    after_first = {j.name: j.payload_message for j in _sched.load_jobs(tmp_paths)}
+
+    second = wire_exit_self(tmp_paths)
+    assert second["modified"] == []
+    assert sorted(second["skipped"]) == sorted(TARGET_JOB_NAMES)
+
+    after_second = {j.name: j.payload_message for j in _sched.load_jobs(tmp_paths)}
+    assert after_second == after_first
+
+
+def test_wire_exit_self_dry_run_does_not_mutate(tmp_paths):
+    _seed_jobs_for_wire_test(tmp_paths)
+    before = {j.name: j.payload_message for j in _sched.load_jobs(tmp_paths)}
+
+    result = wire_exit_self(tmp_paths, dry_run=True)
+    assert sorted(result["modified"]) == sorted(TARGET_JOB_NAMES)
+
+    after = {j.name: j.payload_message for j in _sched.load_jobs(tmp_paths)}
+    assert before == after, "dry-run must not write to jobs.json"
+
+
+def test_wire_exit_self_reports_not_found_targets(tmp_paths):
+    # Empty jobs.json — every target reports as not_found.
+    _sched.save_jobs(
+        [_make_job(id="placeholder", name="other:job")],
+        tmp_paths,
+        _input_count=1,
+    )
+    result = wire_exit_self(tmp_paths)
+    assert result["modified"] == []
+    assert result["skipped"] == []
+    assert sorted(result["not_found"]) == sorted(TARGET_JOB_NAMES)
+
+
+def test_wire_exit_self_preserves_existing_funding_sink_stanza(tmp_paths):
+    # 3 of the live research-monitor payloads end with a `---` Funding
+    # pipeline sink stanza (added 2026-04-14). The cleanup append must
+    # sit BELOW the sink without disturbing it.
+    sink_payload = (
+        "Run research-monitor for area: residency-programs\n"
+        "Steps...\n\n"
+        "---\n"
+        "**Funding pipeline sink:** copy report to "
+        "~/.metasphere/agents/@funding-research/sources/residency/<date>.md"
+    )
+    job = _make_job(
+        id="job-residency",
+        name="research-monitor:residency-programs",
+        payload_message=sink_payload,
+    )
+    _sched.save_jobs([job], tmp_paths, _input_count=1)
+
+    result = wire_exit_self(tmp_paths)
+    assert result["modified"] == ["research-monitor:residency-programs"]
+
+    saved = _sched.load_jobs(tmp_paths)[0].payload_message
+    # Sink stanza is still intact at its original position.
+    assert "**Funding pipeline sink:**" in saved
+    sink_idx = saved.index("**Funding pipeline sink:**")
+    cleanup_idx = saved.index("Session cleanup")
+    # Cleanup is appended AFTER the sink — both head and tail divider
+    # are preserved.
+    assert sink_idx < cleanup_idx
+    assert SENTINEL in saved
