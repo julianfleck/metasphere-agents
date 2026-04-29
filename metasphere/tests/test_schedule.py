@@ -66,49 +66,41 @@ def test_cron_should_fire_already_fired():
     assert _sched.cron_should_fire("* * * * *", "UTC", now, now=now) is False
 
 
-def test_resolve_target_agent_research_monitor():
-    # research-monitor:X resolves to @X, NOT @research-X. The persistent
-    # agents under projects/research/agents/ are named @brand-mentions,
-    # @divergence-engines, etc. — without the "research-" prefix, because
-    # the enclosing project directory is already named "research".
-    #
-    # This has regressed twice (39f22fc fixed → 0808693 reverted).
-    # If this assertion looks wrong to you, check the filesystem before
-    # "fixing" the production code — `ls ~/.metasphere/projects/research/agents/`
-    # is the ground truth.
-    j = _make_job(name="research-monitor:brand-mentions")
-    assert _sched.resolve_target_agent(j) == "@brand-mentions"
+def test_resolve_target_agent_uses_agent_id():
+    """``resolve_target_agent`` returns ``"@" + job.agent_id``.
+
+    Pre-2026-04-30, the function had hardcoded prefix-match branches
+    that overrode ``agent_id``. Those are gone. Callers wire the
+    target via the ``agent_id`` field; the legacy spot-side migration
+    in ``scripts/migrate_schedule_agent_ids.py`` rewrote the 16
+    affected jobs to set explicit ``agent_id`` values matching their
+    historical resolution.
+    """
+    assert _sched.resolve_target_agent(
+        _make_job(name="research-monitor:brand-mentions",
+                  agent_id="brand-mentions")
+    ) == "@brand-mentions"
+
+    assert _sched.resolve_target_agent(
+        _make_job(name="polymarket:trading-run", agent_id="polymarket")
+    ) == "@polymarket"
+
+    assert _sched.resolve_target_agent(
+        _make_job(name="Morning briefing", agent_id="briefing")
+    ) == "@briefing"
 
 
-def test_resolve_target_agent_research_monitor_multiple_areas():
-    # All research-monitor:X schedules share the same resolution rule.
-    # Asserting multiple forms makes it harder to re-regress by
-    # tweaking the test for a single case.
-    for area in [
-        "brand-mentions",
-        "divergence-engines",
-        "memory-architectures",
-        "residency-programs",
-        "job-opportunities",
-        "evaluation-governance",
-        "retrieval-architectures",
-        "accelerator-programs",
-        "agentic-reasoning",
-        "ephemeral-interfaces",
-    ]:
-        j = _make_job(name=f"research-monitor:{area}")
-        assert _sched.resolve_target_agent(j) == f"@{area}", (
-            f"research-monitor:{area} should map to @{area}, not @research-{area} "
-            f"(agents live at projects/research/agents/@{area}/)"
-        )
+def test_resolve_target_agent_default_main():
+    """Empty ``agent_id`` falls back to ``@main``."""
+    j = _make_job(name="something:else", agent_id="")
+    assert _sched.resolve_target_agent(j) == "@main"
 
 
-def test_resolve_target_agent_polymarket():
-    assert _sched.resolve_target_agent(_make_job(name="polymarket:trading-run")) == "@polymarket"
-
-
-def test_resolve_target_agent_briefing():
-    assert _sched.resolve_target_agent(_make_job(name="Morning briefing")) == "@briefing"
+def test_resolve_target_agent_ignores_name_prefix():
+    """Even with a legacy-looking name, ``agent_id`` wins (no prefix magic)."""
+    j = _make_job(name="research-monitor:brand-mentions",
+                  agent_id="custom-agent")
+    assert _sched.resolve_target_agent(j) == "@custom-agent"
 
 
 def test_run_due_jobs_updates_last_fired_at(tmp_paths):
