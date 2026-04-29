@@ -212,9 +212,9 @@ def test_extract_mentions_project_only(tmp_paths):
 
 
 def test_extract_mentions_agent_only(tmp_paths):
-    _seed_agent(tmp_paths, "julian")
-    ms = m.extract_mentions("ping @julian please", paths=tmp_paths)
-    assert [(x.name, x.type) for x in ms] == [("julian", "agent")]
+    _seed_agent(tmp_paths, "synthetic-user")
+    ms = m.extract_mentions("ping @synthetic-user please", paths=tmp_paths)
+    assert [(x.name, x.type) for x in ms] == [("synthetic-user", "agent")]
 
 
 def test_extract_mentions_collision_project_wins(tmp_paths):

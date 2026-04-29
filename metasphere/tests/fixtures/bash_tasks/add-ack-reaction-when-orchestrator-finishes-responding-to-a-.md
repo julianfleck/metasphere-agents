@@ -27,7 +27,7 @@ Currently the bot sets a 👀 reaction on incoming user messages (read receipt) 
 
 ## Spec
 
-Currently the gateway daemon adds an 👀 reaction to an incoming user message immediately on receipt (commit-pending, fix for the python-cutover regression). Julian asked for a follow-up: when @orchestrator's response actually lands on Telegram, replace the eye with a 👍 (or any "produced an answer" emoji) so he can see at a glance that a message has been (a) read and (b) acknowledged-with-a-real-reply, vs just sitting in the queue.
+Currently the gateway daemon adds an 👀 reaction to an incoming user message immediately on receipt (commit-pending, fix for the python-cutover regression). Operator-flagged follow-up: when @orchestrator's response actually lands on Telegram, replace the eye with a 👍 (or any "produced an answer" emoji) so the user can see at a glance that a message has been (a) read and (b) acknowledged-with-a-real-reply, vs just sitting in the queue.
 
 Implementation sketch:
 

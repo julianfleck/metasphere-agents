@@ -614,7 +614,7 @@ def test_parse_attachments_generic_catches_sticker_and_animation():
 
 
 def test_parse_attachments_empty_on_plain_text():
-    msg = {"message_id": 1, "text": "hello", "from": {"username": "julian"}}
+    msg = {"message_id": 1, "text": "hello", "from": {"username": "synthetic-user"}}
     assert _atts.parse_attachments(msg) == []
 
 
@@ -826,7 +826,7 @@ def test_handle_update_photo_with_caption_injects_attachment_block(tmp_path, mon
         "message": {
             "message_id": 555,
             "chat": {"id": 123, "is_forum": False},
-            "from": {"username": "julian"},
+            "from": {"username": "synthetic-user"},
             "date": 1700000000,
             "caption": "look at this",
             "photo": [
@@ -846,7 +846,7 @@ def test_handle_update_photo_with_caption_injects_attachment_block(tmp_path, mon
     # Exactly one tmux injection happened.
     assert len(tmux_log) == 1
     injected = tmux_log[0]["text"]
-    assert tmux_log[0]["from"] == "@julian"
+    assert tmux_log[0]["from"] == "@synthetic-user"
     # Caption present at the top of the payload.
     assert injected.startswith("look at this")
     # Attachment block present, pointing at the saved path under the tmp
@@ -871,7 +871,7 @@ def test_handle_update_photo_only_no_caption_still_injects_block(tmp_path, monke
         "message": {
             "message_id": 556,
             "chat": {"id": 123, "is_forum": False},
-            "from": {"username": "julian"},
+            "from": {"username": "synthetic-user"},
             "date": 1700000000,
             "photo": [{"file_id": "only", "file_size": 10}],
         },
@@ -915,7 +915,7 @@ def test_handle_update_download_failure_still_injects_note(tmp_path, monkeypatch
         "message": {
             "message_id": 557,
             "chat": {"id": 123, "is_forum": False},
-            "from": {"username": "julian"},
+            "from": {"username": "synthetic-user"},
             "date": 1700000000,
             "caption": "hello",
             "document": {"file_id": "stale", "file_name": "x.pdf"},
@@ -945,7 +945,7 @@ def test_handle_update_plain_text_unchanged(tmp_path, monkeypatch):
         "message": {
             "message_id": 558,
             "chat": {"id": 123, "is_forum": False},
-            "from": {"username": "julian"},
+            "from": {"username": "synthetic-user"},
             "date": 1700000000,
             "text": "just text",
         },
@@ -1067,7 +1067,7 @@ def test_handle_update_emits_debug_log_on_attachment_path(tmp_path, monkeypatch)
         "message": {
             "message_id": 900,
             "chat": {"id": 123},
-            "from": {"username": "julian"},
+            "from": {"username": "synthetic-user"},
             "date": 1700000000,
             "photo": [{"file_id": "p1", "file_size": 1000}],
         },
@@ -1100,7 +1100,7 @@ def test_handle_update_emits_debug_log_when_parse_returns_empty(tmp_path, monkey
         "message": {
             "message_id": 901,
             "chat": {"id": 123},
-            "from": {"username": "julian"},
+            "from": {"username": "synthetic-user"},
             "date": 1700000000,
             # No text, no caption, no known media keys — but a contact
             # payload, which we don't recognise as downloadable.

@@ -27,7 +27,7 @@ DEFAULT_MAX_N = 10
 @dataclass
 class Directive:
     date: str = ""       # "2026-04-12"
-    source: str = ""     # "@julian"
+    source: str = ""     # "@user"
     text: str = ""       # the directive body
     expires: str = ""    # "" means no expiry
 

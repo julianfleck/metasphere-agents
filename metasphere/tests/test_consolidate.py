@@ -225,7 +225,7 @@ def test_ping_routes_to_project_lead_before_assignee(repo, tmp_paths):
     project owner.
     """
     import json as _json
-    _make_persistent(tmp_paths, "@julian")
+    _make_persistent(tmp_paths, "@test-user")
     _make_persistent(tmp_paths, "@worldwire-lead")
 
     # Register "worldwire" with a lead member.
@@ -243,7 +243,7 @@ def test_ping_routes_to_project_lead_before_assignee(repo, tmp_paths):
     }))
 
     t = _create_task(repo, "ww task")
-    t = _tasks.start_task(t.id, "@julian", repo)
+    t = _tasks.start_task(t.id, "@test-user", repo)
     # Manually set project field on the task.
     _tasks.update_task(t.id, repo, project="worldwire")
     t = _tasks.Task.from_text(t.path.read_text(), path=t.path)
@@ -254,7 +254,7 @@ def test_ping_routes_to_project_lead_before_assignee(repo, tmp_paths):
         t, _con.VERDICT_STALE, repo, tmp_paths, sender=sender
     )
     assert result["action"] == "pinged"
-    # Routed to lead, NOT @julian (the assignee).
+    # Routed to lead, NOT @test-user (the assignee).
     assert result["target"] == "@worldwire-lead"
     assert sender.calls[0]["target"] == "@worldwire-lead"
 

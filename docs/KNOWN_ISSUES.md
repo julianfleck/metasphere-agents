@@ -25,7 +25,7 @@ the line — history is signal). Newest at top of each section.
 - [x] **Fractal spawning auto-exec missing** — `metasphere-spawn` now launches child detached via `nohup claude -p ... --dangerously-skip-permissions`, writes `pid` and `output.log` in agent dir, opt-out via `METASPHERE_SPAWN_NO_EXEC=1`. (Fixed in this session.)
       Related task: `fractal-spawning-any-agent-can-spawn-sub-agents-20260406`
 
-- [ ] **Persistent agent idle GC** — `metasphere-wake` correctly reuses an existing tmux session if already alive (re-injects the task), but there is no upper bound on how long an idle session lives. After @polymarket completed its trading-run task at 15:18, the session sat idle. Next quick-scan at 15:30 will reuse it, which is correct, but a long-dormant agent (e.g. @briefing fires at 10:00 then nothing until tomorrow 10:00) would consume a tmux pane + claude process for 24h doing nothing. Need an idle timer (e.g. close session after N hours of no activity).
+- [ ] **Persistent agent idle GC** — `metasphere-wake` correctly reuses an existing tmux session if already alive (re-injects the task), but there is no upper bound on how long an idle session lives. A persistent agent that just finished a quick task sits idle until its next cron fire; if its next fire is hours away, it consumes a tmux pane + claude process the entire time doing nothing. Need an idle timer (e.g. close session after N hours of no activity).
       Where: `scripts/metasphere-wake` + a periodic GC sweep
       Decision needed: should agents keep their session warm (better context, faster fires) or cold-start every time (cheaper, no GC needed)?
 

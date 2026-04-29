@@ -436,7 +436,7 @@ def test_poll_once_routes_photo_through_shared_handler(tmp_path, monkeypatch):
         "message": {
             "message_id": 777,
             "chat": {"id": 42, "is_forum": False},
-            "from": {"username": "julian"},
+            "from": {"username": "synthetic-user"},
             "date": 1700000000,
             "caption": "debug-photo-1",
             "photo": [{"file_id": "p1", "file_size": 50}],
@@ -512,7 +512,7 @@ def test_poll_once_does_not_drop_photo_only_messages(tmp_path, monkeypatch):
         "message": {
             "message_id": 778,
             "chat": {"id": 42, "is_forum": False},
-            "from": {"username": "julian"},
+            "from": {"username": "synthetic-user"},
             "date": 1700000000,
             "photo": [{"file_id": "p2", "file_size": 50}],
         },

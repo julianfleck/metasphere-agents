@@ -148,7 +148,7 @@ If $ARGUMENTS is anything else, show this slash command's help and
 the available metasphere project subcommands.
 ```
 
-This is the right shape because (a) the wizard is conversational, not a series of `argparse` prompts, (b) the orchestrator can interpret partial input ("just call it `polymarket-edge` and use the existing `~/Code/polymarket` repo, members are me and @researcher"), and (c) the slash command is dead simple — it's a prompt, not code.
+This is the right shape because (a) the wizard is conversational, not a series of `argparse` prompts, (b) the orchestrator can interpret partial input ("just call it `example-edge` and use the existing `~/Code/example` repo, members are me and @researcher"), and (c) the slash command is dead simple — it's a prompt, not code.
 
 ## Per-turn context injection
 
