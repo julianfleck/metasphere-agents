@@ -48,16 +48,32 @@ _GUARDED_SUBDIRS = (
 #: stays. ``.lock`` is handled in the paired pass below.
 _POLLUTION_EXTS = (".md", ".jsonl", ".bin")
 
-#: Real production chat id for the operator — the only chat that legitimately
-#: appears in ``~/.metasphere/telegram/stream/*.jsonl``. Anything else
-#: in an appended stream tail is a test fixture leaking into live.
-_JULIAN_CHAT_ID = 228838013
+#: Real production chat id for the operator — the only chat that
+#: legitimately appears in ``~/.metasphere/telegram/stream/*.jsonl``.
+#: Anything else in an appended stream tail is a test fixture leaking
+#: into live. Set per-host via the ``METASPHERE_OPERATOR_CHAT_ID``
+#: environment variable; the value is host-specific instance state and
+#: never lives in the repo. Stranger installs without the env set skip
+#: the chat-id-leak check entirely (the regex still classifies lines,
+#: but nothing is allow-listed).
+def _operator_chat_id() -> int | None:
+    raw = os.environ.get("METASPHERE_OPERATOR_CHAT_ID")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
-#: Regex over bytes: matches the nested Telegram ``"chat":{"id":N`` shape
-#: used by the poller archiver. Test-fixture lines are identified as
-#: "any appended line whose chat.id != ``_JULIAN_CHAT_ID``". Allow-list
-#: beats deny-list — fixture authors can pick any chat_id they want, but
-#: the real prod id is a single known value.
+
+_OPERATOR_CHAT_ID = _operator_chat_id()
+
+#: Regex over bytes: matches the nested Telegram ``"chat":{"id":N``
+#: shape used by the poller archiver. Test-fixture lines are
+#: identified as "any appended line whose chat.id !=
+#: ``_OPERATOR_CHAT_ID``". Allow-list beats deny-list — fixture
+#: authors can pick any chat_id they want, but the real prod id is a
+#: single known value (loaded from env, not hard-coded).
 _CHAT_ID_RE = re.compile(rb'"chat":\s*\{\s*"id"\s*:\s*(\d+)')
 
 #: Fake unix-epoch timestamp (``date=1700000000`` ≈ 2023-11-14T22:13Z)
@@ -207,21 +223,25 @@ def pytest_sessionfinish(session, exitstatus):
                         tail = f.read()
                 except OSError:
                     continue
-                # Pass 3a: any chat.id other than the operator's real one is
-                # a fixture. This is allow-list, not deny-list — the
-                # rule doesn't drift when someone adds a new fixture
-                # with a new chat_id.
-                for m in _CHAT_ID_RE.finditer(tail):
-                    try:
-                        cid = int(m.group(1))
-                    except ValueError:
-                        continue
-                    if cid != _JULIAN_CHAT_ID:
-                        leaked.append(
-                            f"{sp} (fixture line appended: chat.id={cid}, "
-                            f"only {_JULIAN_CHAT_ID} is allowed)"
-                        )
-                        break
+                # Pass 3a: any chat.id other than the operator's real
+                # one is a fixture. This is allow-list, not deny-list —
+                # the rule doesn't drift when someone adds a new fixture
+                # with a new chat_id. Skipped on stranger installs that
+                # haven't set ``METASPHERE_OPERATOR_CHAT_ID`` (the
+                # allow-list is host-specific operator state).
+                if _OPERATOR_CHAT_ID is not None:
+                    for m in _CHAT_ID_RE.finditer(tail):
+                        try:
+                            cid = int(m.group(1))
+                        except ValueError:
+                            continue
+                        if cid != _OPERATOR_CHAT_ID:
+                            leaked.append(
+                                f"{sp} (fixture line appended: "
+                                f"chat.id={cid}, only "
+                                f"{_OPERATOR_CHAT_ID} is allowed)"
+                            )
+                            break
                 # Pass 3b: fake unix-epoch timestamp, regardless of
                 # chat.id. Every fixture in this repo uses 1700000000.
                 if _FIXTURE_DATE_MARKER in tail:

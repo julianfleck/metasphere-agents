@@ -58,13 +58,14 @@ def test_interactive_happy_path(sandbox_config, monkeypatch, capsys):
     monkeypatch.setattr(C, "_validate_token", lambda t: (True, "@mybot"))
     monkeypatch.setattr(
         C, "_poll_for_chat_id",
-        lambda timeout=30: [{"chat_id": 228838013,
-                              "name": "j0lian", "last_text": "/start"}],
+        lambda timeout=30: [{"chat_id": 1234567890,
+                              "name": "synthetic-user",
+                              "last_text": "/start"}],
     )
     rc = C._interactive_flow()
     assert rc == 0
     assert C.TOKEN_ENV_FILE.read_text().startswith("TELEGRAM_BOT_TOKEN=T:good")
-    assert C.CHAT_ID_FILE.read_text() == "228838013"
+    assert C.CHAT_ID_FILE.read_text() == "1234567890"
 
 
 def test_interactive_multiple_senders_pick_2(sandbox_config, monkeypatch):

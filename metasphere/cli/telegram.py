@@ -51,7 +51,7 @@ def _load_chat_id() -> Optional[int]:
 def _resolve_contact(name: str) -> Optional[int]:
     """Look up a named contact from telegram_contacts.json.
 
-    File format: ``{"ella": 5418799462, "julian": 228838013, ...}``
+    File format: ``{"ella": 5418799462, "operator": 1234567890, ...}``
     Names are case-insensitive.
     """
     if not os.path.exists(CONTACTS_FILE):
