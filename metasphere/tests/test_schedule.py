@@ -135,7 +135,11 @@ def test_run_due_jobs_persists_last_fired_before_dispatch(tmp_paths):
     j = _make_job(cron_expr="* * * * *", last_fired_at=0, payload_kind="command")
     _sched.save_jobs([j], tmp_paths, _input_count=1)
 
-    fixed_now = int(time.time())
+    # Pin to second 5 of the current minute so the second call at
+    # ``fixed_now + 15`` stays within the same minute. Without this,
+    # CI runs that landed at second >=45 of a minute saw the second
+    # call cross the next ``* * * * *`` boundary and re-fire legit.
+    fixed_now = (int(time.time()) // 60) * 60 + 5
     last_fired_during_dispatch: list[int] = []
 
     def _crashing_dispatch(*_args, **_kwargs):
