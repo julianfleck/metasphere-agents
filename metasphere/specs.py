@@ -138,6 +138,30 @@ def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _find_agents_md_template(role: str) -> Optional[Path]:
+    """Locate the shipped AGENTS.md template for ``role``.
+
+    Searches, in order:
+    1. Repo root inferred from this module's location (editable install).
+    2. ``$METASPHERE_PROJECT_ROOT`` if it differs and contains ``templates/``.
+
+    Returns ``None`` if no template exists for ``role``.
+    """
+    candidates = []
+    pkg_repo_root = Path(__file__).resolve().parent.parent
+    candidates.append(pkg_repo_root / "templates" / "agents" / role / "AGENTS.md")
+    try:
+        env_root = Path(resolve().project_root)
+        if env_root and env_root != pkg_repo_root:
+            candidates.append(env_root / "templates" / "agents" / role / "AGENTS.md")
+    except Exception:
+        pass
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def seed_agent(
     agent_id: str,
     spec: AgentSpec,
@@ -189,6 +213,19 @@ def seed_agent(
             content = _substitute(content, variables)
             atomic_write_text(dest, content)
             logger.info("Seeded %s/%s from spec '%s'", agent_id, src.name, spec.name)
+
+    # --- AGENTS.md (runtime guidelines per role, from repo-shipped templates) ---
+    # Spec dirs (specs/) hold SOUL/MISSION (voice + role); shared
+    # runtime rules per role live separately at templates/agents/<role>/AGENTS.md
+    # so a single source can be evolved without forking each spec.
+    # Skips silently if no template exists for spec.role.
+    agents_md_dest = agent_dir / "AGENTS.md"
+    if force or not agents_md_dest.is_file():
+        template_path = _find_agents_md_template(spec.role)
+        if template_path is not None:
+            content = _substitute(template_path.read_text(encoding="utf-8"), variables)
+            atomic_write_text(agents_md_dest, content)
+            logger.info("Seeded %s/AGENTS.md from templates/agents/%s/", agent_id, spec.role)
 
     # --- persona-index.md (generated, not from spec) ---
     index_path = agent_dir / "persona-index.md"
