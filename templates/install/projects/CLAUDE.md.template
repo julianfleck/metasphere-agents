@@ -1,0 +1,24 @@
+# {{ project_name }} — project context
+
+## Goal
+
+{{ goal_one_line }}
+
+{{ public_direction }}
+
+## Current state
+
+{{ current_state_bullets }}
+
+## Key artifacts
+
+{{ key_artifacts_paths }}
+
+## Members
+
+{{ members_table }}
+
+## Non-scope
+
+{{ non_scope_pointers }}
+
