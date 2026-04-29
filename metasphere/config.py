@@ -37,6 +37,41 @@ def parse_env_file(path: Path) -> dict[str, str]:
     return out
 
 
+def load_env_to_environ(paths: Paths | None = None) -> int:
+    """Export ``~/.metasphere/config/*.env`` keys into ``os.environ``.
+
+    Reads every ``*.env`` file plus the bare ``env`` catch-all (the file
+    spot uses for API keys without the ``.env`` suffix). For each parsed
+    key, calls ``os.environ.setdefault`` so values explicitly set in the
+    process env take precedence — operators can override per-invocation
+    via shell ``KEY=value pytest ...`` without editing the file.
+
+    Returns the number of keys written. Idempotent: running it twice
+    leaves the environment unchanged the second time.
+
+    The function is called from ``metasphere/__init__.py`` at package
+    import so any code path that touches the package (CLI, test
+    fixtures, daemon) sees the operator's config-file values without
+    a separate bootstrap step. Stranger installs without a config dir
+    or with no ``*.env`` files are a clean no-op.
+    """
+    paths = paths or resolve()
+    cfg_dir = paths.config
+    if not cfg_dir.is_dir():
+        return 0
+    written = 0
+    files = list(cfg_dir.glob("*.env"))
+    bare = cfg_dir / "env"
+    if bare.is_file():
+        files.append(bare)
+    for env_file in sorted(files):
+        for k, v in parse_env_file(env_file).items():
+            if k not in os.environ:
+                os.environ[k] = v
+                written += 1
+    return written
+
+
 @dataclass
 class TelegramConfig:
     bot_token: str | None = None
