@@ -680,3 +680,136 @@ def test_cli_register_job(tmp_paths):
     jobs = _sched.load_jobs(tmp_paths)
     j = next(j for j in jobs if j.id == _update.JOB_ID)
     assert j.cron_expr == "0 */6 * * *"
+
+
+# ---------- template drift detection ----------
+
+def _seed_drift_fixture(tmp_paths, *, drift: bool = True):
+    """Create shipped templates + local copies under tmp_paths.
+
+    Returns the repo path used as the source-of-truth root for templates.
+    When ``drift=True``, local copies have different content than shipped;
+    when False, they're byte-identical.
+    """
+    repo = tmp_paths.project_root
+    (repo / "templates" / "install").mkdir(parents=True)
+    (repo / "templates" / "install" / "CLAUDE.md").write_text("SHIPPED USER MANUAL\n")
+    (repo / "templates" / "agents" / "orchestrator").mkdir(parents=True)
+    (repo / "templates" / "agents" / "orchestrator" / "AGENTS.md").write_text(
+        "SHIPPED ORCH AGENTS\n"
+    )
+    (tmp_paths.root / "CLAUDE.md").write_text(
+        "LOCAL USER MANUAL\n" if drift else "SHIPPED USER MANUAL\n"
+    )
+    orch_dir = tmp_paths.root / "agents" / "@orchestrator"
+    orch_dir.mkdir(parents=True)
+    (orch_dir / "AGENTS.md").write_text(
+        "LOCAL ORCH AGENTS\n" if drift else "SHIPPED ORCH AGENTS\n"
+    )
+    return repo
+
+
+def test_detect_drift_finds_drifted_files(tmp_paths):
+    repo = _seed_drift_fixture(tmp_paths, drift=True)
+    drifted = _update.detect_drift(paths=tmp_paths, repo=repo)
+    labels = sorted(e.label for e in drifted)
+    assert labels == ["@orchestrator/AGENTS.md", "~/.metasphere/CLAUDE.md"]
+
+
+def test_detect_drift_silent_when_identical(tmp_paths):
+    repo = _seed_drift_fixture(tmp_paths, drift=False)
+    drifted = _update.detect_drift(paths=tmp_paths, repo=repo)
+    assert drifted == []
+
+
+def test_detect_drift_skips_missing_local(tmp_paths):
+    """Missing local files aren't drift — they're 'not yet seeded'."""
+    repo = tmp_paths.project_root
+    (repo / "templates" / "install").mkdir(parents=True)
+    (repo / "templates" / "install" / "CLAUDE.md").write_text("SHIPPED\n")
+    drifted = _update.detect_drift(paths=tmp_paths, repo=repo)
+    assert drifted == []
+
+
+def test_detect_drift_records_line_counts(tmp_paths):
+    repo = _seed_drift_fixture(tmp_paths, drift=True)
+    drifted = _update.detect_drift(paths=tmp_paths, repo=repo)
+    by_label = {e.label: e for e in drifted}
+    assert by_label["~/.metasphere/CLAUDE.md"].src_lines == 1
+    assert by_label["~/.metasphere/CLAUDE.md"].dest_lines == 1
+
+
+def test_run_templates_keep_preserves_local(tmp_paths):
+    repo = _seed_drift_fixture(tmp_paths, drift=True)
+    inputs = iter(["k", "k"])
+    rc = _update.run_templates_interactive(
+        paths=tmp_paths, repo=repo,
+        input_fn=lambda _: next(inputs),
+    )
+    assert rc == 0
+    assert (tmp_paths.root / "CLAUDE.md").read_text() == "LOCAL USER MANUAL\n"
+    assert (tmp_paths.root / "agents" / "@orchestrator" / "AGENTS.md").read_text() \
+        == "LOCAL ORCH AGENTS\n"
+
+
+def test_run_templates_overwrite_creates_backup(tmp_paths):
+    repo = _seed_drift_fixture(tmp_paths, drift=True)
+    inputs = iter(["o", "o"])
+    rc = _update.run_templates_interactive(
+        paths=tmp_paths, repo=repo,
+        input_fn=lambda _: next(inputs),
+    )
+    assert rc == 0
+    assert (tmp_paths.root / "CLAUDE.md").read_text() == "SHIPPED USER MANUAL\n"
+    backups = list(tmp_paths.root.glob("CLAUDE.md.bak-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text() == "LOCAL USER MANUAL\n"
+
+
+def test_run_templates_diff_reprompts(tmp_paths):
+    repo = _seed_drift_fixture(tmp_paths, drift=True)
+    inputs = iter(["d", "k", "k"])
+    diff_calls: list[tuple[Path, Path]] = []
+    rc = _update.run_templates_interactive(
+        paths=tmp_paths, repo=repo,
+        input_fn=lambda _: next(inputs),
+        diff_runner=lambda local, shipped: diff_calls.append((local, shipped)),
+    )
+    assert rc == 0
+    assert len(diff_calls) == 1
+    assert (tmp_paths.root / "CLAUDE.md").read_text() == "LOCAL USER MANUAL\n"
+
+
+def test_run_templates_no_drift_returns_zero(tmp_paths):
+    repo = _seed_drift_fixture(tmp_paths, drift=False)
+    rc = _update.run_templates_interactive(
+        paths=tmp_paths, repo=repo,
+        input_fn=lambda _: "k",  # should never be called
+    )
+    assert rc == 0
+
+
+def test_run_templates_invalid_then_keep(tmp_paths):
+    repo = _seed_drift_fixture(tmp_paths, drift=True)
+    inputs = iter(["x", "k", "k"])
+    rc = _update.run_templates_interactive(
+        paths=tmp_paths, repo=repo,
+        input_fn=lambda _: next(inputs),
+    )
+    assert rc == 0
+    assert (tmp_paths.root / "CLAUDE.md").read_text() == "LOCAL USER MANUAL\n"
+
+
+def test_cli_templates_dispatch(tmp_paths, monkeypatch):
+    """`metasphere update --templates` invokes run_templates_interactive."""
+    called = {}
+
+    def fake_run_templates(*args, **kwargs):
+        called["yes"] = True
+        return 0
+
+    monkeypatch.setattr(_update, "run_templates_interactive", fake_run_templates)
+    from metasphere.cli import update as cli_update
+    rc = cli_update.main(["--templates"])
+    assert rc == 0
+    assert called.get("yes") is True
