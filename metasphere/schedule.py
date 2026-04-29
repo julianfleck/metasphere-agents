@@ -215,10 +215,10 @@ def resolve_target_agent(job: Job) -> str:
     routing — whatever name is stored there (sans the leading ``@``)
     becomes the target. Default ``"main"`` resolves to ``@main``.
 
-    Pre-2026-04-30 versions of this function had hardcoded prefix-match
-    branches (``research-monitor:``, ``polymarket:``, etc.) that
-    overrode ``agent_id``. Those are removed; the spot-side migration
-    in ``scripts/migrate_schedule_agent_ids.py`` rewrites legacy
+    Pre-2026-04-30 versions of this function had hardcoded
+    prefix-match branches that overrode ``agent_id`` for specific
+    job-name prefixes. Those are removed; the migration in
+    ``scripts/migrate_schedule_agent_ids.py`` rewrites legacy
     ``agent_id="main"`` jobs to their resolved targets so the
     simplification is behavior-preserving.
     """
@@ -320,7 +320,7 @@ def dispatch_command(
     :func:`metasphere.agents.wake_persistent`. Without this, the
     subsequent ``messages send`` writes the inbox file but
     ``wake_recipient_if_live`` silently no-ops on a dormant session, so
-    scheduled polymarket / research tasks accumulate unread forever.
+    scheduled tasks targeting dormant agents accumulate unread forever.
     """
     import shlex
 

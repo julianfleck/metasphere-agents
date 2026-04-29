@@ -518,10 +518,10 @@ def _check_deferred_command(agent: str, paths: Paths) -> None:
         from .tmux import submit_to_tmux
         from .session import _resolve_session
 
-        # Project-scoped agents (research-monitors, etc.) live in
-        # ``metasphere-<project>-<agent>`` sessions. Bare-name
-        # ``session_name_for`` would miss these and target a session
-        # that does not exist; ``_resolve_session`` walks the agent
+        # Project-scoped agents live in ``metasphere-<project>-<agent>``
+        # sessions. Bare-name ``session_name_for`` would miss these
+        # and target a session that does not exist;
+        # ``_resolve_session`` walks the agent
         # registry and returns the project-aware name. Same resolver
         # the CLI ``metasphere session stop|info|restart`` uses.
         session = _resolve_session(agent)

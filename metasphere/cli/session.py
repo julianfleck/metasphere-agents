@@ -109,10 +109,10 @@ def main(argv: list[str] | None = None) -> int:
         # Write a deferred-command marker for the calling agent. The
         # next Stop-hook tick will inject ``/exit`` as fresh user input,
         # which terminates the Claude REPL cleanly. Intended for
-        # cron-fired persistent agents (research-monitor, briefing,
-        # rage-changelog) that should release their tmux session after
-        # delivering rather than sitting idle ~24h until the next fire.
-        # Caller's agent id is resolved from $METASPHERE_AGENT_ID.
+        # cron-fired single-shot persistent agents that should release
+        # their tmux session after delivering rather than sitting idle
+        # ~24h until the next fire. Caller's agent id is resolved from
+        # $METASPHERE_AGENT_ID.
         request_deferred_command("/exit")
         print("queued /exit for next Stop-hook tick")
         return 0
