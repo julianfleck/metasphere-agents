@@ -661,15 +661,14 @@ metasphere-schedule msg ...                # alias
 
 ### Cron firing → agent resolution
 
-Cron jobs map job `name` prefix to target persistent agents:
+Each cron job's target persistent agent is read from its `agent_id`
+field (configured per-job in `~/.metasphere/schedule/jobs.json`).
+`resolve_target_agent(job)` returns `"@" + (job.agent_id or "main")` —
+no name-prefix magic. Operators set `agent_id` explicitly per job at
+configure time.
 
-- `research-monitor:FOO` → `@research-FOO`
-- `polymarket:*` → `@polymarket`
-- `spot:autonomous-exploration*` → `@explorer`
-- `rage-changelog*` → `@rage-changelog`
-- `Morning briefing*` → `@briefing`
-
-If target has `MISSION.md`, uses `metasphere-wake` to start + inject. Else falls back to `metasphere-spawn` or plain `messages send`.
+If the target has `MISSION.md`, uses `metasphere-wake` to start + inject.
+Else falls back to `metasphere-spawn` or plain `messages send`.
 
 ### Files read/written
 
