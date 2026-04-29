@@ -18,7 +18,7 @@ def test_parse_single_directive():
     content = """\
 ---
 date: 2026-04-12
-source: @julian
+source: @user
 expires: 2026-04-19
 text: Do NOT work on model diversity.
 """
@@ -26,7 +26,7 @@ text: Do NOT work on model diversity.
     assert len(result) == 1
     d = result[0]
     assert d.date == "2026-04-12"
-    assert d.source == "@julian"
+    assert d.source == "@user"
     assert d.expires == "2026-04-19"
     assert d.text == "Do NOT work on model diversity."
 
@@ -35,7 +35,7 @@ def test_parse_multiple_directives():
     content = """\
 ---
 date: 2026-04-10
-source: @julian
+source: @user
 text: Focus on consolidate fixes.
 ---
 date: 2026-04-11
@@ -43,7 +43,7 @@ source: @orchestrator
 text: All agents prefer Python CLI over bash scripts.
 ---
 date: 2026-04-12
-source: @julian
+source: @user
 text: No model diversity work.
 """
     result = _dir.parse_directives(content)
@@ -57,7 +57,7 @@ def test_parse_multiline_text():
     content = """\
 ---
 date: 2026-04-12
-source: @julian
+source: @user
 text: First line of the directive.
   Second line continues here.
   Third line as well.
@@ -73,7 +73,7 @@ def test_parse_no_expires():
     content = """\
 ---
 date: 2026-04-12
-source: @julian
+source: @user
 text: Permanent directive.
 """
     result = _dir.parse_directives(content)
@@ -109,12 +109,12 @@ def test_load_filters_expired(tmp_paths):
     content = """\
 ---
 date: 2026-04-10
-source: @julian
+source: @user
 expires: 2026-04-11
 text: This expired.
 ---
 date: 2026-04-12
-source: @julian
+source: @user
 text: This is active.
 """
     (tmp_paths.project_root / "DIRECTIVES.yaml").write_text(content)
@@ -136,8 +136,8 @@ def test_load_respects_max_n(tmp_paths):
 # ---------- add ----------
 
 def test_add_creates_file(tmp_paths):
-    d = _dir.add_directive(tmp_paths, "Test directive", source="@julian")
-    assert d.source == "@julian"
+    d = _dir.add_directive(tmp_paths, "Test directive", source="@user")
+    assert d.source == "@user"
     assert d.text == "Test directive"
     fpath = tmp_paths.project_root / "DIRECTIVES.yaml"
     assert fpath.exists()
@@ -147,7 +147,7 @@ def test_add_creates_file(tmp_paths):
 
 
 def test_add_appends(tmp_paths):
-    _dir.add_directive(tmp_paths, "First", source="@julian")
+    _dir.add_directive(tmp_paths, "First", source="@user")
     _dir.add_directive(tmp_paths, "Second", source="@orchestrator")
     reloaded = _dir.load_directives(tmp_paths)
     assert len(reloaded) == 2
@@ -162,8 +162,8 @@ def test_render_empty(tmp_paths):
 
 
 def test_render_formats_correctly(tmp_paths):
-    _dir.add_directive(tmp_paths, "No model diversity", source="@julian")
+    _dir.add_directive(tmp_paths, "No model diversity", source="@user")
     output = _dir.render_directives(tmp_paths)
     assert "## Directives (broadcast)" in output
-    assert "@julian" in output
+    assert "@user" in output
     assert "No model diversity" in output
