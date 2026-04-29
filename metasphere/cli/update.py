@@ -8,6 +8,7 @@ Subcommand surface::
     metasphere update --disable          # turn auto-update off + unregister job
     metasphere update --status           # print current config + last result
     metasphere update --register-job     # install/refresh cron job from current config
+    metasphere update --templates        # interactive opt-in for drifted shipped templates
 
 The actual update flow lives in :mod:`metasphere.update`. This module is
 just an argv parser.
@@ -62,6 +63,10 @@ def _run(quiet: bool) -> int:
     return 0 if result.ok else 1
 
 
+def _templates() -> int:
+    return _update.run_templates_interactive()
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in ("-h", "--help"):
@@ -87,6 +92,8 @@ def main(argv: list[str] | None = None) -> int:
         return _status()
     if head == "--register-job":
         return _register_job()
+    if head == "--templates":
+        return _templates()
     if head in ("run", "now"):
         return _run(quiet=quiet)
 

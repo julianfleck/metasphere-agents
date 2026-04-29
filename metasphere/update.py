@@ -758,6 +758,22 @@ def run_update(
             _record_result(paths, result, cfg, notify_sender)
             return result
 
+    # Template drift check (warn-only). Surfaces shipped templates that
+    # differ from the operator's local copies under ~/.metasphere/.
+    # Operator opts in via `metasphere update --templates`; auto-update
+    # never overwrites without explicit consent.
+    try:
+        drifted = detect_drift(paths=paths, repo=repo)
+        if drifted:
+            log(
+                f"auto-update: {len(drifted)} template(s) have drift. "
+                f"Run 'metasphere update --templates' to opt in (with backups)."
+            )
+            for entry in drifted:
+                log(f"  - {entry.label}: shipped {entry.src_lines}L vs local {entry.dest_lines}L")
+    except Exception as e:
+        log(f"auto-update: drift detection warning: {e}")
+
     result = UpdateResult(
         ok=True,
         old_hash=old,
@@ -846,3 +862,199 @@ def status_text(paths: Paths | None = None) -> str:
     except Exception as e:  # pragma: no cover - defensive
         lines.append(f"  cron job:        (error: {e})")
     return "\n".join(lines) + "\n"
+
+
+# ---------- template drift detection ----------
+#
+# Shipped templates under ``<repo>/templates/`` get seeded into
+# ``~/.metasphere/`` on first install. Operators may then customize
+# their local copies. When the repo's templates evolve (new sections,
+# fixes, etc.), the operator's copy "drifts" from shipped — we want to
+# surface that without ever overwriting without explicit consent.
+#
+# Two surfaces exposed:
+#   - :func:`detect_drift` — pure detection, returns list of entries.
+#     Used by :func:`run_update` for warn-only aggregation.
+#   - :func:`run_templates_interactive` — operator-facing prompt with
+#     keep / overwrite / diff per drifted file. Wired to
+#     ``metasphere update --templates``.
+
+
+@dataclass
+class DriftEntry:
+    """One template-vs-local pair that differs by sha256."""
+    src: Path           # shipped template path under <repo>/templates/
+    dest: Path          # local copy under ~/.metasphere/
+    label: str          # short human-readable name for log lines
+    src_lines: int
+    dest_lines: int
+
+
+def _hash_file(p: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _agent_role(agent_dir: Path, paths: Paths) -> Optional[str]:
+    """Resolve an agent's role for drift matching against templates/agents/<role>/.
+
+    @orchestrator is hardcoded to "orchestrator" since install.sh seeds it
+    directly without going through the spec system. Other agents are
+    resolved from their ``spec`` file (written by ``specs.seed_agent``);
+    if the file is missing or the spec can't be loaded, the agent is
+    skipped silently (legacy hand-created agents).
+    """
+    if agent_dir.name == "@orchestrator":
+        return "orchestrator"
+    spec_file = agent_dir / "spec"
+    if not spec_file.is_file():
+        return None
+    try:
+        spec_name = spec_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not spec_name:
+        return None
+    try:
+        from .specs import get_spec
+        spec = get_spec(spec_name, paths=paths)
+    except Exception:
+        return None
+    if spec is None:
+        return None
+    return spec.role
+
+
+def _drift_pairs(paths: Paths, repo: Path) -> list[tuple[Path, Path, str]]:
+    """Return the list of (src, dest, label) pairs to drift-check."""
+    pairs: list[tuple[Path, Path, str]] = []
+
+    # User manual at ~/.metasphere/CLAUDE.md
+    src = repo / "templates" / "install" / "CLAUDE.md"
+    if src.is_file():
+        pairs.append((src, paths.root / "CLAUDE.md", "~/.metasphere/CLAUDE.md"))
+
+    # Per-agent AGENTS.md, matched by spec.role -> templates/agents/<role>/
+    agents_dir = paths.root / "agents"
+    if agents_dir.is_dir():
+        for agent_subdir in sorted(agents_dir.iterdir()):
+            if not agent_subdir.is_dir() or not agent_subdir.name.startswith("@"):
+                continue
+            role = _agent_role(agent_subdir, paths)
+            if role is None:
+                continue
+            template = repo / "templates" / "agents" / role / "AGENTS.md"
+            if not template.is_file():
+                continue
+            local = agent_subdir / "AGENTS.md"
+            if not local.is_file():
+                continue
+            pairs.append((template, local, f"{agent_subdir.name}/AGENTS.md"))
+
+    return pairs
+
+
+def detect_drift(paths: Paths | None = None, repo: Path | None = None) -> list[DriftEntry]:
+    """Walk shipped templates against local files. Return drifted entries."""
+    paths = paths or resolve()
+    repo = repo or _find_repo(paths)
+    drifted: list[DriftEntry] = []
+    for src, dest, label in _drift_pairs(paths, repo):
+        try:
+            if _hash_file(src) == _hash_file(dest):
+                continue
+            src_lines = sum(1 for _ in src.read_text(encoding="utf-8").splitlines())
+            dest_lines = sum(1 for _ in dest.read_text(encoding="utf-8").splitlines())
+        except OSError:
+            continue
+        drifted.append(DriftEntry(
+            src=src, dest=dest, label=label,
+            src_lines=src_lines, dest_lines=dest_lines,
+        ))
+    return drifted
+
+
+def run_templates_interactive(
+    paths: Paths | None = None,
+    repo: Path | None = None,
+    *,
+    input_fn: Callable[[str], str] = input,
+    diff_runner: Callable[[Path, Path], None] | None = None,
+) -> int:
+    """Interactive ``metasphere update --templates`` flow.
+
+    For each drifted template→local pair, prompt the operator:
+      k → keep local (default), skip
+      o → backup local to ``<dest>.bak-<unix>``, then copy shipped over
+      d → run ``diff -u`` paged, then re-prompt
+
+    Always preserves local without explicit ``o`` consent. Returns 0 on
+    success (regardless of whether anything was overwritten); non-zero
+    only if drift detection itself errored.
+
+    ``input_fn`` and ``diff_runner`` are injectable for tests.
+    """
+    paths = paths or resolve()
+    repo = repo or _find_repo(paths)
+    drifted = detect_drift(paths=paths, repo=repo)
+    if not drifted:
+        print("No template drift detected.")
+        return 0
+
+    print(f"{len(drifted)} template(s) have drift:")
+    for entry in drifted:
+        print(f"  - {entry.label}: shipped {entry.src_lines}L vs local {entry.dest_lines}L")
+    print()
+
+    def _default_diff(local: Path, shipped: Path) -> None:
+        # Run diff -u; pager if available, otherwise direct stdout.
+        pager = os.environ.get("PAGER", "less -R")
+        try:
+            diff_proc = subprocess.Popen(
+                ["diff", "-u", str(local), str(shipped)],
+                stdout=subprocess.PIPE,
+            )
+            pager_argv = pager.split()
+            pager_proc = subprocess.Popen(pager_argv, stdin=diff_proc.stdout)
+            diff_proc.stdout.close()  # type: ignore[union-attr]
+            pager_proc.communicate()
+        except (OSError, subprocess.SubprocessError):
+            # Fallback: print diff direct.
+            subprocess.call(["diff", "-u", str(local), str(shipped)])
+
+    diff_runner = diff_runner or _default_diff
+
+    for entry in drifted:
+        while True:
+            print(f"DRIFT: {entry.label}")
+            print(f"  shipped:  {entry.src} ({entry.src_lines} lines)")
+            print(f"  local:    {entry.dest} ({entry.dest_lines} lines)")
+            try:
+                choice = input_fn(
+                    "  shipped template differs. (k)eep mine [default], (o)verwrite, (d)iff? "
+                ).strip().lower()
+            except EOFError:
+                choice = "k"
+            if not choice:
+                choice = "k"
+            if choice == "k":
+                print(f"  kept local {entry.label}")
+                print()
+                break
+            if choice == "o":
+                ts = int(time.time())
+                backup = entry.dest.with_name(entry.dest.name + f".bak-{ts}")
+                shutil.copy2(entry.dest, backup)
+                shutil.copy2(entry.src, entry.dest)
+                print(f"  overwrote {entry.label} (backup at {backup})")
+                print()
+                break
+            if choice == "d":
+                diff_runner(entry.dest, entry.src)
+                continue
+            print("  invalid choice; expected k, o, or d")
+    return 0
