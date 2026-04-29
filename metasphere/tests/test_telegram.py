@@ -814,7 +814,7 @@ def _patch_handle_update(monkeypatch, tmp_path):
 
 
 def test_handle_update_photo_with_caption_injects_attachment_block(tmp_path, monkeypatch):
-    """Simulated trace: Julian sends a photo with caption 'look at this'.
+    """Simulated trace: the operator sends a photo with caption 'look at this'.
     The handler must (1) download the largest thumbnail, (2) inject a
     payload that contains BOTH the caption and the attachment block
     pointing at the saved path.
@@ -1056,7 +1056,7 @@ def test_handle_update_emits_debug_log_on_attachment_path(tmp_path, monkeypatch)
     """A real-style photo payload produces a post_parse + pre_inject
     pair in the debug log, even when the download path stubs out to
     fake bytes. Critical for the open incident: lets us see the raw
-    msg keys + parse result on Julian's next send.
+    msg keys + parse result on the operator's next send.
     """
     http_log, tmux_log = _patch_handle_update(monkeypatch, tmp_path)
     debug_log = tmp_path / "telegram_debug.log"

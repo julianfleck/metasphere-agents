@@ -79,7 +79,7 @@ The harness runs three independent systemd services plus an orchestrator REPL ru
 
 ```mermaid
 flowchart LR
-    U((Julian)) -- message --> TG[Telegram Bot API]
+    U((User)) -- message --> TG[Telegram Bot API]
     TG -- getUpdates --> GW[gateway daemon\n telegram.poller.run_poll_iteration]
     GW -- parse+download attachments --> ATT[~/.metasphere/attachments/]
     GW -- inject --> TMUX[tmux: metasphere-orchestrator\n claude REPL]

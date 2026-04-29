@@ -101,7 +101,7 @@ class Update:
             }
 
         We surface the *new* reaction list as the authoritative set (i.e.
-        what Julian now shows on the message), because the heartbeat
+        what the operator now shows on the message), because the heartbeat
         renderer only cares about the current state, not the diff.
         """
         mr = payload.get("message_reaction") or {}

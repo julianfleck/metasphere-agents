@@ -119,7 +119,7 @@ def test_should_skip_silent_tick():
 
 def test_should_skip_silent_tick_prefix_variants():
     """Regression 2026-04-16: ~30x 'Silent tick at HH:MMZ' messages
-    reached Julian's phone because the original suppression regex
+    reached the operator's phone because the original suppression regex
     required a full-line match. Prefix match now covers every
     placeholder the orchestrator's persona might emit.
     """
@@ -137,8 +137,8 @@ def test_should_skip_silent_tick_prefix_variants():
     # With a trailing clock / scope / mood-adverb — the exact forms that
     # leaked overnight.
     assert skip("Silent tick at 05:07Z.") is True
-    assert skip("Silent tick. Idle, waiting on Julian's morning activity.") is True
-    assert skip("Idle, waiting on Julian's morning activity.") is True
+    assert skip("Silent tick. Idle, waiting on the operator's morning activity.") is True
+    assert skip("Idle, waiting on the operator's morning activity.") is True
     assert skip("Nothing new to report — standing by.") is True
     # Case-insensitive.
     assert skip("SILENT TICK AT 05:07Z") is True

@@ -1,6 +1,6 @@
 """Tests for ``metasphere restart`` (metasphere/cli/restart.py).
 
-Wraps the long-form recipe Julian was hand-typing
+Wraps the long-form recipe operators were hand-typing
 (``systemctl --user restart metasphere-{heartbeat,gateway,schedule}`` +
 ``tmux kill-session`` + ``metasphere agent wake``).
 """

@@ -219,7 +219,7 @@ def test_ping_persistent_agent_sends_query(repo, tmp_paths):
 
 
 def test_ping_routes_to_project_lead_before_assignee(repo, tmp_paths):
-    """Julian 2026-04-15T08:55Z: when a task's project has a registered
+    """Operator-flagged 2026-04-15T08:55Z: when a task's project has a registered
     lead, the stale-task !query routes to that lead, not the task's
     ``assigned_to``. Otherwise external collaborators' tasks spam the
     project owner.
@@ -260,7 +260,7 @@ def test_ping_routes_to_project_lead_before_assignee(repo, tmp_paths):
 
 
 def test_paused_task_is_terminal_not_stale(repo, tmp_paths):
-    """Julian 2026-04-15T08:55Z: a task with ``status: paused`` +
+    """Operator-flagged 2026-04-15T08:55Z: a task with ``status: paused`` +
     old ``updated_at`` + an assignee set MUST classify as PAUSED, not
     STALE. Before PR #11 item 5 it came out STALE and re-escalated
     every 15-min cycle.

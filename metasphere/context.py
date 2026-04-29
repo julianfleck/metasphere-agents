@@ -341,7 +341,7 @@ def _render_memory_fts(paths: Paths, agent: str) -> str:
 
     Replaced the token-overlap-only path on 2026-04-17 because the
     near-static query (task file + project name) produced identical
-    results every turn — Julian flagged the "noise" at 22:16Z.
+    results every turn — operator-flagged the "noise" at 22:16Z.
 
     Now: HybridStrategy(CamStrategy + TokenOverlapStrategy) with a
     turn-varying signal injected into the query so ranking shifts.

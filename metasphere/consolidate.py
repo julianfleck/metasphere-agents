@@ -375,7 +375,7 @@ def classify_task(
     # the task on hold, and the consolidator should stop pinging until
     # the status is manually changed. Must be checked BEFORE the stale
     # window so a paused task doesn't get re-escalated every cycle
-    # (the bug Julian flagged 2026-04-15T08:55Z that drove 8
+    # (the bug operator-flagged 2026-04-15T08:55Z that drove 8
     # STALE→escalated-user events per 15-min cycle on his worldwire
     # tasks).
     if status.startswith("paused"):
@@ -495,8 +495,8 @@ def _last_update_line(body: str) -> str:
 def _route_ping_target(task: _tasks.Task, paths: Paths) -> str:
     """Resolve the preferred recipient for a stale-task ``!query``.
 
-    Per Julian 2026-04-15T08:55Z: route to the project's lead first so
-    external collaborators don't spam Julian's view with pings for
+    Per operator directive (2026-04-15T08:55Z): route to the project's lead first so
+    external collaborators don't spam the operator's view with pings for
     worldwire tasks he doesn't own. Falls back to the task's
     ``assigned_to`` only when the project has no lead (or no
     project at all).

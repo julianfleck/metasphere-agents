@@ -21,7 +21,7 @@ Behavior:
     untouched. Unknown agents get a suggestion of near matches via
     :mod:`difflib`.
 
-Wraps the long-form recipe Julian was hand-typing (``systemctl --user
+Wraps the long-form recipe operators were hand-typing (``systemctl --user
 restart metasphere-{heartbeat,gateway,schedule}`` + per-agent
 ``tmux kill-session`` + manual ``metasphere agent wake``).
 """

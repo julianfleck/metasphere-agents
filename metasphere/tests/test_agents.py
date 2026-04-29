@@ -658,7 +658,7 @@ def test_reap_dormant_unparseable_last_active_falls_back_to_tmux(tmp_paths: Path
 def test_reap_dormant_exempts_orchestrator_unconditionally(tmp_paths: Paths):
     """@orchestrator is never time-reaped. Repro: 2026-04-25T19:23:05Z
     evt-1777144985427 logged 'orchestrator dormant after 86466s idle'
-    and killed the active session despite Julian actively chatting.
+    and killed the active session despite the operator actively chatting.
     Crash detection (reap_crashed) and explicit kills still apply, but
     the dormancy daemon must never transition the resident agent on
     any idle threshold — even with NO last_active sidecar AND ancient

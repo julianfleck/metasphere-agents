@@ -54,7 +54,7 @@ def _input_line_has_typing(tmux: str, session: str) -> bool:
     """Inspect the pane and return True if the input box shows
     user-typed content (mid-typing human, or mid-inject residue).
 
-    2026-04-16: Julian was typing into the attached orchestrator pane
+    2026-04-16: an operator was typing into the attached orchestrator pane
     when a heartbeat fired ``submit_to_tmux``; its send-keys interleaved
     with his keystrokes and submitted the garbled mess. This guard
     inspects the Claude TUI input box BEFORE firing any send-keys; if
@@ -167,7 +167,7 @@ def submit_to_tmux(
     agent-to-agent wakes, posthook deferred-cmd, restart-wake) opt in;
     manual CLI paths and user-inbound telegram leave it off so the send
     still goes through. Importantly, this does NOT check for client
-    attachment — Julian keeps panes attached for monitoring and
+    attachment — operators keep panes attached for monitoring and
     attach-alone isn't evidence of typing; we guard on actual
     input-buffer content instead.
 
@@ -178,10 +178,10 @@ def submit_to_tmux(
     (heartbeat, agent-to-agent wakes, posthook deferred-cmd,
     restart-wake) set this to False: they must never interrupt a
     running tool call, only user-inbound telegram and manual CLI sends
-    should. 2026-04-16: the always-on Escape was eating Julian's
-    telegram inbound AND his own typing whenever a heartbeat fired
+    should. 2026-04-16: the always-on Escape was eating the operator's
+    telegram inbound AND their own typing whenever a heartbeat fired
     during a mid-tool-call; separating "interrupt intent" from "paste
-    intent" closes that race "once and for all" (his framing).
+    intent" closes that race "once and for all" (their framing).
     """
     try:
         tmux = _find_tmux()
@@ -205,7 +205,7 @@ def submit_to_tmux(
         # than clobbering it. Claude Code queues user-turns during an
         # active turn and processes them in order, so this is safe.
         # On clean empty input, C-m is a no-op (no spurious turn).
-        # 2026-04-20: Julian's suggestion — pre-C-m preserves legit
+        # 2026-04-20: the operator's suggestion — pre-C-m preserves legit
         # queued content instead of overwriting it.
         subprocess.run(
             [tmux, "send-keys", "-t", session, "C-m"],
@@ -230,8 +230,8 @@ def submit_to_tmux(
         # placeholder, the auto-path can't clean it up — but the
         # submit_watchdog daemon handles that asynchronously.
         if escape_prefix:
-            # SINGLE Escape = interrupt running turn (Julian's
-            # Claude Code keybinding reference, 2026-04-16). Esc Esc
+            # SINGLE Escape = interrupt running turn (operator-confirmed
+            # against the Claude Code keybinding reference, 2026-04-16). Esc Esc
             # opens the Rewind/Undo menu — we were typing into THAT
             # menu's filter the whole time, which explains the
             # "list of messages flashing" symptom. Never Escape×2

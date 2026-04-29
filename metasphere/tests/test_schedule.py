@@ -194,7 +194,7 @@ def test_dispatch_prefers_wake_persistent_when_global_mission_exists(tmp_paths):
 def test_dispatch_wakes_project_scoped_persistent_agent(tmp_paths):
     """Project-scoped research agents live under
     ``projects/<proj>/agents/@name/MISSION.md``. Dispatching must find
-    them too, or @research-* jobs pile up unread (Julian's bug report)."""
+    them too, or @research-* jobs pile up unread (the operator's bug report)."""
     target = "@research-brand-mentions"
     proj_agent_dir = tmp_paths.project_agent_dir("research", target)
     proj_agent_dir.mkdir(parents=True, exist_ok=True)
