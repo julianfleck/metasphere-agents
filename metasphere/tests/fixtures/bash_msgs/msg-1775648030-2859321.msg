@@ -7,10 +7,10 @@ status: read
 scope: /
 created: 2026-04-08T11:33:50Z
 read_at: 2026-04-08T11:56:34Z
-replied_at: 
-completed_at: 
-reply_to: 
-last_pinged_at: 
+replied_at:
+completed_at:
+reply_to:
+last_pinged_at:
 ping_count: 0
 ---
-stale task review: architectural-restriction-root-orchestrator-delegate-only-20260406 (unowned) — original: Architectural restriction: root orchestrator delegate-only, last update: 2026-04-07T03:51:00Z [@orchestrator] Created task, ping_count=0
+stale task review: example-task-id-beta (unowned) — original: Second synthetic task title, last update: 2026-04-07T03:51:00Z [@orchestrator] Created task, ping_count=0
