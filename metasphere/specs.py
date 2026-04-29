@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import logging
+import os
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -124,10 +125,18 @@ def get_spec(name: str, paths: Paths | None = None) -> Optional[AgentSpec]:
 # ---------------------------------------------------------------------------
 
 def _substitute(text: str, variables: dict[str, str]) -> str:
-    """Replace {{variable}} placeholders in text."""
-    for key, value in variables.items():
-        text = text.replace("{{" + key + "}}", value)
-    return text
+    """Replace ``{{variable}}`` placeholders in text.
+
+    Tolerates both ``{{key}}`` and ``{{ key }}`` (and any whitespace
+    around the key) so templates can use whichever style reads better
+    in their context. Existing specs use ``{{key}}``; the install/
+    projects/ templates use ``{{ key }}`` for human readability.
+    """
+    pattern = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+    return pattern.sub(
+        lambda m: variables.get(m.group(1), m.group(0)),
+        text,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +169,77 @@ def _find_agents_md_template(role: str) -> Optional[Path]:
         if candidate.is_file():
             return candidate
     return None
+
+
+def _find_user_md_template() -> Optional[Path]:
+    """Locate the shipped USER.md template for project-level seeding.
+
+    Same search order as :func:`_find_agents_md_template`. Returns
+    ``None`` if no template ships.
+    """
+    candidates = []
+    pkg_repo_root = Path(__file__).resolve().parent.parent
+    candidates.append(pkg_repo_root / "templates" / "install" / "projects" / "USER.md.template")
+    try:
+        env_root = Path(resolve().project_root)
+        if env_root and env_root != pkg_repo_root:
+            candidates.append(env_root / "templates" / "install" / "projects" / "USER.md.template")
+    except Exception:
+        pass
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _seed_project_user_md(project_name: str, project_goal: str, paths: Paths) -> Optional[Path]:
+    """Ensure ``~/.metasphere/projects/<project>/USER.md`` exists.
+
+    Idempotent: returns the path without rewriting if already present.
+    Seeds from the shipped template at
+    ``templates/install/projects/USER.md.template`` with placeholder
+    substitution if missing. Returns ``None`` if no template ships.
+    """
+    project_root = paths.root / "projects" / project_name
+    user_md = project_root / "USER.md"
+    if user_md.is_file():
+        return user_md
+    template = _find_user_md_template()
+    if template is None:
+        return None
+    project_root.mkdir(parents=True, exist_ok=True)
+    variables = {
+        "project_name": project_name,
+        "project_goal": project_goal or "(no goal set)",
+    }
+    content = _substitute(template.read_text(encoding="utf-8"), variables)
+    atomic_write_text(user_md, content)
+    logger.info("Seeded ~/.metasphere/projects/%s/USER.md from template", project_name)
+    return user_md
+
+
+def _link_agent_user_md(agent_dir: Path, project_user_md: Path) -> None:
+    """Symlink ``agent_dir/USER.md`` to the project-level USER.md.
+
+    The symlink lets every agent on the project read one source of
+    truth — edits to the project USER.md propagate without re-seeding.
+    Operators who want a per-agent override can replace the symlink
+    with a real file.
+
+    No-op if the agent already has a USER.md (real file or symlink).
+    """
+    dest = agent_dir / "USER.md"
+    if dest.exists() or dest.is_symlink():
+        return
+    try:
+        rel_target = os.path.relpath(project_user_md, agent_dir)
+    except ValueError:
+        rel_target = str(project_user_md)
+    try:
+        os.symlink(rel_target, dest)
+        logger.info("Linked %s/USER.md -> %s", agent_dir.name, rel_target)
+    except OSError as e:
+        logger.warning("Failed to symlink USER.md for %s: %s", agent_dir.name, e)
 
 
 def seed_agent(
@@ -226,6 +306,19 @@ def seed_agent(
             content = _substitute(template_path.read_text(encoding="utf-8"), variables)
             atomic_write_text(agents_md_dest, content)
             logger.info("Seeded %s/AGENTS.md from templates/agents/%s/", agent_id, spec.role)
+
+    # --- USER.md (project-level team description, symlinked into agent dir) ---
+    # Project-scoped agents share a single USER.md per project at
+    # ~/.metasphere/projects/<project>/USER.md. agent_dir/USER.md is a
+    # symlink to it so edits propagate without re-seeding. The
+    # project-level file gets created from the shipped template on
+    # first agent spawn; subsequent spawns reuse it. Root-scope agents
+    # (project_name unset) are left to install.sh's heredoc-seed for
+    # @orchestrator/USER.md describing the human operator.
+    if project_name:
+        project_user_md = _seed_project_user_md(project_name, project_goal, paths)
+        if project_user_md is not None:
+            _link_agent_user_md(agent_dir, project_user_md)
 
     # --- persona-index.md (generated, not from spec) ---
     index_path = agent_dir / "persona-index.md"
