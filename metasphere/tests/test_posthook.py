@@ -624,3 +624,48 @@ def test_cli_posthook_dry_run_prints_json(tmp_paths: Paths, monkeypatch, capsys)
     assert summary["would_send"] is True
     # Dry-run must not have written dedupe state.
     assert not (tmp_paths.state / "posthook_last_sent").exists()
+
+
+# ---------- _check_deferred_command project-scope resolution ----------
+
+def test_check_deferred_command_uses_project_scoped_session(tmp_paths: Paths):
+    """Regression: when a project-scoped agent (e.g. research-monitor)
+    requests ``/exit`` via ``metasphere session exit-self``, the
+    deferred-cmd injection must target the project-aware tmux session
+    name, not the bare ``metasphere-<agent>`` form. Bare-name resolution
+    silently no-ops at ``submit_to_tmux`` because the project-prefixed
+    session does not match — leaving the agent stuck in an idle REPL
+    (the cron-fired-zombie pattern this primitive was built to fix).
+    """
+    from metasphere.agents import AgentRecord
+
+    # Project-scoped @brand-mentions lives in
+    # metasphere-research-brand-mentions, NOT metasphere-brand-mentions.
+    rec = AgentRecord(
+        name="@brand-mentions",
+        scope="",
+        parent="",
+        status="",
+        spawned_at="",
+        project="research",
+    )
+
+    # Drop a deferred-cmd marker as if exit-self had just written it.
+    (tmp_paths.state).mkdir(parents=True, exist_ok=True)
+    marker = tmp_paths.state / "brand-mentions_deferred_cmd"
+    marker.write_text("/exit\n", encoding="utf-8")
+
+    with mock.patch(
+        "metasphere.session.list_agents", return_value=[rec]
+    ), mock.patch(
+        "metasphere.tmux.submit_to_tmux", return_value=True
+    ) as submit:
+        posthook._check_deferred_command("@brand-mentions", tmp_paths)
+
+    submit.assert_called_once()
+    session_arg = submit.call_args.args[0]
+    assert session_arg == "metasphere-research-brand-mentions", (
+        f"expected project-aware session name, got {session_arg!r}"
+    )
+    # Marker must be consumed regardless of project scope.
+    assert not marker.exists()

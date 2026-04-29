@@ -143,6 +143,58 @@ def test_one_arg_known_agent_kills_and_respawns(capsys, monkeypatch):
     assert "wake_persistent ok" in out
 
 
+def test_restart_agent_uses_project_scoped_session(monkeypatch):
+    """Regression: ``metasphere restart @<project-scoped-agent>`` must
+    look up the project-aware tmux session name. With bare-name
+    resolution the existing session goes undetected, the kill is
+    skipped, and ``wake_persistent`` either spawns a duplicate or
+    fails on the conflict. Sister-fix to the posthook deferred-cmd
+    resolution bug.
+    """
+    from metasphere.agents import AgentRecord
+    from metasphere.cli import restart as R
+
+    rec = AgentRecord(
+        name="@brand-mentions",
+        scope="",
+        parent="",
+        status="",
+        spawned_at="",
+        project="research",
+    )
+
+    sessions_checked: list[str] = []
+    sessions_killed: list[str] = []
+
+    def fake_alive(name: str) -> bool:
+        sessions_checked.append(name)
+        return True  # pretend the project-scoped session is up
+
+    def fake_kill(name: str) -> bool:
+        sessions_killed.append(name)
+        return True
+
+    def fake_wake(agent_id, paths=None):
+        return None
+
+    paths = mock.MagicMock()
+    monkeypatch.setattr("metasphere.session.list_agents", lambda: [rec])
+    monkeypatch.setattr(R._agents, "session_alive", fake_alive)
+    monkeypatch.setattr(R._agents, "wake_persistent", fake_wake)
+    monkeypatch.setattr(R, "_tmux_kill", fake_kill)
+
+    ok, msg = R._restart_agent_session("@brand-mentions", paths)
+
+    assert ok is True
+    assert sessions_checked == ["metasphere-research-brand-mentions"], (
+        f"expected project-aware session name, got {sessions_checked!r}"
+    )
+    assert sessions_killed == ["metasphere-research-brand-mentions"], (
+        f"kill must target the same project-aware session, "
+        f"got {sessions_killed!r}"
+    )
+
+
 def test_one_arg_normalizes_bare_name(capsys, monkeypatch):
     """``metasphere restart metasphere-eng`` (no @ prefix) should
     normalize to ``@metasphere-eng`` and find the agent."""

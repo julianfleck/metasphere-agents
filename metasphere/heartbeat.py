@@ -23,7 +23,6 @@ from .agents import (
     AgentRecord,
     list_agents,
     session_alive,
-    session_name_for,
     touch_last_active,
 )
 from .context import build_context
@@ -188,7 +187,14 @@ def invoke_agent_heartbeat(
     """
     paths = paths or resolve()
     context = build_agent_context(agent, paths)
-    session = session_name_for(agent)
+    # Project-scoped agents (e.g. research-monitors) live in
+    # ``metasphere-<project>-<agent>`` sessions; ``session_name_for``
+    # alone misses these. ``_resolve_session`` walks the agent registry
+    # and returns the project-aware name, falling back to the bare form
+    # for ephemerals not in the registry. Lazy-imported to avoid the
+    # session→heartbeat circular at module import.
+    from .session import _resolve_session
+    session = _resolve_session(agent)
 
     if session_alive(session):
         from .tmux import submit_to_tmux as _tmux_submit

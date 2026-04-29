@@ -516,9 +516,15 @@ def _check_deferred_command(agent: str, paths: Paths) -> None:
 
     try:
         from .tmux import submit_to_tmux
-        from .agents import session_name_for
+        from .session import _resolve_session
 
-        session = session_name_for(agent)
+        # Project-scoped agents (research-monitors, etc.) live in
+        # ``metasphere-<project>-<agent>`` sessions. Bare-name
+        # ``session_name_for`` would miss these and target a session
+        # that does not exist; ``_resolve_session`` walks the agent
+        # registry and returns the project-aware name. Same resolver
+        # the CLI ``metasphere session stop|info|restart`` uses.
+        session = _resolve_session(agent)
         # defer_if_busy=True: deferred-cmd injection is automatic; if
         # the pane shows a human mid-typing, drop this tick rather
         # than interleave. The cmd was already "deferred" anyway.

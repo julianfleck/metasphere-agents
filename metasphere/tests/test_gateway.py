@@ -139,6 +139,56 @@ def test_safety_hooks_ignores_prose_listing(tmp_paths: Paths):
     assert send.call_count == 0
 
 
+def test_check_restart_marker_uses_project_scoped_session(tmp_paths: Paths):
+    """Regression: post-restart wake-up injection for a project-scoped
+    agent must target ``metasphere-<project>-<agent>``, not the bare
+    ``metasphere-<agent>`` form. With the bare form, ``session_alive``
+    returns False (real session is project-prefixed) and the wake-msg
+    is silently dropped — agent loses the ``[session restarted]``
+    phrasing telling it why it just respawned. Sister-fix to the
+    posthook deferred-cmd resolution bug.
+    """
+    import json as _json
+    import time as _time
+    from metasphere.agents import AgentRecord
+
+    rec = AgentRecord(
+        name="@brand-mentions",
+        scope="",
+        parent="",
+        status="",
+        spawned_at="",
+        project="research",
+    )
+
+    # Marker is grace-period-aged (10s old, > 8s grace, < 120s stale).
+    now = 1_000_000
+    marker = tmp_paths.state / "restart_pending_brand_mentions.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(_json.dumps({
+        "timestamp": now - 10,
+        "reason": "test",
+        "agent": "@brand-mentions",
+    }), encoding="utf-8")
+
+    captured: dict[str, str] = {}
+
+    def fake_submit(_kind, _msg, *, session, **_kwargs):
+        captured["session"] = session
+        return True
+
+    with patch("metasphere.session.list_agents", return_value=[rec]), \
+         patch.object(gw_watchdog, "session_alive", return_value=True), \
+         patch("metasphere.telegram.inject.submit_to_tmux", fake_submit):
+        result = gw_watchdog._check_restart_marker(marker, tmp_paths, now=now)
+
+    assert result is True
+    assert captured.get("session") == "metasphere-research-brand-mentions", (
+        f"expected project-aware session name, "
+        f"got {captured.get('session')!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Daemon: must NOT exit on a single iteration error
 # ---------------------------------------------------------------------------
