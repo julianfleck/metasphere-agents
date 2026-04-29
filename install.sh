@@ -48,6 +48,67 @@ info() { echo -e "${CYAN}[..]${NC} $*"; }
 warn() { echo -e "${YELLOW}[!!]${NC} $*"; }
 err() { echo -e "${RED}[error]${NC} $*"; exit 1; }
 
+# seed_or_drift_check SRC DEST LABEL
+# Idempotent template seeder with drift handling:
+#   - dest missing  → cp src to dest, log "Seeded LABEL"
+#   - sha256 match  → silent skip (operator's copy = shipped)
+#   - sha256 differ + non-interactive (-y or no tty)
+#                   → WARN "TEMPLATE DRIFT: ..." and skip
+#   - sha256 differ + interactive
+#                   → prompt (k)eep / (o)verwrite / (d)iff?
+#                       k → silent skip with "Kept local LABEL"
+#                       o → backup dest to dest.bak-<unix>, then cp src
+#                       d → diff -u local shipped (paged), re-prompt
+seed_or_drift_check() {
+    local src="$1" dest="$2" label="$3"
+    [[ -f "$src" ]] || return 0
+    if [[ ! -f "$dest" ]]; then
+        cp "$src" "$dest"
+        ok "Seeded $label"
+        return 0
+    fi
+    local src_hash dest_hash
+    src_hash=$(sha256sum "$src" | cut -d' ' -f1)
+    dest_hash=$(sha256sum "$dest" | cut -d' ' -f1)
+    if [[ "$src_hash" == "$dest_hash" ]]; then
+        return 0
+    fi
+    if [[ "$INTERACTIVE" != "true" ]]; then
+        warn "TEMPLATE DRIFT: $label differs from shipped (run 'metasphere update --templates' to opt in)"
+        return 0
+    fi
+    while true; do
+        local src_lines dest_lines
+        src_lines=$(wc -l < "$src")
+        dest_lines=$(wc -l < "$dest")
+        echo
+        warn "TEMPLATE DRIFT: $label"
+        echo "  shipped:  $src ($src_lines lines)"
+        echo "  local:    $dest ($dest_lines lines)"
+        local choice
+        read -rp "  shipped template differs. (k)eep mine [default], (o)verwrite, (d)iff? " choice
+        case "${choice:-k}" in
+            k|K)
+                ok "Kept local $label"
+                return 0
+                ;;
+            o|O)
+                local backup="$dest.bak-$(date +%s)"
+                cp "$dest" "$backup"
+                cp "$src" "$dest"
+                ok "Overwrote $label (backup at $backup)"
+                return 0
+                ;;
+            d|D)
+                diff -u "$dest" "$src" | ${PAGER:-less -R}
+                ;;
+            *)
+                echo "  invalid choice; expected k, o, or d"
+                ;;
+        esac
+    done
+}
+
 echo "Metasphere Agents"
 echo "================="
 echo "Multi-agent orchestration for Claude Code"
@@ -229,12 +290,12 @@ EOF
 
     # Seed ~/.metasphere/CLAUDE.md from the shipped user template.
     # Auto-loaded by Claude Code at orchestrator session start when CWD
-    # is ~/.metasphere/. Idempotent: skips on re-run so operator edits
-    # are preserved.
-    if [[ ! -f "$METASPHERE_DIR/CLAUDE.md" ]] && [[ -f "$SCRIPT_DIR/templates/install/CLAUDE.md" ]]; then
-        cp "$SCRIPT_DIR/templates/install/CLAUDE.md" "$METASPHERE_DIR/CLAUDE.md"
-        ok "Seeded ~/.metasphere/CLAUDE.md from templates/install/"
-    fi
+    # is ~/.metasphere/. Drift-aware: skips on match, prompts on
+    # divergence (interactive), or warns + skips (non-interactive).
+    seed_or_drift_check \
+        "$SCRIPT_DIR/templates/install/CLAUDE.md" \
+        "$METASPHERE_DIR/CLAUDE.md" \
+        "~/.metasphere/CLAUDE.md"
 
     ok "Created $METASPHERE_DIR"
 }
@@ -881,12 +942,13 @@ EOF
 
     # AGENTS.md — runtime guidelines for @orchestrator. Per-type
     # template at templates/agents/orchestrator/AGENTS.md. Read by the
-    # agent at session start (per persona-index). Idempotent: skips if
-    # the file already exists so operator/agent edits are preserved.
-    if [[ ! -f "$agent_dir/AGENTS.md" ]] && [[ -f "$SCRIPT_DIR/templates/agents/orchestrator/AGENTS.md" ]]; then
-        cp "$SCRIPT_DIR/templates/agents/orchestrator/AGENTS.md" "$agent_dir/AGENTS.md"
-        ok "Seeded @orchestrator/AGENTS.md from templates/agents/orchestrator/"
-    fi
+    # agent at session start (per persona-index). Drift-aware: skips on
+    # match, prompts on divergence (interactive), or warns + skips
+    # (non-interactive).
+    seed_or_drift_check \
+        "$SCRIPT_DIR/templates/agents/orchestrator/AGENTS.md" \
+        "$agent_dir/AGENTS.md" \
+        "@orchestrator/AGENTS.md"
 
     # Status
     echo "active: ready" > "$agent_dir/status"
