@@ -1,7 +1,7 @@
 """``metasphere migrate-project-dirs`` — move project-scoped content to the
 canonical ``~/.metasphere/projects/<name>/`` layout.
 
-Per Julian 2026-04-14: the single canonical location for everything
+Per operator directive (2026-04-14:) the single canonical location for everything
 project-scoped is ``~/.metasphere/projects/<name>/``. In practice, two
 legacy patterns exist on disk:
 

@@ -226,7 +226,7 @@ import re as _re
 # Matched as a **prefix** (no trailing ``$``) so a placeholder with an
 # appended clock / scope / mood-adverb still gets suppressed. The
 # 2026-04-16 incident was ~30x "Silent tick at 05:07Z." messages
-# reaching Julian's phone because the original ``^...$`` anchor
+# reaching the operator's phone because the original ``^...$`` anchor
 # required an exact full-line match and the timestamp suffix broke it.
 # Widened per @orchestrator's 07:13Z dispatch.
 _IDLE_TOKEN = "[idle]"

@@ -71,7 +71,7 @@ def test_submit_prefixes_single_escape_before_typing(monkeypatch):
     assert len(escapes) == 1, (
         f"expected exactly ONE Escape (single Escape = interrupt), got {escapes}"
     )
-    # First call is the pre-flush C-m (Julian's 2026-04-20 idea:
+    # First call is the pre-flush C-m (the operator's 2026-04-20 idea:
     # submit any legit pending content as its own user-turn before
     # we paste our new payload).
     assert sendkeys[0][-1] == "C-m", (
@@ -172,7 +172,7 @@ def test_submit_skips_escape_prefix_when_disabled(monkeypatch):
     """Auto-injectors pass ``escape_prefix=False`` so they never interrupt
     a running Claude Code tool call. The initial Escape×2 pre-clear AND
     the fallback Escape at the end must both be suppressed. "Only
-    user-inbound interrupts" (Julian 2026-04-16)."""
+    user-inbound interrupts" (operator-confirmed 2026-04-16)."""
     calls = _capture_calls(monkeypatch)
     T.submit_to_tmux("sess", "hello", escape_prefix=False)
 
@@ -235,11 +235,11 @@ def test_submit_to_tmux_never_raises(monkeypatch):
 
 # --- Input-buffer guard (Layer 2) ------------------------------------------
 #
-# 2026-04-16: Julian was typing into the attached orchestrator pane while a
+# 2026-04-16: an operator was typing into the attached orchestrator pane while a
 # heartbeat fired ``submit_to_tmux``; the heartbeat's send-keys interleaved
 # with his keystrokes and submitted the garbled mess. A fcntl lock cannot
 # help here — human keystrokes go via the tty, bypassing in-process locks.
-# An attach-aware guard (was PR #22) overreached because Julian keeps panes
+# An attach-aware guard (was PR #22) overreached because operators keep panes
 # attached for monitoring. The correct primitive is: inspect the input box
 # and defer when it shows typed content.
 
@@ -304,7 +304,7 @@ def test_input_line_has_typing_false_for_bare_chevron_with_nbsp(monkeypatch):
 
 
 def test_input_line_has_typing_detects_wrapped_multiline_input(monkeypatch):
-    """2026-04-16 regression: when Julian typed a long message that
+    """2026-04-16 regression: when an operator typed a long message that
     Claude Code wrapped across multiple lines, the old heuristic (walk
     last 10 lines looking for ``❯``) missed the continuation lines and
     heartbeats fired mid-typing, interleaving with his keystrokes.
@@ -312,7 +312,7 @@ def test_input_line_has_typing_detects_wrapped_multiline_input(monkeypatch):
     The new border-based heuristic must see ALL content between the two
     ``─────`` borders, even when the first (``❯``) line is pushed far
     above the last 10 lines by continuation wrapping."""
-    wrapped = ["❯ this is a message Julian is typing"]
+    wrapped = ["❯ this is a message the operator is typing"]
     # Push the chevron line well past the last-10-window.
     wrapped += [f"  continuation line {i}" for i in range(15)]
 
@@ -392,7 +392,7 @@ def test_submit_defer_if_busy_proceeds_on_bare_prompt(monkeypatch):
     """When ``defer_if_busy=True`` but the input is empty, the submit
     proceeds normally (Escape×2, type, Enter). Crucially: a client
     being attached to watch the pane is NOT itself a reason to defer
-    — Julian keeps panes attached for monitoring."""
+    — operators keep panes attached for monitoring."""
     calls = _capture_calls(monkeypatch)
     assert T.submit_to_tmux("sess", "hello", defer_if_busy=True) is True
     sendkeys = [c for c in calls if "send-keys" in c]
@@ -494,7 +494,7 @@ def test_submit_polls_until_input_clears_no_retry_c_m(monkeypatch):
 
     # EXACTLY TWO C-m fires — no retry spam.
     # 1. Pre-flush C-m (commits any legit pending content as a
-    #    user-turn, no-op on clean input). Julian 2026-04-20.
+    #    user-turn, no-op on clean input). Operator-confirmed 2026-04-20.
     # 2. Submit C-m (commits the payload we just typed).
     # The previous code fired 1-4 C-m: 1 submit + up to 3 retry-on-dirty.
     # Retries were the bug — they spammed C-m while TUI was still

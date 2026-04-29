@@ -715,7 +715,7 @@ def _session_idle_seconds(session: str) -> Optional[int]:
 # real input arbitrarily — a REPL fielding hooks while the model is
 # thinking writes nothing visible to tmux for minutes at a time. Relying
 # on it alone produced evt-1777144985427 (2026-04-25T19:23:05Z), which
-# reaped @orchestrator's session after 86466s "idle" while Julian was
+# reaped @orchestrator's session after 86466s "idle" while the operator was
 # actively chatting via telegram-inject. ``last_active`` is refreshed by
 # every signal the agent actually processes — UserPromptSubmit, Stop,
 # telegram-inject, heartbeat-tick — so ``reap_dormant`` can see input

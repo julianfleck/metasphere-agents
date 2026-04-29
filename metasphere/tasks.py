@@ -139,7 +139,7 @@ class Task:
 def _canonical_tasks_dirs(paths: "Paths | None" = None) -> list[Path]:
     """Return every ``.tasks/`` dir the system owns.
 
-    Canonical layout (Julian 2026-04-14):
+    Canonical layout (operator-confirmed 2026-04-14):
     - ``~/.metasphere/projects/<name>/.tasks/`` for each registered project
     - ``~/.metasphere/tasks/`` for the global / unscoped bucket
 

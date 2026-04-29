@@ -69,6 +69,12 @@ class Job:
     next_run: int = 0
     command: str = ""
     full_command: str = ""
+    # When True, ``metasphere schedule wire-exit-self`` appends the
+    # session-cleanup stanza to this job's payload_message so the
+    # target agent calls ``metasphere session exit-self`` at the end
+    # of its turn. Set per-job rather than via a global allow-list so
+    # operators opt jobs in/out without editing library code.
+    wants_exit_self_cleanup: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -203,33 +209,19 @@ def cron_should_fire(
 # ---------- target resolution ----------
 
 def resolve_target_agent(job: Job) -> str:
-    """Map a job to its persistent collaborator agent.
+    """Map a job to its persistent collaborator agent via ``agent_id``.
 
-    Map a job to its persistent collaborator agent by name prefix
-    (``@briefing``, ``@polymarket``, ``@research-*``, ``@explorer``,
-    ``@rage-changelog``, etc.).
+    The job's ``agent_id`` field is the single source of truth for
+    routing — whatever name is stored there (sans the leading ``@``)
+    becomes the target. Default ``"main"`` resolves to ``@main``.
+
+    Pre-2026-04-30 versions of this function had hardcoded prefix-match
+    branches (``research-monitor:``, ``polymarket:``, etc.) that
+    overrode ``agent_id``. Those are removed; the spot-side migration
+    in ``scripts/migrate_schedule_agent_ids.py`` rewrites legacy
+    ``agent_id="main"`` jobs to their resolved targets so the
+    simplification is behavior-preserving.
     """
-    name = job.name or ""
-    if name.startswith("research-monitor:"):
-        # Project-scoped: research agents live in projects/research/agents/
-        # under their area name directly — e.g. @brand-mentions, NOT
-        # @research-brand-mentions. This has been fixed twice before
-        # (39f22fc on 2026-04-10, then regressed in 0808693 on 2026-04-11
-        # because a test was asserting the buggy `@research-X` form and
-        # a well-meaning commit "made code match test" instead of the
-        # other way round). If you are tempted to re-add the "@research-"
-        # prefix, first run `ls ~/.metasphere/projects/research/agents/`
-        # and check whether the agents actually have that prefix. As of
-        # 2026-04-12 they do not.
-        return "@" + name[len("research-monitor:"):]
-    if name.startswith("polymarket:"):
-        return "@polymarket"
-    if name.startswith("spot:autonomous-exploration"):
-        return "@explorer"
-    if name.startswith("rage-changelog"):
-        return "@rage-changelog"
-    if name.startswith("Morning briefing"):
-        return "@briefing"
     return "@" + (job.agent_id or "main")
 
 

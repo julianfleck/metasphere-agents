@@ -366,7 +366,7 @@ def _ensure_scaffold(p: Path, *, paths: Optional[Paths] = None,
                       project_name: Optional[str] = None) -> None:
     """Create the per-project data dirs at their canonical location.
 
-    Canonical layout (Julian 2026-04-14): everything project-scoped
+    Canonical layout (operator-confirmed 2026-04-14): everything project-scoped
     lives under ``~/.metasphere/projects/<name>/``. Before PR #10 this
     function created ``.tasks/`` / ``.messages/`` / ``.changelog/`` /
     ``.learnings/`` in the repo itself (``p / ".tasks/active"`` etc.);

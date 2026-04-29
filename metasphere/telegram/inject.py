@@ -36,7 +36,7 @@ def submit_to_tmux(
     user-inbound telegram leaves it False (always fire), restart-wake
     passes True (defer on human typing). *escape_prefix* defaults True
     for user-inbound telegram (clobber any running tool — "only
-    user-inbound interrupts", Julian 2026-04-16); restart-wake passes
+    user-inbound interrupts", operator 2026-04-16); restart-wake passes
     False so it doesn't cut a mid-tool-call on the newly-respawned pane.
     """
     # Telegram usernames are attacker-controlled — sanitise to [\w]+ so

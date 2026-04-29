@@ -48,7 +48,7 @@ _GUARDED_SUBDIRS = (
 #: stays. ``.lock`` is handled in the paired pass below.
 _POLLUTION_EXTS = (".md", ".jsonl", ".bin")
 
-#: Real production chat id for Julian — the only chat that legitimately
+#: Real production chat id for the operator — the only chat that legitimately
 #: appears in ``~/.metasphere/telegram/stream/*.jsonl``. Anything else
 #: in an appended stream tail is a test fixture leaking into live.
 _JULIAN_CHAT_ID = 228838013
@@ -207,7 +207,7 @@ def pytest_sessionfinish(session, exitstatus):
                         tail = f.read()
                 except OSError:
                     continue
-                # Pass 3a: any chat.id other than Julian's real one is
+                # Pass 3a: any chat.id other than the operator's real one is
                 # a fixture. This is allow-list, not deny-list — the
                 # rule doesn't drift when someone adds a new fixture
                 # with a new chat_id.

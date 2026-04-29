@@ -207,7 +207,7 @@ def invoke_agent_heartbeat(
         # running tool call. Paste+Enter without the Escape-prefix;
         # Claude Code queues the keystrokes and processes them when
         # the current tool finishes. "Only user-inbound interrupts"
-        # (Julian 2026-04-16).
+        # (operator-confirmed 2026-04-16).
         ok = _tmux_submit(
             session, context, defer_if_busy=True, escape_prefix=False
         )

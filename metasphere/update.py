@@ -429,7 +429,7 @@ def _git_pull_or_reset(repo: Path, branch: str, runner: GitRunner) -> None:
 
     Refuses to proceed if the working tree has uncommitted changes —
     the fallback is ``git reset --hard``, which silently destroys WIP.
-    Bit Julian on 2026-04-16 (10 files of uncommitted tmux work erased
+    Hit an operator on 2026-04-16 (10 files of uncommitted tmux work erased
     by a wake-triggered auto-update). Caller must commit, stash, or
     explicitly discard before re-running.
 
