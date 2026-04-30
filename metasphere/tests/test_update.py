@@ -137,7 +137,7 @@ def _patch_update_helpers(monkeypatch, *, pull_raises=None, sync_calls=None,
             raise pull_raises
         return None
 
-    def fake_sync(repo, home_dir):
+    def fake_sync(repo, home_dir, paths=None):
         if sync_calls is not None:
             sync_calls.append((repo, home_dir))
 
@@ -813,3 +813,181 @@ def test_cli_templates_dispatch(tmp_paths, monkeypatch):
     rc = cli_update.main(["--templates"])
     assert rc == 0
     assert called.get("yes") is True
+
+
+# ---------- _sync_hook_paths ----------
+
+def test_sync_hook_paths_rewrites_settings_local_json(tmp_paths, tmp_path):
+    """settings.local.json with stale ``scripts/metasphere-posthook``
+    references is rewritten to the current ``<venv>/bin/metasphere
+    hooks <command>`` form. Idempotent re-run rewrites zero files."""
+    # Runtime location: $METASPHERE_DIR/.claude/settings.local.json
+    settings = tmp_paths.root / ".claude" / "settings.local.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        '{\n'
+        '  "permissions": {"allow": ["Bash(git:*)"]},\n'
+        '  "hooks": {\n'
+        '    "UserPromptSubmit": [{\n'
+        '      "matcher": "",\n'
+        '      "hooks": [{"type": "command",\n'
+        '                  "command": "scripts/metasphere-context"}]\n'
+        '    }],\n'
+        '    "Stop": [{\n'
+        '      "matcher": "",\n'
+        '      "hooks": [{"type": "command",\n'
+        '                  "command": "scripts/metasphere-posthook"}]\n'
+        '    }]\n'
+        '  }\n'
+        '}\n'
+    )
+    home = tmp_path / "fake_home"
+    home.mkdir()
+
+    rewrote_count = _update._sync_hook_paths(tmp_paths, home)
+    assert rewrote_count == 1
+
+    import json as _json
+    after = _json.loads(settings.read_text())
+    bin_path = str(tmp_paths.root / "venv" / "bin" / "metasphere")
+    assert after["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"] == \
+        f"{bin_path} hooks context"
+    assert after["hooks"]["Stop"][0]["hooks"][0]["command"] == \
+        f"{bin_path} hooks posthook"
+    # Permissions block preserved.
+    assert after["permissions"]["allow"] == ["Bash(git:*)"]
+
+    # Idempotent: re-run on already-correct file rewrites 0 files.
+    rewrote_again = _update._sync_hook_paths(tmp_paths, home)
+    assert rewrote_again == 0
+
+
+def test_sync_hook_paths_no_settings_file_is_noop(tmp_paths, tmp_path):
+    """No settings.local.json present (stranger install / fresh host)
+    → no-op, no crash, returns 0."""
+    home = tmp_path / "fake_home"
+    home.mkdir()
+    rewrote_count = _update._sync_hook_paths(tmp_paths, home)
+    assert rewrote_count == 0
+    # Function did not create the file or its parent.
+    assert not (tmp_paths.root / ".claude").exists()
+    assert not (home / ".claude").exists()
+
+
+def test_sync_hook_paths_unparseable_settings_is_noop(tmp_paths, tmp_path):
+    """Malformed JSON in settings.local.json → no-op (don't blow away
+    operator's file)."""
+    settings = tmp_paths.root / ".claude" / "settings.local.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text("{ this is not valid json")
+    before = settings.read_text()
+    home = tmp_path / "fake_home"
+    home.mkdir()
+
+    rewrote_count = _update._sync_hook_paths(tmp_paths, home)
+    assert rewrote_count == 0
+    # File preserved as-is.
+    assert settings.read_text() == before
+
+
+def test_sync_hook_paths_rewrites_repo_and_metasphere_dir(tmp_paths, tmp_path):
+    """Both $METASPHERE_DIR/.claude and source-repo/.claude get
+    rewritten when both have stale settings.local.json."""
+    repo = tmp_paths.project_root
+    home = tmp_path / "fake_home"
+    home.mkdir()
+
+    runtime_settings = tmp_paths.root / ".claude" / "settings.local.json"
+    runtime_settings.parent.mkdir(parents=True)
+    runtime_settings.write_text(
+        '{"hooks": {"Stop": [{"matcher": "", '
+        '"hooks": [{"type": "command", "command": "stale/runtime"}]}]}}\n'
+    )
+
+    repo_settings = repo / ".claude" / "settings.local.json"
+    repo_settings.parent.mkdir(parents=True)
+    repo_settings.write_text(
+        '{"hooks": {"Stop": [{"matcher": "", '
+        '"hooks": [{"type": "command", "command": "stale/repo"}]}]}}\n'
+    )
+
+    rewrote_count = _update._sync_hook_paths(tmp_paths, home, repo=repo)
+    assert rewrote_count == 2
+
+    import json as _json
+    bin_path = str(tmp_paths.root / "venv" / "bin" / "metasphere")
+    for sp in (runtime_settings, repo_settings):
+        after = _json.loads(sp.read_text())
+        assert after["hooks"]["Stop"][0]["hooks"][0]["command"] == \
+            f"{bin_path} hooks posthook"
+
+
+def test_run_update_restart_after_pip_reinstall(tmp_paths, monkeypatch):
+    """Restart_daemons must run AFTER _ensure_venv + the pip-reinstall
+    block, not before. Verified via call-order tracking on injected mocks.
+
+    Pre-2026-04-30 the ordering was reversed: restart fired immediately
+    after _sync_claude_integration, then _ensure_venv ran. Hosts that
+    fell behind on updates would restart their daemons against the
+    OLD package, then sit silent until the next update cycle picked
+    up the new bytes.
+    """
+    head_seq = iter(["aaaa1111", "bbbb2222"])
+    responses = {
+        "rev-parse": "",
+        "log": "fix\n",
+        "diff": "metasphere/update.py\npyproject.toml\n",
+    }
+
+    def fake_runner(args):
+        import subprocess
+        if args[0] == "rev-parse":
+            return subprocess.CompletedProcess(args, 0, next(head_seq), "")
+        return subprocess.CompletedProcess(args, 0, responses.get(args[0], ""), "")
+
+    call_order: list[str] = []
+
+    def fake_pull(repo, branch, runner):
+        call_order.append("git_pull")
+
+    def fake_sync(repo, home_dir, paths=None):
+        call_order.append("sync_claude")
+
+    def fake_ensure_venv(paths, repo, log):
+        call_order.append("ensure_venv")
+        return paths.root / "venv" / "bin" / "python"
+
+    def fake_pip(args):
+        call_order.append("pip_install")
+        return 0
+
+    def fake_restart():
+        call_order.append("restart_daemons")
+
+    monkeypatch.setattr(_update, "_git_pull_or_reset", fake_pull)
+    monkeypatch.setattr(_update, "_sync_claude_integration", fake_sync)
+    monkeypatch.setattr(_update, "_restart_daemons", fake_restart)
+    monkeypatch.setattr(_update, "_ensure_venv", fake_ensure_venv)
+    monkeypatch.setattr(_update, "_find_repo", lambda paths: paths.project_root)
+
+    cfg = AutoUpdateConfig(enabled=True)
+    result = _update.run_update(
+        paths=tmp_paths,
+        cfg=cfg,
+        quiet=True,
+        git_runner=fake_runner,
+        pip_runner=fake_pip,
+        test_runner=lambda: True,
+    )
+    assert result.ok is True
+
+    # Order assertions: restart_daemons must come AFTER ensure_venv
+    # and pip_install, not before.
+    assert "ensure_venv" in call_order
+    assert "pip_install" in call_order
+    assert "restart_daemons" in call_order
+    assert call_order.index("ensure_venv") < call_order.index("restart_daemons")
+    assert call_order.index("pip_install") < call_order.index("restart_daemons")
+    # And sync_claude_integration still runs first (for the hook-paths
+    # rewrite that's now bundled into it).
+    assert call_order.index("sync_claude") < call_order.index("ensure_venv")
