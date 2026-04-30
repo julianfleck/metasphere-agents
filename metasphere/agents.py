@@ -870,6 +870,93 @@ def reap_dormant(
 
 
 # ---------------------------------------------------------------------------
+# Ephemeral idle reaper
+#
+# Counterpart to ``reap_dormant``: that handles persistent agents whose
+# tmux session is alive but idle (24h default TTL → status=dormant +
+# kill-session). This handles the ephemeral case — a cron-fired one-shot
+# session whose claude REPL has exited (e.g. after
+# ``metasphere session exit-self``) but whose tmux pane is sitting idle
+# at the shell prompt with no respawn loop. ``reap_dormant`` explicitly
+# skips non-persistent records, so without this sweep zombie panes
+# accumulate indefinitely.
+#
+# Default 30-minute threshold: long enough that an active ephemeral
+# isn't killed mid-task, short enough that zombies clean up within the
+# hour.
+# ---------------------------------------------------------------------------
+
+def reap_ephemeral_idle(
+    paths: Paths | None = None,
+    max_idle_seconds: int = 1800,
+) -> list[str]:
+    """Kill ephemeral agent tmux sessions idle longer than ``max_idle_seconds``.
+
+    Iterates ``tmux list-sessions``, looks up the matching AgentRecord by
+    session name, and kills sessions where:
+    - The record exists (defensive: unknown sessions are left alone — the
+      operator may be using them, or they may belong to another tool).
+    - The record is NOT persistent (persistent agents are reap_dormant's
+      job, and they should stay alive on their own TTL).
+    - The session is not the orchestrator's resident session
+      (``metasphere-orchestrator``) — never reap the resident agent.
+    - tmux ``session_activity`` reports idle > ``max_idle_seconds``.
+
+    Returns the list of killed session names. Per-session failures are
+    swallowed — this runs on a daemon tick and must never abort the
+    gateway loop.
+    """
+    paths = paths or resolve()
+
+    # Build a session-name → AgentRecord map across global + all projects.
+    by_session: dict[str, AgentRecord] = {}
+    for agent in list_agents(paths):
+        by_session[agent.session_name] = agent
+
+    # Resident orchestrator session is hardcoded by the gateway and
+    # imported here lazily to avoid a circular import at module load.
+    from .gateway.session import SESSION_NAME as _ORCH_SESSION
+
+    out: list[str] = []
+    r = _tmux_run("list-sessions", "-F", "#{session_name}")
+    if r.returncode != 0:
+        return out
+
+    for line in r.stdout.splitlines():
+        session = line.strip()
+        if not session.startswith(_SESSION_PREFIX):
+            continue
+        if session == _ORCH_SESSION:
+            continue
+        rec = by_session.get(session)
+        if rec is None:
+            continue
+        if rec.is_persistent:
+            continue
+        idle = _session_idle_seconds(session)
+        if idle is None or idle <= max_idle_seconds:
+            continue
+        _tmux_run("kill-session", "-t", session)
+        try:
+            log_event(
+                "agent.ephemeral_idle.reap",
+                f"{rec.name} ephemeral session {session} killed "
+                f"after {idle}s idle (threshold {max_idle_seconds}s)",
+                agent=rec.name,
+                meta={
+                    "session": session,
+                    "idle_seconds": idle,
+                    "threshold_seconds": max_idle_seconds,
+                },
+                paths=paths,
+            )
+        except Exception:
+            pass
+        out.append(session)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Crash reaper (silent-death detection)
 #
 # Counterpart to ``reap_dormant``: that handles the well-behaved case

@@ -54,22 +54,28 @@ def run_daemon(
     time_fn: Optional[Callable[[], float]] = None,
     reap_dormant_fn: Optional[Callable[[Paths, int], list[str]]] = None,
     reap_crashed_fn: Optional[Callable[[Paths], list[str]]] = None,
+    reap_ephemeral_idle_fn: Optional[Callable[[Paths, int], list[str]]] = None,
+    ephemeral_idle_max_seconds: int = 1800,
 ) -> None:
     """Run the gateway daemon forever.
 
     The injection points (``poll_fn``, ``sleep_fn``, ``time_fn``,
-    ``stop``, ``reap_dormant_fn``, ``reap_crashed_fn``) exist for tests
-    so a single iteration failure can be asserted to NOT exit the
-    daemon. Production callers leave them at None and the daemon never
-    returns.
+    ``stop``, ``reap_dormant_fn``, ``reap_crashed_fn``,
+    ``reap_ephemeral_idle_fn``) exist for tests so a single iteration
+    failure can be asserted to NOT exit the daemon. Production callers
+    leave them at None and the daemon never returns.
 
-    ``dormancy_interval`` is how often ``reap_dormant`` AND
-    ``reap_crashed`` are swept (default 5 min). They share the cadence
-    because both are session-hygiene sweeps with the same per-tick
-    cost shape (O(N) over agent dirs); splitting them would only
-    duplicate the bookkeeping. ``dormancy_max_idle_seconds`` is the
-    per-session idle TTL before a persistent agent is transitioned to
-    ``dormant:`` status and its tmux session killed (default 24h).
+    ``dormancy_interval`` is how often ``reap_dormant``, ``reap_crashed``,
+    AND ``reap_ephemeral_idle`` are swept (default 5 min). They share
+    the cadence because all three are session-hygiene sweeps with the
+    same per-tick cost shape (O(N) over agent dirs / tmux sessions);
+    splitting them would only duplicate the bookkeeping.
+    ``dormancy_max_idle_seconds`` is the per-session idle TTL before a
+    persistent agent is transitioned to ``dormant:`` status and its
+    tmux session killed (default 24h). ``ephemeral_idle_max_seconds``
+    is the shorter idle TTL applied to ephemeral (one-shot, no respawn
+    loop) sessions whose claude REPL has exited but whose pane is
+    sitting at a shell prompt (default 30 min).
     """
     paths = paths or resolve()
     poll_fn = poll_fn or _poll_once
@@ -85,6 +91,11 @@ def run_daemon(
 
         def reap_crashed_fn(p: Paths) -> list[str]:
             return _reap_crashed(p)
+    if reap_ephemeral_idle_fn is None:
+        from ..agents import reap_ephemeral_idle as _reap_ephemeral_idle
+
+        def reap_ephemeral_idle_fn(p: Paths, idle: int) -> list[str]:
+            return _reap_ephemeral_idle(p, max_idle_seconds=idle)
 
     # Refresh harness hash baseline at boot so an existing-on-startup
     # session uses the latest harness as its drift reference.
@@ -213,6 +224,30 @@ def run_daemon(
                     log_event(
                         "supervisor.daemon_error",
                         f"reap_crashed raised: {e}",
+                        agent="@daemon-supervisor",
+                        paths=paths,
+                    )
+                except Exception:
+                    pass
+            # Ephemeral-idle sweep: kills tmux panes belonging to
+            # one-shot agents whose claude REPL has exited (e.g. after
+            # exit-self) and which would otherwise zombie indefinitely
+            # — reap_dormant only handles persistent agents.
+            try:
+                ephemeral = reap_ephemeral_idle_fn(paths, ephemeral_idle_max_seconds)
+                if ephemeral:
+                    log_event(
+                        "agent.ephemeral_idle.reap.batch",
+                        f"reap_ephemeral_idle killed {len(ephemeral)} session(s): {ephemeral}",
+                        agent="@daemon-supervisor",
+                        meta={"sessions": ephemeral},
+                        paths=paths,
+                    )
+            except Exception as e:
+                try:
+                    log_event(
+                        "supervisor.daemon_error",
+                        f"reap_ephemeral_idle raised: {e}",
                         agent="@daemon-supervisor",
                         paths=paths,
                     )

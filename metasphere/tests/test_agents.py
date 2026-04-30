@@ -722,6 +722,182 @@ def test_reap_dormant_exemption_does_not_spare_other_agents(tmp_paths: Paths):
     assert "@sibling-stale" in reaped
 
 
+# ---------------------------------------------------------------------------
+# reap_ephemeral_idle (zombie cron-pane sweeper)
+# ---------------------------------------------------------------------------
+
+
+def _make_ephemeral_dir(tmp_paths: Paths, name: str) -> Path:
+    """Seed an ephemeral agent dir (no MISSION.md → not persistent)."""
+    d = tmp_paths.agents / name
+    d.mkdir(parents=True)
+    (d / "scope").write_text(str(tmp_paths.project_root))
+    (d / "status").write_text("spawned: do stuff\n")
+    return d
+
+
+def test_reap_ephemeral_idle_kills_only_ephemeral_idle_sessions(tmp_paths: Paths):
+    """Mixed bag: persistent-active, persistent-idle, ephemeral-active,
+    ephemeral-idle, orchestrator. Only the ephemeral-idle session is
+    killed by reap_ephemeral_idle. Persistent-idle is reap_dormant's job;
+    persistent-active and orchestrator must never be touched.
+    """
+    _make_persistent(tmp_paths, "@persist-active")
+    _make_persistent(tmp_paths, "@persist-idle")
+    _make_persistent(tmp_paths, "@orchestrator")
+    _make_ephemeral_dir(tmp_paths, "@cron-active")
+    _make_ephemeral_dir(tmp_paths, "@cron-zombie")
+
+    # Idle activity timestamps: tmux returns session_activity as unix
+    # epoch seconds. Anything ancient (1_000_000_000 ≈ 2001) is "idle
+    # ≫ TTL"; anything in the future (2_000_000_000) reads as ~0 idle.
+    activity_by_session = {
+        "metasphere-persist-active": "2000000000",
+        "metasphere-persist-idle": "1000000000",
+        "metasphere-orchestrator": "1000000000",  # still must NOT be reaped
+        "metasphere-cron-active": "2000000000",
+        "metasphere-cron-zombie": "1000000000",
+    }
+    listed_sessions = "\n".join(activity_by_session.keys())
+
+    kill_sessions: list[str] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "list-sessions" in cmd:
+            cp.returncode = 0
+            cp.stdout = listed_sessions + "\n"
+        elif "display-message" in cmd:
+            target = cmd[cmd.index("-t") + 1]
+            cp.returncode = 0
+            cp.stdout = activity_by_session.get(target, "0")
+        elif "kill-session" in cmd:
+            cp.returncode = 0
+            kill_sessions.append(cmd[cmd.index("-t") + 1])
+        else:
+            cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        reaped = agents.reap_ephemeral_idle(
+            paths=tmp_paths, max_idle_seconds=1800
+        )
+
+    assert reaped == ["metasphere-cron-zombie"], (
+        f"expected only cron-zombie reaped, got {reaped}"
+    )
+    assert kill_sessions == ["metasphere-cron-zombie"], (
+        f"expected only cron-zombie killed, got {kill_sessions}"
+    )
+
+
+def test_reap_ephemeral_idle_threshold_just_under_does_not_reap(tmp_paths: Paths):
+    """An ephemeral idle exactly at or just under the threshold must
+    NOT be reaped. The reaper uses strict `>` like reap_dormant — `==`
+    is treated as "still within TTL"."""
+    import time as _real_time
+
+    _make_ephemeral_dir(tmp_paths, "@boundary-low")
+
+    # Activity = now - 1799 seconds → 1799 < 1800 max_idle_seconds.
+    just_under = str(int(_real_time.time()) - 1799)
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "list-sessions" in cmd:
+            cp.returncode = 0
+            cp.stdout = "metasphere-boundary-low\n"
+        elif "display-message" in cmd:
+            cp.returncode = 0
+            cp.stdout = just_under
+        elif "kill-session" in cmd:
+            cp.returncode = 0
+        else:
+            cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        reaped = agents.reap_ephemeral_idle(
+            paths=tmp_paths, max_idle_seconds=1800
+        )
+
+    assert reaped == [], f"under-threshold session must NOT reap, got {reaped}"
+
+
+def test_reap_ephemeral_idle_threshold_just_over_does_reap(tmp_paths: Paths):
+    """An ephemeral idle just past the threshold IS reaped."""
+    import time as _real_time
+
+    _make_ephemeral_dir(tmp_paths, "@boundary-high")
+
+    # Activity = now - 1801 seconds → 1801 > 1800.
+    just_over = str(int(_real_time.time()) - 1801)
+    kill_sessions: list[str] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "list-sessions" in cmd:
+            cp.returncode = 0
+            cp.stdout = "metasphere-boundary-high\n"
+        elif "display-message" in cmd:
+            cp.returncode = 0
+            cp.stdout = just_over
+        elif "kill-session" in cmd:
+            cp.returncode = 0
+            kill_sessions.append(cmd[cmd.index("-t") + 1])
+        else:
+            cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        reaped = agents.reap_ephemeral_idle(
+            paths=tmp_paths, max_idle_seconds=1800
+        )
+
+    assert reaped == ["metasphere-boundary-high"]
+    assert kill_sessions == ["metasphere-boundary-high"]
+
+
+def test_reap_ephemeral_idle_skips_unknown_sessions(tmp_paths: Paths):
+    """A metasphere-prefixed tmux session with no matching AgentRecord
+    (orphan, viewer, hand-rolled) must not be touched. The defensive
+    skip exists so an operator-managed pane isn't surprise-killed by
+    the daemon."""
+    # No agent dirs created → the only thing list_agents returns is empty.
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "list-sessions" in cmd:
+            cp.returncode = 0
+            cp.stdout = "metasphere-mystery-pane\nmetasphere-all\n"
+        elif "display-message" in cmd:
+            cp.returncode = 0
+            cp.stdout = "1000000000"  # ancient
+        elif "kill-session" in cmd:
+            raise AssertionError(
+                f"kill-session must not be called for unknown sessions; "
+                f"got {cmd!r}"
+            )
+        else:
+            cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        reaped = agents.reap_ephemeral_idle(
+            paths=tmp_paths, max_idle_seconds=1800
+        )
+
+    assert reaped == []
+
+
 def test_touch_last_active_wired_into_all_signal_paths():
     """All four hook signals named in the directive must call
     touch_last_active. This guards against the helper landing without
