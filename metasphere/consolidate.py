@@ -798,7 +798,27 @@ def classify_message(
     info_archive_after_minutes: int | None = None,
     paths: "Paths | None" = None,
 ) -> str:
-    """Return one of the MSG_VERDICT_* constants for ``msg``."""
+    """Return one of the MSG_VERDICT_* constants for ``msg``.
+
+    Branch precedence (most specific first):
+
+    1. ``@consolidate``-from-self → PINNED for one tick, then
+       INFO_AUTO_ARCHIVE.
+    2. ``status == COMPLETED`` → DONE_PENDING_ARCHIVE.
+    3. ``label`` in PINNED_LABELS (``!task``, ``!query``, ``!urgent``)
+       → PINNED.
+    4. ``label == "!done"``: aged past info_window → DONE; else if
+       sender is ``@orchestrator`` and recipient is non-orch + has a
+       reader → DONE_PENDING_ARCHIVE (thread-closer fast-path).
+    5. ``status == UNREAD`` aged past stale_window → UNREAD_OLD (with
+       ping cooldown).
+    6. ``status == REPLIED`` aged past stale_window → INFO_AUTO_ARCHIVE.
+    7. ``label`` in ``{!info, !reply}`` aged past info_window →
+       INFO_AUTO_ARCHIVE.
+    8. Read for stale_window without action: STALE (with no-reader
+       short-circuit to INFO_AUTO_ARCHIVE).
+    9. Otherwise → ACTIVE.
+    """
     now = now or _utcnow()
     window = _dt.timedelta(minutes=stale_window_minutes)
     if info_archive_after_minutes is None:
