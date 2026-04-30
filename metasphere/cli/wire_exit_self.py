@@ -1,17 +1,17 @@
 """CLI: ``metasphere schedule wire-exit-self``.
 
-Idempotently appends a ``metasphere session exit-self`` cleanup stanza
-to the ``payload_message`` of every cron job whose
-``wants_exit_self_cleanup`` flag is True. Without the stanza, single-
-shot persistent agents finish their work but their tmux session lingers
-~24h until the next cron fire (the 'zombie session' pattern in
-@explorer's 2026-04-28 reap log).
+Idempotently appends a ``metasphere session exit-self`` cleanup
+stanza to the ``payload_message`` of every cron job whose
+``wants_exit_self_cleanup`` flag is True. Without the stanza,
+single-shot persistent agents finish their work but their tmux
+session lingers ~24h until the next cron fire ('zombie session'
+pattern observed 2026-04-28).
 
-Companion to the merged fix at posthook.py:517-533 (commit 00fba07)
-which made ``request_deferred_command``'s injection path
-project-scope-aware. With the injection working, the next step is to
-have flagged agents *call* ``metasphere session exit-self`` at the end
-of their turn — that's the wiring this tool does.
+Companion to the project-scope-aware ``request_deferred_command``
+injection path in :mod:`metasphere.posthook` (commit 00fba07).
+With the injection working, the next step is to have flagged agents
+call ``metasphere session exit-self`` at the end of their turn —
+that's the wiring this tool does.
 
 Operators opt jobs in/out by editing the ``wants_exit_self_cleanup``
 field in jobs.json. Persistent collaborators whose cold-start cost

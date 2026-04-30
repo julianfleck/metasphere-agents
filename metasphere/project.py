@@ -445,8 +445,16 @@ def _seed_project_claude_md(project: Project, paths: Paths) -> Optional[Path]:
             template, e,
         )
         return None
-    body = body.replace("{{ project_name }}", project.name)
-    body = body.replace("{{ goal_one_line }}", project.goal or "(no goal set)")
+    # Reuse the spec-system's regex-based ``{{key}}`` / ``{{ key }}``
+    # substituter so both seeding paths (project CLAUDE.md here +
+    # project USER.md in specs.py) parse placeholders the same way.
+    # Unfilled placeholders stay literal for the operator to fill
+    # manually — single-pass substitution by contract.
+    from .specs import _substitute  # local import to avoid module-import cycle
+    body = _substitute(body, {
+        "project_name": project.name,
+        "goal_one_line": project.goal or "(no goal set)",
+    })
     dest.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(dest, body)
     logger.info("Seeded ~/.metasphere/projects/%s/CLAUDE.md from template", project.name)

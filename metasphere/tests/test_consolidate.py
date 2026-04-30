@@ -1051,6 +1051,28 @@ def test_msg_classify_orchestrator_done_to_non_orch_is_done_pending(tmp_paths):
     assert _con.classify_message(msg) == _con.MSG_VERDICT_DONE_PENDING_ARCHIVE
 
 
+def test_msg_classify_orchestrator_done_aged_takes_precedence(tmp_paths):
+    """An orch-to-non-orch !done that's older than info_window
+    classifies as MSG-DONE (existing aged-DONE branch), NOT
+    MSG-DONE-PENDING-ARCHIVE (new orch-thread-closer short-circuit).
+
+    Locks the precedence ordering: aged !done is the older / more
+    specific signal — once a message has been read for an
+    info_window's worth, it has aged into "ready to garbage-collect"
+    territory regardless of sender. The orch-shortcut only matters
+    for fresh !done acks that haven't aged yet.
+    """
+    msg = _msgs.send_message(
+        "@worker", "!done", "greenlight to ship",
+        "@orchestrator", paths=tmp_paths, wake=False,
+    )
+    # Age past info_window so the aged-DONE branch fires before the
+    # orch-shortcut would.
+    msg = _age_msg(msg, read_min_ago=_con.INFO_AUTO_ARCHIVE_AFTER_MINUTES + 5)
+
+    assert _con.classify_message(msg) == _con.MSG_VERDICT_DONE
+
+
 def test_msg_classify_orchestrator_done_to_orchestrator_is_not_short_circuited(tmp_paths):
     """Orchestrator-to-orchestrator !done (self-loop) does NOT take the
     fast-path — the classifier falls through to the existing
