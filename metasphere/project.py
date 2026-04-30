@@ -406,6 +406,53 @@ def _register(paths: Paths, project: Project) -> None:
         write_json(_projects_file(paths), registry)
 
 
+def _find_project_claude_md_template() -> Optional[Path]:
+    """Locate the shipped per-project CLAUDE.md template.
+
+    Returns ``None`` if the template is not shipped (stranger install
+    that hasn't been migrated to the templates/install/projects/
+    layout).
+    """
+    pkg_repo_root = Path(__file__).resolve().parent.parent
+    candidate = pkg_repo_root / "templates" / "install" / "projects" / "CLAUDE.md.template"
+    return candidate if candidate.is_file() else None
+
+
+def _seed_project_claude_md(project: Project, paths: Paths) -> Optional[Path]:
+    """Seed ``~/.metasphere/projects/<name>/CLAUDE.md`` from the shipped
+    template.
+
+    Idempotent: skips if the file already exists so operator edits are
+    preserved across re-init. Substitutes the two fields we know at
+    init time (``project_name`` + ``goal_one_line``); other placeholders
+    (members, artifacts, non-scope, etc.) are left as-is for the
+    operator to fill manually.
+
+    Returns the destination path on a write, ``None`` on no-op (already
+    exists or no template ships).
+    """
+    template = _find_project_claude_md_template()
+    if template is None:
+        return None
+    dest = paths.projects / project.name / "CLAUDE.md"
+    if dest.is_file():
+        return None
+    try:
+        body = template.read_text(encoding="utf-8")
+    except OSError as e:
+        logger.warning(
+            "Failed to read project CLAUDE.md template at %s: %s",
+            template, e,
+        )
+        return None
+    body = body.replace("{{ project_name }}", project.name)
+    body = body.replace("{{ goal_one_line }}", project.goal or "(no goal set)")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(dest, body)
+    logger.info("Seeded ~/.metasphere/projects/%s/CLAUDE.md from template", project.name)
+    return dest
+
+
 def _unregister(paths: Paths, name: str) -> None:
     """Remove a project from the registry by name."""
     registry = _load_registry(paths)
@@ -449,6 +496,7 @@ def init_project(
                     existing.members.append(Member.from_dict(md))
         save_project(existing)
         _register(paths, existing)
+        _seed_project_claude_md(existing, paths)
         return existing
 
     proj = Project(
@@ -463,6 +511,7 @@ def init_project(
     )
     save_project(proj)
     _register(paths, proj)
+    _seed_project_claude_md(proj, paths)
     return proj
 
 

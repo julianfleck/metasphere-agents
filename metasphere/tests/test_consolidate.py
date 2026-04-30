@@ -1024,6 +1024,52 @@ def test_msg_classify_stale_cooldown(repo, tmp_paths):
     assert _con.classify_message(m_) == _con.MSG_VERDICT_ACTIVE
 
 
+def test_msg_classify_orchestrator_done_to_non_orch_is_done_pending(tmp_paths):
+    """Orchestrator-sent !done to a non-orchestrator agent is a
+    thread-closer: classify as DONE-PENDING-ARCHIVE immediately,
+    skipping the stale ping ladder.
+
+    The action on a !done from orchestrator is implicit downstream
+    work (e.g. dispatching a critic agent, dispatching a merger
+    ephemeral after a greenlight) — the recipient agent isn't expected
+    to "act on" the message in the conversational sense, so the
+    standard stale-ping cooldown produces false positives. Witnessed
+    4+ noise escalations in a single overnight pipeline session before
+    this rule was added.
+    """
+    msg = _msgs.send_message(
+        "@worker", "!done", "greenlight to ship",
+        "@orchestrator", paths=tmp_paths, wake=False,
+    )
+    # Mark it read so the classifier reaches the !done branch
+    # (unread !done has its own UNREAD-OLD path that isn't in scope here).
+    text = msg.path.read_text()
+    text = text.replace("status: unread", "status: read")
+    msg.path.write_text(text)
+    msg = _msgs.read_message(msg.path)
+
+    assert _con.classify_message(msg) == _con.MSG_VERDICT_DONE_PENDING_ARCHIVE
+
+
+def test_msg_classify_orchestrator_done_to_orchestrator_is_not_short_circuited(tmp_paths):
+    """Orchestrator-to-orchestrator !done (self-loop) does NOT take the
+    fast-path — the classifier falls through to the existing
+    age-based DONE branch / ACTIVE state. Self-acks are unusual but
+    the rule only fires for cross-agent thread-closers."""
+    msg = _msgs.send_message(
+        "@orchestrator", "!done", "self-ack",
+        "@orchestrator", paths=tmp_paths, wake=False,
+    )
+    text = msg.path.read_text()
+    text = text.replace("status: unread", "status: read")
+    msg.path.write_text(text)
+    msg = _msgs.read_message(msg.path)
+
+    # Fresh: ACTIVE (the old aged-DONE branch needs the read_at to be
+    # info_window-old; on a fresh message it falls through).
+    assert _con.classify_message(msg) == _con.MSG_VERDICT_ACTIVE
+
+
 def test_msg_apply_done_pending_archive_moves_file(repo, tmp_paths):
     m_ = _send_msg(tmp_paths, "!info")
     _msgs.update_status(m_.path, "status", _msgs.STATUS_COMPLETED)
