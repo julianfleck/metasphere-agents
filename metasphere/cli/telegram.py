@@ -3,6 +3,9 @@
 Subcommands:
     telegram send "msg"        Send a message to the saved chat id as
                                the current ``METASPHERE_AGENT_ID``.
+    telegram send "@<name>" "msg"
+                               Send to a named contact from
+                               ``~/.metasphere/ADDRESSBOOK.yaml``.
     telegram getme             Print bot info (sanity check).
     telegram register-commands Publish slash-command manifest.
     telegram send-document     Upload a file via sendDocument.
@@ -20,6 +23,7 @@ import os
 import sys
 from typing import List, Optional
 
+from metasphere import contacts as _contacts
 from metasphere.io import atomic_write_text
 from metasphere.telegram import api, archiver, commands
 
@@ -29,9 +33,6 @@ from metasphere.telegram import api, archiver, commands
 # user having to /start the bot a second time.
 CHAT_ID_FILE = os.path.expanduser("~/.metasphere/config/telegram_chat_id_rewrite")
 CHAT_ID_FILE_CANONICAL = os.path.expanduser("~/.metasphere/config/telegram_chat_id")
-
-
-CONTACTS_FILE = os.path.expanduser("~/.metasphere/config/telegram_contacts.json")
 
 
 def _load_chat_id() -> Optional[int]:
@@ -49,31 +50,107 @@ def _load_chat_id() -> Optional[int]:
 
 
 def _resolve_contact(name: str) -> Optional[int]:
-    """Look up a named contact from telegram_contacts.json.
+    """Look up a named contact via the unified addressbook.
 
-    File format: ``{"ella": 5418799462, "operator": 1234567890, ...}``
-    Names are case-insensitive.
+    Reads ``~/.metasphere/ADDRESSBOOK.yaml`` first; falls back to the
+    legacy ``~/.metasphere/config/telegram_contacts.json`` (with a
+    one-time deprecation WARN) if the new file is missing. Both code
+    paths live in :mod:`metasphere.contacts`. Names are
+    case-insensitive at lookup.
     """
-    if not os.path.exists(CONTACTS_FILE):
-        return None
-    try:
-        with open(CONTACTS_FILE) as f:
-            contacts = json.load(f)
-        return contacts.get(name.lower())
-    except (OSError, ValueError, json.JSONDecodeError):
-        return None
+    return _contacts.lookup_telegram(name)
 
 
 def _save_chat_id(chat_id: int) -> None:
     atomic_write_text(CHAT_ID_FILE, str(chat_id))
 
 
+def _parse_send_positionals(positionals: list[str]) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Resolve send-positional shapes into ``(to, text, error_msg)``.
+
+    Accepted shapes:
+      ["msg"]                  → (None, "msg", None)
+      ["@<name>", "msg"]       → ("<name>", "msg", None)
+
+    Anything else is an error. The returned ``error_msg`` is the
+    full operator-facing string to print on stderr; on success it
+    is ``None``.
+
+    The ``@<name>`` shorthand exists because agents naturally reach
+    for ``metasphere telegram send "@<name>" "msg"`` thinking
+    ``@<name>`` is a recipient. Pre-2026-04-30 this errored with
+    "unrecognized arguments: msg" silently — agents that appended
+    ``; echo "sent:1"`` for self-confirmation got success-confirmation
+    even though nothing landed. Detect the shape, route correctly.
+    """
+    n = len(positionals)
+    if n == 0:
+        return (None, None, "Error: no message text provided.")
+
+    first = positionals[0]
+    if first.startswith("@"):
+        name = first[1:]
+        if not name:
+            return (None, None,
+                    "Error: empty contact name (positional starts with bare '@').\n"
+                    "Usage: metasphere telegram send \"@<name>\" \"<text>\"")
+        if n == 1:
+            return (None, None,
+                    f"Error: contact '@{name}' given but no message text. "
+                    f"Usage: metasphere telegram send \"@{name}\" \"<text>\"")
+        if n > 2:
+            return (None, None,
+                    f"Error: too many positionals after '@{name}' "
+                    f"(got {n - 1} text args; expected 1 quoted string). "
+                    f"Did you mean: metasphere telegram send "
+                    f"\"@{name}\" \"<text>\"")
+        return (name, positionals[1], None)
+
+    # Non-@-prefixed first positional.
+    if n > 1:
+        return (None, None,
+                f"Error: too many positionals (got {n}; expected 1).\n"
+                f"Usage: metasphere telegram send "
+                f"[--to <name> | --chat-id N | @<name>] \"<text>\". "
+                f"Did you mean: metasphere telegram send "
+                f"--to <name> \"{positionals[0]}\"?")
+    return (None, positionals[0], None)
+
+
 def cmd_send(args: argparse.Namespace) -> int:
+    # ``args.text`` is nargs='+', so it's always a list. Resolve the
+    # positional shape — accepts either one text arg or the
+    # ``@<name> <text>`` shorthand pair. Anything else is an error.
+    positionals: list[str] = list(args.text)
+    parsed_to, text, err = _parse_send_positionals(positionals)
+    if err is not None:
+        print(err, file=sys.stderr)
+        return 2
+
+    # If the @<name> shorthand resolved a name, it overrides --to.
+    if parsed_to is not None:
+        args.to = parsed_to
+
     chat_id = args.chat_id
     if chat_id is None and getattr(args, "to", None):
         chat_id = _resolve_contact(args.to)
         if chat_id is None:
-            print(f"Error: unknown contact '{args.to}'. Add to {CONTACTS_FILE}", file=sys.stderr)
+            ab_path = os.path.expanduser("~/.metasphere/ADDRESSBOOK.yaml")
+            # Distinguish "contact missing entirely" from "contact
+            # exists but has no telegram method".
+            if _contacts.has_contact(args.to):
+                print(
+                    f"Error: contact '{args.to}' in {ab_path} has no "
+                    f"telegram entry. Add: contacts.{args.to}.telegram: "
+                    f"<chat_id>",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"Error: contact '{args.to}' not in {ab_path}. "
+                    f"Add the entry to send.",
+                    file=sys.stderr,
+                )
             return 2
     if chat_id is None:
         chat_id = _load_chat_id()
@@ -81,7 +158,6 @@ def cmd_send(args: argparse.Namespace) -> int:
         print("Error: no chat id. Pass --chat-id, --to, or have the user /start the bot first.", file=sys.stderr)
         return 2
     agent = os.environ.get("METASPHERE_AGENT_ID", "@orchestrator")
-    text = args.text
     if agent != "@orchestrator":
         text = f"[{agent.lstrip('@')}]\n\n{text}"
     api.send_with_cc(chat_id, text)
@@ -153,11 +229,16 @@ def build_parser() -> argparse.ArgumentParser:
     # introspection of what the poller is doing goes via the debug log
     # at ~/.metasphere/state/telegram_debug.log (see poller.py).
     p_send = sub.add_parser("send", help="send a message")
-    p_send.add_argument("text")
+    # ``text`` is nargs='+' so we capture the ``@<name> <text>``
+    # shorthand as well as the bare ``<text>`` form. cmd_send picks
+    # them apart in ``_parse_send_positionals``.
+    p_send.add_argument("text", nargs="+",
+                        help='message text, or "@<name>" "<text>" '
+                             "for an addressbook lookup")
     p_send.add_argument("--chat-id", type=int, default=None,
                         help="numeric Telegram chat ID")
     p_send.add_argument("--to", default=None,
-                        help="named contact from ~/.metasphere/config/telegram_contacts.json")
+                        help="named contact from ~/.metasphere/ADDRESSBOOK.yaml")
     p_send.set_defaults(func=cmd_send)
 
     p_me = sub.add_parser("getme", help="print bot info")
