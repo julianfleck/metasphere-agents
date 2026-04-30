@@ -234,12 +234,31 @@ def _link_agent_user_md(agent_dir: Path, project_user_md: Path) -> None:
     try:
         rel_target = os.path.relpath(project_user_md, agent_dir)
     except ValueError:
+        # ``relpath`` raises on cross-drive paths (Windows-only failure
+        # mode in practice). Falling back to an absolute symlink target
+        # still works; log the unusual case so it's visible if it ever
+        # fires on a stranger's install.
+        logger.debug(
+            "USER.md relpath fell back to absolute (likely cross-drive): "
+            "%s -> %s",
+            agent_dir, project_user_md,
+        )
         rel_target = str(project_user_md)
     try:
         os.symlink(rel_target, dest)
         logger.info("Linked %s/USER.md -> %s", agent_dir.name, rel_target)
     except OSError as e:
-        logger.warning("Failed to symlink USER.md for %s: %s", agent_dir.name, e)
+        # Visible failure: the agent is left without a USER.md symlink.
+        # The seed_agent caller does not abort — better to ship the
+        # rest of the persona than fail the spawn — but the log makes
+        # the partial state debuggable. Common causes: filesystem
+        # without symlink support, dest path under a read-only mount,
+        # SELinux/AppArmor denial.
+        logger.warning(
+            "Failed to symlink USER.md for %s "
+            "(dest=%s, target=%s): %s",
+            agent_dir.name, dest, rel_target, e,
+        )
 
 
 def seed_agent(

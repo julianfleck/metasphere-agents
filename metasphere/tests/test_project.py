@@ -86,3 +86,38 @@ def test_changelog_missing_project(tmp_paths):
     import pytest
     with pytest.raises(FileNotFoundError):
         project_changelog("nope", paths=tmp_paths)
+
+
+def test_init_seeds_project_claude_md_from_template(tmp_paths, tmp_path):
+    """``init_project`` writes ~/.metasphere/projects/<name>/CLAUDE.md
+    from the shipped template with project_name + goal_one_line
+    substituted; other placeholders left for the operator to fill.
+    """
+    proj_dir = tmp_path / "alpha"
+    proj_dir.mkdir()
+    init_project(path=proj_dir, paths=tmp_paths,
+                 goal="build something cool")
+    claude_md = tmp_paths.projects / "alpha" / "CLAUDE.md"
+    assert claude_md.is_file()
+    text = claude_md.read_text()
+    assert "alpha" in text  # project_name substituted
+    assert "build something cool" in text  # goal_one_line substituted
+    # Operator-fill placeholders left as-is (single-pass substitution
+    # only fills the two known keys at init time).
+    assert "{{ current_state_bullets }}" in text
+    assert "{{ key_artifacts_paths }}" in text
+    assert "{{ members_table }}" in text
+
+
+def test_init_preserves_existing_project_claude_md(tmp_paths, tmp_path):
+    """Re-init does not clobber an operator-customized CLAUDE.md."""
+    proj_dir = tmp_path / "beta"
+    proj_dir.mkdir()
+    init_project(path=proj_dir, paths=tmp_paths, goal="v1")
+    claude_md = tmp_paths.projects / "beta" / "CLAUDE.md"
+    claude_md.write_text("OPERATOR-CUSTOMIZED\n")
+    init_project(path=proj_dir, paths=tmp_paths, goal="v2")
+    # The re-seed must not overwrite operator content.
+    assert claude_md.read_text() == "OPERATOR-CUSTOMIZED\n"
+
+

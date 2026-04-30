@@ -842,6 +842,25 @@ def classify_message(
         anchor = read_at_for_done or _parse_iso(msg.created)
         if anchor and (now - anchor) >= info_window:
             return MSG_VERDICT_DONE
+        # Orchestrator-sent !done to a non-orchestrator agent is a
+        # thread-closer: the action is the implicit downstream work
+        # (e.g. dispatching critic, dispatching merger after a
+        # greenlight). Stale-pinging these as "read but not acted on"
+        # generated 4+ false-positive escalations this session. Treat
+        # as DONE-PENDING-ARCHIVE immediately — they don't need to age
+        # through the stale window first. Skip when the recipient is
+        # a no-reader (system agent or GC'd ephemeral): those have
+        # their own INFO-AUTO-ARCHIVE path further down which is the
+        # more aggressive cleanup, and the existing tests rely on it.
+        from_norm = (msg.from_ or "").lstrip("@")
+        to_norm = (msg.to or "").lstrip("@")
+        if (
+            from_norm == "orchestrator"
+            and to_norm
+            and to_norm != "orchestrator"
+            and not _is_no_reader(msg.to, paths)
+        ):
+            return MSG_VERDICT_DONE_PENDING_ARCHIVE
 
     # UNREAD-OLD: status still unread after the stale window. Rare after
     # auto-mark-read on view, but catches messages on agents that

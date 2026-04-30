@@ -79,6 +79,29 @@ def test_substitute_multiple_keys_mixed_styles():
     assert out == "A and B but not {{ c }}"
 
 
+def test_substitute_does_not_recurse_on_value():
+    """A substituted value containing ``{{...}}`` syntax stays literal.
+
+    If a variable's value happens to contain its own ``{{...}}``
+    placeholder syntax (e.g. an agent's USER.md mentions an unfilled
+    template), the substitution must NOT recurse and try to expand the
+    inner placeholder. Single-pass replacement is the contract.
+    """
+    out = _specs._substitute(
+        "Project: {{name}}",
+        {"name": "{{ project_name }} (literal)"},
+    )
+    # Inner ``{{ project_name }}`` stays literal — no recursive expansion.
+    assert out == "Project: {{ project_name }} (literal)"
+
+    # And a second pass through _substitute with project_name set
+    # WOULD expand it. Single-pass-only is intentional: callers run
+    # _substitute once per template and the values are trusted as
+    # literals from that point on.
+    out2 = _specs._substitute(out, {"project_name": "alpha"})
+    assert out2 == "Project: alpha (literal)"
+
+
 # ---------- _seed_project_user_md ----------
 
 def test_seed_project_user_md_creates_file_from_template(tmp_paths):
