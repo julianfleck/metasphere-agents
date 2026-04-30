@@ -863,10 +863,27 @@ Telegram bot command handler + long-polling daemon. Handles slash commands like 
 ### Subcommands
 
 ```
-metasphere-telegram send "message"         # send to saved chat id
-metasphere-telegram send-document <path>   # upload a file via sendDocument
-metasphere-telegram register-commands      # publish slash-command manifest
-metasphere-telegram getme                  # bot info JSON
+metasphere telegram send "message"               # send to saved chat id
+metasphere telegram send "@<name>" "message"     # @-shorthand: lookup contact in
+                                                 # ~/.metasphere/ADDRESSBOOK.yaml
+metasphere telegram send "msg" --to <name>       # equivalent long form
+metasphere telegram send "msg" --chat-id N       # bypass addressbook
+metasphere telegram send-document <path>         # upload a file via sendDocument
+metasphere telegram register-commands            # publish slash-command manifest
+metasphere telegram getme                        # bot info JSON
+
+# Addressbook (~/.metasphere/ADDRESSBOOK.yaml) holds named contacts
+# in YAML form:
+#
+#     contacts:
+#       <name>:
+#         telegram: <chat_id>
+#
+# Each contact may carry multiple method handles (telegram is the
+# only one wired today; email/slack/etc. land later). Names are
+# case-insensitive at lookup. Operators edit the file directly;
+# install.sh writes an empty stub on first run, or migrates from
+# the legacy ~/.metasphere/config/telegram_contacts.json if present.
 
 # Polling lives in the metasphere-gateway systemd service; there is no
 # CLI poller (neither `poll` nor `once`). The gateway calls

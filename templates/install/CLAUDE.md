@@ -168,8 +168,9 @@ metasphere agents                             # List all agents
 
 # ── Telegram ─────────────────────────────────────────────
 metasphere telegram send "message"            # Send to default chat
-metasphere telegram send --to <name> "hi"     # Send to named contact
-metasphere telegram send --chat-id <id> "msg" # Send to arbitrary chat
+metasphere telegram send "@<name>" "msg"      # Send to addressbook contact
+metasphere telegram send "msg" --to <name>    # Equivalent long form
+metasphere telegram send "msg" --chat-id N    # Send to arbitrary chat
 metasphere telegram send-document path.pdf    # Upload a file
 
 # ── System ───────────────────────────────────────────────
@@ -185,6 +186,7 @@ metasphere session restart            # Restart orchestrator REPL
 ```
 ~/.metasphere/
 ├── CLAUDE.md                # This file (your system overview)
+├── ADDRESSBOOK.yaml         # Named contacts for `telegram send "@<name>"`
 ├── .claude/                 # Claude-Code settings (hooks, permissions)
 ├── agents/                  # One subdir per agent
 │   └── @<id>/

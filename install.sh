@@ -297,6 +297,54 @@ EOF
         "$METASPHERE_DIR/CLAUDE.md" \
         "~/.metasphere/CLAUDE.md"
 
+    # Seed ~/.metasphere/ADDRESSBOOK.yaml.
+    #
+    # Three branches:
+    #   1. ADDRESSBOOK.yaml already exists → no-op (operator's edits
+    #      preserved across re-runs).
+    #   2. Legacy ~/.metasphere/config/telegram_contacts.json present
+    #      → migrate it: each {name: chat_id} entry becomes
+    #      contacts.<name>.telegram: <chat_id> in the YAML form. Old
+    #      file kept in place; metasphere/contacts.py prefers the
+    #      YAML at lookup time but falls back with a deprecation WARN
+    #      if YAML is missing.
+    #   3. Neither present + template ships → seed the empty stub.
+    local addressbook="$METASPHERE_DIR/ADDRESSBOOK.yaml"
+    local legacy_contacts="$METASPHERE_DIR/config/telegram_contacts.json"
+    if [[ ! -f "$addressbook" ]]; then
+        if [[ -f "$legacy_contacts" ]] && command -v python3 &>/dev/null; then
+            python3 - "$legacy_contacts" "$addressbook" <<'PYEOF'
+import json
+import sys
+
+src, dst = sys.argv[1], sys.argv[2]
+try:
+    with open(src, encoding="utf-8") as f:
+        data = json.load(f)
+except (OSError, ValueError) as e:
+    print(f"could not read {src}: {e}", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(data, dict):
+    print(f"unexpected shape in {src} (not a JSON object)", file=sys.stderr)
+    sys.exit(1)
+lines = ["# Migrated from legacy ~/.metasphere/config/telegram_contacts.json",
+         "# at install time. Edit freely.",
+         "contacts:"]
+for name, chat_id in data.items():
+    lines.append(f"  {name}:")
+    lines.append(f"    telegram: {chat_id}")
+with open(dst, "w", encoding="utf-8") as f:
+    f.write("\n".join(lines) + "\n")
+PYEOF
+            chmod 600 "$addressbook"
+            ok "Migrated ~/.metasphere/config/telegram_contacts.json -> ~/.metasphere/ADDRESSBOOK.yaml"
+        elif [[ -f "$SCRIPT_DIR/templates/install/ADDRESSBOOK.yaml.template" ]]; then
+            cp "$SCRIPT_DIR/templates/install/ADDRESSBOOK.yaml.template" "$addressbook"
+            chmod 600 "$addressbook"
+            ok "Seeded ~/.metasphere/ADDRESSBOOK.yaml from template"
+        fi
+    fi
+
     ok "Created $METASPHERE_DIR"
 }
 

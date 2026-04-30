@@ -1,0 +1,25 @@
+# ~/.metasphere/ADDRESSBOOK.yaml — instance contact directory.
+#
+# Single source of truth for cross-channel contact handles
+# (Telegram chat ids, plus future: email, Slack ids, etc.).
+# Lives at ~/.metasphere/ADDRESSBOOK.yaml — instance state, never
+# committed to a repo.
+#
+# This file is OPTIONAL. Stranger installs without it can still send
+# Telegram messages by passing --chat-id explicitly. The addressbook
+# only matters when you want named-recipient shortcuts:
+#
+#     metasphere telegram send "@operator" "hello"
+#
+# Schema (uncomment + fill in):
+#
+# contacts:
+#   operator:
+#     telegram: <chat_id>
+#   ella:
+#     telegram: <chat_id>
+#   # Add new contacts here. Names are case-insensitive at lookup
+#   # time. Each contact may carry multiple method handles (telegram
+#   # is the only one wired today; email/slack/etc. land later).
+
+contacts: {}
