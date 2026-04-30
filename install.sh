@@ -1191,12 +1191,21 @@ seed_claude_permissions() {
         "Bash(metasphere-*:*)"
     ]'
 
-    # Hook paths must be absolute and point at THIS checkout's scripts/.
-    # The committed .claude/settings.json is empty by design — claude-code
-    # merges settings.json + settings.local.json so hardcoded paths in the
+    # Hook commands point at the metasphere console script in the
+    # operator's venv. Absolute path keeps Claude Code's PATH-resolution
+    # out of the failure mode (gateway/heartbeat services may not have
+    # the venv's bin directory on PATH). The committed
+    # .claude/settings.json is empty by design — claude-code merges
+    # settings.json + settings.local.json so hardcoded paths in the
     # committed file would fire on every other machine and error.
-    local context_path="python3 -m metasphere.cli.context"
-    local posthook_path="python3 -m metasphere.posthook"
+    #
+    # ``metasphere/update.py:_sync_hook_paths`` rewrites these same
+    # entries on every ``metasphere update`` cycle so a relocation of
+    # the venv (or the package shim) propagates through the existing
+    # settings.local.json without operator intervention. Keep this
+    # form aligned with the venv-bin form there.
+    local context_path="$METASPHERE_DIR/venv/bin/metasphere hooks context"
+    local posthook_path="$METASPHERE_DIR/venv/bin/metasphere hooks posthook"
     local hooks
     hooks=$(jq -n \
         --arg ctx "$context_path" \

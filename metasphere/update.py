@@ -1,7 +1,7 @@
 """Configurable auto-updates for metasphere hosts.
 
-Hosts running metasphere (spot, bean, future) keep themselves current
-with main without manual intervention. This module owns:
+Operator hosts keep themselves current with main without manual
+intervention. This module owns:
 
 * parsing ``$METASPHERE_DIR/config/auto-update.env``
 * registering / unregistering the cron job in
@@ -465,15 +465,171 @@ def _git_pull_or_reset(repo: Path, branch: str, runner: GitRunner) -> None:
         )
 
 
-def _sync_claude_integration(repo: Path, home_dir: Path) -> None:
-    """Refresh ``~/.claude/{skills,commands}`` symlinks from the repo.
+_VENV_METASPHERE_BIN = "venv/bin/metasphere"
+
+
+def _venv_metasphere_bin(paths: Paths) -> Path:
+    """Path to the ``metasphere`` console script inside the venv.
+
+    Used by :func:`_sync_hook_paths` to write absolute hook-command
+    paths into ``~/.claude/settings.local.json``. Stable form
+    regardless of the operator's PATH ordering.
+    """
+    return paths.root / _VENV_METASPHERE_BIN
+
+
+def _settings_local_targets(paths: Paths, repo: Path | None,
+                              home_dir: Path) -> list[Path]:
+    """Return the candidate ``settings.local.json`` paths to keep in
+    sync.
+
+    Matches what ``install.sh`` writes — strictly project-scoped:
+    - ``$METASPHERE_DIR/.claude/settings.local.json`` — the runtime
+      file Claude Code reads at orchestrator session cwd.
+    - ``<source repo>/.claude/settings.local.json`` — the dev-time
+      file Claude Code reads when the operator runs ``claude`` from
+      the source repo directly.
+
+    Deliberately excludes ``~/.claude/settings.local.json`` (user
+    scope). ``install.sh`` never writes there, so a rewrite would
+    silently clobber any non-metasphere hooks the operator has
+    configured at user level. Asymmetry between project-scoped tool
+    and user-scoped Claude Code config is the correct invariant.
+    The ``home_dir`` parameter is retained on the signature for
+    callers' convenience but unused here.
+
+    Returns only candidates that actually exist on disk; the
+    rewrite is idempotent against missing files.
+    """
+    candidates: list[Path] = []
+    candidates.append(paths.root / ".claude" / "settings.local.json")
+    if repo is not None:
+        candidates.append(repo / ".claude" / "settings.local.json")
+    # Dedupe while preserving order — paths.root and repo can collide
+    # when the source repo lives inside ``$METASPHERE_DIR``.
+    seen: set[str] = set()
+    out: list[Path] = []
+    for p in candidates:
+        s = str(p)
+        if s in seen:
+            continue
+        seen.add(s)
+        if p.is_file():
+            out.append(p)
+    return out
+
+
+def _sync_hook_paths(paths: Paths, home_dir: Path,
+                     repo: Path | None = None) -> int:
+    """Rewrite ``UserPromptSubmit`` and ``Stop`` hook commands in
+    every operator-side ``settings.local.json`` to the current
+    venv-form.
+
+    Closes the silent-failure mode where a relocated posthook/context
+    script left the file pointing at a path that no longer existed
+    (e.g. ``scripts/metasphere-posthook`` after the package-shim
+    migration). Run on every update so path drift propagates.
+
+    The set of files to rewrite mirrors what ``install.sh`` writes —
+    typically ``$METASPHERE_DIR/.claude/`` (runtime) and the source
+    repo's ``.claude/`` (dev-time).
+
+    Behavior:
+    - No-op for a settings.local.json that doesn't exist (stranger
+      install that hasn't yet seeded hooks; install.sh handles that
+      path).
+    - Atomic write per-file (temp + rename) so a crash mid-write
+      can't corrupt the file.
+    - Idempotent: if the existing hook commands already match the
+      target form, no rewrite for that file.
+    - Preserves any other top-level keys (``permissions``, custom
+      operator settings) — only the ``hooks`` block is replaced.
+
+    Returns the number of files rewritten.
+    """
+    bin_path = str(_venv_metasphere_bin(paths))
+    target_hooks = {
+        "UserPromptSubmit": [
+            {
+                "matcher": "",
+                "hooks": [{"type": "command", "command": f"{bin_path} hooks context"}],
+            }
+        ],
+        "Stop": [
+            {
+                "matcher": "",
+                "hooks": [{"type": "command", "command": f"{bin_path} hooks posthook"}],
+            }
+        ],
+    }
+
+    rewrote_count = 0
+    for settings_path in _settings_local_targets(paths, repo, home_dir):
+        if _rewrite_settings_hooks(settings_path, target_hooks):
+            rewrote_count += 1
+    return rewrote_count
+
+
+def _rewrite_settings_hooks(settings_path: Path,
+                              target_hooks: dict) -> bool:
+    """Atomically rewrite a single settings.local.json's ``hooks``
+    block. Returns ``True`` if a write happened, ``False`` on no-op
+    (file missing, unparseable, or already correct)."""
+    if not settings_path.is_file():
+        return False
+    try:
+        existing = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning(
+            "%s unparseable, skipping hook-path sync: %s",
+            settings_path, e,
+        )
+        return False
+    if not isinstance(existing, dict):
+        logger.warning(
+            "%s root must be an object, got %s — skipping",
+            settings_path, type(existing).__name__,
+        )
+        return False
+    if existing.get("hooks") == target_hooks:
+        return False  # already correct
+    existing["hooks"] = target_hooks
+    tmp = settings_path.with_suffix(settings_path.suffix + ".tmp")
+    try:
+        tmp.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(settings_path)
+    except OSError as e:
+        logger.warning("%s rewrite failed: %s", settings_path, e)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def _sync_claude_integration(repo: Path, home_dir: Path,
+                              paths: Paths | None = None) -> None:
+    """Refresh ``~/.claude/{skills,commands}`` symlinks from the repo
+    + rewrite hook paths in ``settings.local.json`` to the current
+    venv form.
 
     * Each ``skills/<name>/`` containing ``SKILL.md`` is linked into
       ``<home>/.claude/skills/<name>``. A pre-existing real directory
       (not a symlink) with a ``.user-customized`` marker is left alone.
     * Each ``.claude/commands/*.md`` is linked into
       ``<home>/.claude/commands/<basename>``.
+    * ``settings.local.json`` ``UserPromptSubmit`` + ``Stop`` hook
+      commands are rewritten to the current venv form via
+      :func:`_sync_hook_paths`.
+
+    The hook-path step closes a silent-failure mode where a relocated
+    script (e.g. the ``scripts/metasphere-posthook`` → package-shim
+    migration) left the file pointing at a stale path; the operator's
+    Claude Code invocations would then fail every Stop / UserPromptSubmit
+    tick with no visible error to the supervising daemon.
     """
+    paths = paths or resolve()
     # Skills
     src_skills = repo / "skills"
     if src_skills.is_dir():
@@ -527,6 +683,21 @@ def _sync_claude_integration(repo: Path, home_dir: Path) -> None:
                 os.symlink(md.resolve(), dst)
             except OSError as e:
                 logger.info("command symlink skipped for %s: %s", md.name, e)
+
+    # Hook paths in settings.local.json. See _sync_hook_paths for
+    # rationale (closes the silent-failure mode where a relocated
+    # script left the hook command pointing at a stale path).
+    # ``repo`` is passed so install.sh's source-repo .claude/ also
+    # gets the rewrite if it exists.
+    try:
+        rewrote_count = _sync_hook_paths(paths, home_dir, repo=repo)
+        if rewrote_count:
+            logger.info(
+                "settings.local.json hook paths rewritten to current "
+                "venv form across %d file(s)", rewrote_count,
+            )
+    except Exception as e:
+        logger.warning("hook-paths sync failed: %s", e)
 
 
 def _restart_daemons() -> None:
@@ -672,20 +843,15 @@ def run_update(
         _record_result(paths, result, cfg, notify_sender)
         return result
 
-    # 2. Refresh ~/.claude/{skills,commands} symlinks.
+    # 2. Refresh ~/.claude/{skills,commands} symlinks + rewrite the
+    # hook commands in settings.local.json to the current venv form.
     try:
-        _sync_claude_integration(repo, Path.home())
+        _sync_claude_integration(repo, Path.home(), paths=paths)
     except Exception as e:
         # Non-fatal: log and continue. The update itself succeeded; a
-        # skills-sync failure shouldn't block pip reinstall / daemon restart.
+        # skills-sync failure shouldn't block pip reinstall / daemon
+        # restart.
         log(f"auto-update: claude integration sync warning: {e}")
-
-    # 3. Daemon restart (skippable via cfg.restart_daemons).
-    if cfg.restart_daemons:
-        try:
-            _restart_daemons()
-        except Exception as e:
-            log(f"auto-update: daemon restart warning: {e}")
 
     new = _head_hash(repo, runner)
     log(f"auto-update: HEAD after: {new or '(unknown)'}")
@@ -757,6 +923,21 @@ def run_update(
             )
             _record_result(paths, result, cfg, notify_sender)
             return result
+
+    # Daemon restart (skippable via cfg.restart_daemons). Runs AFTER
+    # pip work and the test gate so daemons come back up against the
+    # newly installed package, not the stale version that was running
+    # when the update started. Pre-2026-04-30 the restart fired before
+    # _ensure_venv + the python_changes pip reinstall, so daemons
+    # would briefly run the OLD code while new commits sat unbuilt
+    # in the venv. Hosts that fell behind on updates went silent
+    # because their gateway/heartbeat daemons restarted into a stale
+    # build and never picked up the new bytes.
+    if cfg.restart_daemons:
+        try:
+            _restart_daemons()
+        except Exception as e:
+            log(f"auto-update: daemon restart warning: {e}")
 
     # Template drift check (warn-only). Surfaces shipped templates that
     # differ from the operator's local copies under ~/.metasphere/.
