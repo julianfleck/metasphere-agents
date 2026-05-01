@@ -24,29 +24,7 @@ import sys
 from typing import List, Optional
 
 from metasphere import contacts as _contacts
-from metasphere.io import atomic_write_text
 from metasphere.telegram import api, archiver, commands
-
-# Path order matters: rewrite-specific file first, then the canonical
-# chat-id file. Falling back to the canonical chat id keeps
-# `metasphere-telegram send "..."` working without --chat-id and without the
-# user having to /start the bot a second time.
-CHAT_ID_FILE = os.path.expanduser("~/.metasphere/config/telegram_chat_id_rewrite")
-CHAT_ID_FILE_CANONICAL = os.path.expanduser("~/.metasphere/config/telegram_chat_id")
-
-
-def _load_chat_id() -> Optional[int]:
-    for path in (CHAT_ID_FILE, CHAT_ID_FILE_CANONICAL):
-        if not os.path.exists(path):
-            continue
-        try:
-            with open(path) as f:
-                value = f.read().strip()
-            if value:
-                return int(value)
-        except (OSError, ValueError):
-            continue
-    return None
 
 
 def _resolve_contact(name: str) -> Optional[int]:
@@ -61,8 +39,25 @@ def _resolve_contact(name: str) -> Optional[int]:
     return _contacts.lookup_telegram(name)
 
 
-def _save_chat_id(chat_id: int) -> None:
-    atomic_write_text(CHAT_ID_FILE, str(chat_id))
+def _reject_group_chat_id(chat_id: int) -> Optional[str]:
+    """Defense-in-depth: refuse to send to a Telegram group.
+
+    Telegram group chat ids are negative. The CLI must never address
+    a group, even when the operator passed ``--chat-id`` explicitly:
+    the morning-briefing leak (2026-05-01 08:00Z) showed that any
+    group-routing path through this CLI is a leak vector. Group sends
+    happen via the gateway / handler layer, not via this CLI.
+
+    Returns an operator-facing error string, or ``None`` if the id is
+    a private chat (positive).
+    """
+    if chat_id < 0:
+        return (
+            f"Error: refusing to send to group chat id {chat_id}. "
+            f"`metasphere telegram send` only addresses private chats; "
+            f"group routing must go through the gateway."
+        )
+    return None
 
 
 def _parse_send_positionals(positionals: list[str]) -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -153,9 +148,17 @@ def cmd_send(args: argparse.Namespace) -> int:
                 )
             return 2
     if chat_id is None:
-        chat_id = _load_chat_id()
+        chat_id = _contacts.default_telegram_chat_id()
     if chat_id is None:
-        print("Error: no chat id. Pass --chat-id, --to, or have the user /start the bot first.", file=sys.stderr)
+        print(
+            "Error: no chat id. Pass --chat-id, --to <name>, or set "
+            "`default-recipient: <name>` in ~/.metasphere/ADDRESSBOOK.yaml.",
+            file=sys.stderr,
+        )
+        return 2
+    err = _reject_group_chat_id(chat_id)
+    if err is not None:
+        print(err, file=sys.stderr)
         return 2
     agent = os.environ.get("METASPHERE_AGENT_ID", "@orchestrator")
     if agent != "@orchestrator":
@@ -194,9 +197,17 @@ def cmd_register_commands(args: argparse.Namespace) -> int:
 
 
 def cmd_send_document(args: argparse.Namespace) -> int:
-    chat_id = args.chat_id or _load_chat_id()
+    chat_id = args.chat_id or _contacts.default_telegram_chat_id()
     if chat_id is None:
-        print("Error: no chat id. Pass --chat-id or have the user /start the bot first.", file=sys.stderr)
+        print(
+            "Error: no chat id. Pass --chat-id, or set "
+            "`default-recipient: <name>` in ~/.metasphere/ADDRESSBOOK.yaml.",
+            file=sys.stderr,
+        )
+        return 2
+    err = _reject_group_chat_id(chat_id)
+    if err is not None:
+        print(err, file=sys.stderr)
         return 2
     if not os.path.exists(args.path):
         print(f"Error: file not found: {args.path}", file=sys.stderr)

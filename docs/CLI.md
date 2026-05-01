@@ -863,7 +863,7 @@ Telegram bot command handler + long-polling daemon. Handles slash commands like 
 ### Subcommands
 
 ```
-metasphere telegram send "message"               # send to saved chat id
+metasphere telegram send "message"               # send to default-recipient
 metasphere telegram send "@<name>" "message"     # @-shorthand: lookup contact in
                                                  # ~/.metasphere/ADDRESSBOOK.yaml
 metasphere telegram send "msg" --to <name>       # equivalent long form
@@ -873,8 +873,9 @@ metasphere telegram register-commands            # publish slash-command manifes
 metasphere telegram getme                        # bot info JSON
 
 # Addressbook (~/.metasphere/ADDRESSBOOK.yaml) holds named contacts
-# in YAML form:
+# in YAML form, plus an optional default-recipient pointer:
 #
+#     default-recipient: <name>      # optional; the "main user" fallback
 #     contacts:
 #       <name>:
 #         telegram: <chat_id>
@@ -884,6 +885,18 @@ metasphere telegram getme                        # bot info JSON
 # case-insensitive at lookup. Operators edit the file directly;
 # install.sh writes an empty stub on first run, or migrates from
 # the legacy ~/.metasphere/config/telegram_contacts.json if present.
+
+# Chat-id resolution for `send` / `send-document`, in order:
+#   1. --chat-id N                               (explicit numeric id)
+#   2. --to <name> / "@<name>"                   (addressbook lookup)
+#   3. ADDRESSBOOK.yaml `default-recipient`      (the configured "main user")
+# When none resolves the command errors rather than silently substituting
+# a last-inbound chat id.
+#
+# Defense-in-depth: the CLI refuses to send to a Telegram group
+# (negative chat id) regardless of how it was resolved — even when
+# `--chat-id` is passed explicitly. Group routing happens via the
+# gateway, never via this CLI.
 
 # Polling lives in the metasphere-gateway systemd service; there is no
 # CLI poller (neither `poll` nor `once`). The gateway calls

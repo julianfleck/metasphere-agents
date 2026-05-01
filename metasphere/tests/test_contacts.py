@@ -179,3 +179,73 @@ def test_legacy_warn_emits_only_once(tmp_paths, capsys):
     _contacts.load_addressbook(tmp_paths)
     captured = capsys.readouterr()
     assert captured.err == ""
+
+
+# ---------- default_telegram_chat_id ----------
+
+def test_default_recipient_yaml_resolves(tmp_paths):
+    """`default-recipient: alpha` → alpha's telegram chat id."""
+    (tmp_paths.root / "ADDRESSBOOK.yaml").write_text(
+        "default-recipient: alpha\n"
+        "contacts:\n"
+        "  alpha:\n"
+        "    telegram: 1111\n"
+        "  beta:\n"
+        "    telegram: 2222\n"
+    )
+    assert _contacts.default_telegram_chat_id(tmp_paths) == 1111
+
+
+def test_default_recipient_case_insensitive(tmp_paths):
+    """default-recipient matches contact name case-insensitively."""
+    (tmp_paths.root / "ADDRESSBOOK.yaml").write_text(
+        "default-recipient: Alpha\n"
+        "contacts:\n"
+        "  alpha:\n"
+        "    telegram: 1111\n"
+    )
+    assert _contacts.default_telegram_chat_id(tmp_paths) == 1111
+
+
+def test_default_recipient_no_config_returns_none(tmp_paths):
+    """No YAML, no legacy → no fallback. Caller must error rather
+    than silently substituting a last-inbound chat id."""
+    assert _contacts.default_telegram_chat_id(tmp_paths) is None
+
+
+def test_default_recipient_unset_returns_none(tmp_paths):
+    """YAML exists with contacts but no `default-recipient` key →
+    None. Stranger installs without a configured main user must
+    error loudly rather than guessing."""
+    (tmp_paths.root / "ADDRESSBOOK.yaml").write_text(
+        "contacts:\n"
+        "  alpha:\n"
+        "    telegram: 1111\n"
+    )
+    assert _contacts.default_telegram_chat_id(tmp_paths) is None
+
+
+def test_default_recipient_points_at_unknown_contact_returns_none(tmp_paths):
+    """`default-recipient: ghost` with ghost not in contacts → None.
+    No silent fall-through; the operator's intent (ghost) is honored
+    and the unresolved name surfaces as a loud CLI error."""
+    (tmp_paths.root / "ADDRESSBOOK.yaml").write_text(
+        "default-recipient: ghost\n"
+        "contacts:\n"
+        "  alpha:\n"
+        "    telegram: 1111\n"
+    )
+    assert _contacts.default_telegram_chat_id(tmp_paths) is None
+
+
+def test_default_recipient_legacy_json_only_returns_none(tmp_paths):
+    """Legacy JSON has no concept of default-recipient. Even with
+    contacts present in the legacy file, `default_telegram_chat_id`
+    returns None — operators migrate via ``install.sh``, which writes
+    a `default-recipient` pointer when one of the legacy file's
+    entries matches the migration convention. Pre-migration call
+    paths must error rather than guess."""
+    legacy = tmp_paths.root / "config" / "telegram_contacts.json"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(json.dumps({"julian": 1111, "ella": 2222}))
+    assert _contacts.default_telegram_chat_id(tmp_paths) is None
