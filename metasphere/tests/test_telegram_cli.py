@@ -250,32 +250,20 @@ def test_send_bare_falls_back_to_default_recipient(_redirect_addressbook,
     """No --to / --chat-id / @<name> → default-recipient resolves."""
     ab, _legacy = _redirect_addressbook
     ab.write_text(
-        "default-recipient: julian\n"
+        "default-recipient: mainuser\n"
         "contacts:\n"
-        "  julian:\n"
-        "    telegram: 228838013\n"
+        "  mainuser:\n"
+        "    telegram: 1111\n"
     )
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
     rc = _cli.main(["send", "morning briefing"])
     assert rc == 0
-    assert stub_send == [(228838013, "morning briefing")]
-
-
-def test_send_bare_falls_back_to_legacy_julian(_redirect_addressbook,
-                                                stub_send, monkeypatch, capsys):
-    """No YAML, legacy JSON has julian → resolves to legacy julian."""
-    _ab, legacy = _redirect_addressbook
-    legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text(json.dumps({"julian": 228838013}))
-    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
-    rc = _cli.main(["send", "ping"])
-    assert rc == 0
-    assert stub_send == [(228838013, "ping")]
+    assert stub_send == [(1111, "morning briefing")]
 
 
 def test_send_bare_no_config_errors(_redirect_addressbook, stub_send,
                                      monkeypatch, capsys):
-    """No YAML, no legacy julian → error, no silent group send."""
+    """No YAML + no default-recipient → error, no silent fallback."""
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
     rc = _cli.main(["send", "ping"])
     assert rc == 2
@@ -283,6 +271,23 @@ def test_send_bare_no_config_errors(_redirect_addressbook, stub_send,
     err = capsys.readouterr().err
     assert "no chat id" in err
     assert "default-recipient" in err
+
+
+def test_send_bare_legacy_json_without_default_recipient_errors(
+        _redirect_addressbook, stub_send, monkeypatch, capsys):
+    """Legacy JSON exists but `default-recipient` is unset (the
+    pre-migration state). Bare send errors loudly — the operator
+    must run ``metasphere update`` to get install.sh's migration to
+    write the default-recipient pointer."""
+    _ab, legacy = _redirect_addressbook
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(json.dumps({"julian": 1111}))
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    rc = _cli.main(["send", "ping"])
+    assert rc == 2
+    assert stub_send == []
+    err = capsys.readouterr().err
+    assert "no chat id" in err
 
 
 def test_send_bare_default_recipient_resolves_to_group_rejected(
@@ -341,10 +346,10 @@ def test_send_document_bare_falls_back_to_default_recipient(
     """send-document also flows through default_telegram_chat_id."""
     ab, _legacy = _redirect_addressbook
     ab.write_text(
-        "default-recipient: julian\n"
+        "default-recipient: mainuser\n"
         "contacts:\n"
-        "  julian:\n"
-        "    telegram: 228838013\n"
+        "  mainuser:\n"
+        "    telegram: 1111\n"
     )
     sent: list[tuple] = []
 
@@ -358,7 +363,7 @@ def test_send_document_bare_falls_back_to_default_recipient(
     f.write_text("payload")
     rc = _cli.main(["send-document", str(f)])
     assert rc == 0
-    assert sent == [(228838013, str(f))]
+    assert sent == [(1111, str(f))]
 
 
 def test_send_document_explicit_group_chat_id_rejected(

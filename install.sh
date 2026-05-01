@@ -328,8 +328,13 @@ if not isinstance(data, dict):
     print(f"unexpected shape in {src} (not a JSON object)", file=sys.stderr)
     sys.exit(1)
 lines = ["# Migrated from legacy ~/.metasphere/config/telegram_contacts.json",
-         "# at install time. Edit freely.",
-         "contacts:"]
+         "# at install time. Edit freely."]
+# Preserve the legacy 'julian' default-recipient convention for
+# hosts that had it. Stranger installs without a 'julian' entry get
+# no default-recipient written — operator must set it explicitly.
+if "julian" in data:
+    lines.append("default-recipient: julian")
+lines.append("contacts:")
 for name, chat_id in data.items():
     lines.append(f"  {name}:")
     lines.append(f"    telegram: {chat_id}")

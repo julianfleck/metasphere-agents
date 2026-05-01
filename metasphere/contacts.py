@@ -114,8 +114,9 @@ def _load_default_recipient_name(paths: Paths | None = None) -> str | None:
     ADDRESSBOOK.yaml, or ``None`` if not configured.
 
     Legacy ``telegram_contacts.json`` has no concept of
-    default-recipient; that path returns ``None`` here and callers
-    fall back to the historical ``julian`` convention.
+    default-recipient; that path always returns ``None``. Operators
+    migrating off the legacy file get a populated default-recipient
+    written by ``install.sh`` (see the migration block in install.sh).
     """
     return _load_cached(str(_addressbook_path(paths)),
                         str(_legacy_contacts_path(paths))).get("default-recipient")
@@ -226,29 +227,23 @@ def has_contact(name: str, paths: Paths | None = None) -> bool:
     return name.lower() in contacts
 
 
-LEGACY_DEFAULT_RECIPIENT_NAME = "julian"
-
-
 def default_telegram_chat_id(paths: Paths | None = None) -> int | None:
     """Resolve the configured "main user" Telegram chat id.
 
-    Order:
-    1. ``default-recipient: <name>`` in ADDRESSBOOK.yaml → that
-       contact's ``telegram`` entry.
-    2. Legacy convention: the contact named ``julian`` (the
-       historical default baked into ``telegram_contacts.json``
-       installs).
+    Reads ``default-recipient: <name>`` from ADDRESSBOOK.yaml and
+    returns that contact's ``telegram`` entry, or ``None`` if either
+    the key is unset or the named contact has no telegram method.
 
-    Returns ``None`` when neither path resolves. Callers must treat
-    ``None`` as "no fallback configured" — the leak-vector fix
-    requires we never silently substitute a last-inbound chat id.
+    Callers must treat ``None`` as "no fallback configured" — the
+    leak-vector fix requires we never silently substitute a
+    last-inbound chat id. Operators migrating from the legacy
+    ``telegram_contacts.json`` get ``default-recipient`` written by
+    ``install.sh`` (instance state belongs in instance state).
     """
     name = _load_default_recipient_name(paths)
-    if name:
-        chat_id = lookup_telegram(name, paths)
-        if chat_id is not None:
-            return chat_id
-    return lookup_telegram(LEGACY_DEFAULT_RECIPIENT_NAME, paths)
+    if not name:
+        return None
+    return lookup_telegram(name, paths)
 
 
 def clear_cache() -> None:
