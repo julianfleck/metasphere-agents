@@ -179,3 +179,76 @@ def test_legacy_warn_emits_only_once(tmp_paths, capsys):
     _contacts.load_addressbook(tmp_paths)
     captured = capsys.readouterr()
     assert captured.err == ""
+
+
+# ---------- default_telegram_chat_id ----------
+
+def test_default_recipient_yaml_resolves(tmp_paths):
+    """`default-recipient: alpha` → alpha's telegram chat id."""
+    (tmp_paths.root / "ADDRESSBOOK.yaml").write_text(
+        "default-recipient: alpha\n"
+        "contacts:\n"
+        "  alpha:\n"
+        "    telegram: 1111\n"
+        "  julian:\n"
+        "    telegram: 2222\n"
+    )
+    assert _contacts.default_telegram_chat_id(tmp_paths) == 1111
+
+
+def test_default_recipient_case_insensitive(tmp_paths):
+    """default-recipient matches contact name case-insensitively."""
+    (tmp_paths.root / "ADDRESSBOOK.yaml").write_text(
+        "default-recipient: Alpha\n"
+        "contacts:\n"
+        "  alpha:\n"
+        "    telegram: 1111\n"
+    )
+    assert _contacts.default_telegram_chat_id(tmp_paths) == 1111
+
+
+def test_default_recipient_missing_falls_back_to_julian(tmp_paths):
+    """No `default-recipient` key → fall back to the historical
+    `julian` convention baked into legacy installs."""
+    (tmp_paths.root / "ADDRESSBOOK.yaml").write_text(
+        "contacts:\n"
+        "  julian:\n"
+        "    telegram: 228838013\n"
+    )
+    assert _contacts.default_telegram_chat_id(tmp_paths) == 228838013
+
+
+def test_default_recipient_points_at_unknown_contact_falls_back(tmp_paths):
+    """`default-recipient: ghost` (not in contacts) → falls back to julian."""
+    (tmp_paths.root / "ADDRESSBOOK.yaml").write_text(
+        "default-recipient: ghost\n"
+        "contacts:\n"
+        "  julian:\n"
+        "    telegram: 228838013\n"
+    )
+    assert _contacts.default_telegram_chat_id(tmp_paths) == 228838013
+
+
+def test_default_recipient_legacy_json_uses_julian(tmp_paths):
+    """No YAML, only legacy JSON → resolves to legacy 'julian' entry."""
+    legacy = tmp_paths.root / "config" / "telegram_contacts.json"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(json.dumps({"julian": 228838013, "ella": 5418799462}))
+    assert _contacts.default_telegram_chat_id(tmp_paths) == 228838013
+
+
+def test_default_recipient_no_config_returns_none(tmp_paths):
+    """No YAML, no legacy → no fallback. Caller must error rather
+    than silently substituting a last-inbound chat id."""
+    assert _contacts.default_telegram_chat_id(tmp_paths) is None
+
+
+def test_default_recipient_yaml_present_but_no_julian_returns_none(tmp_paths):
+    """YAML exists, no `default-recipient`, no `julian` contact → None.
+    Stranger installs without the legacy convention must error loudly."""
+    (tmp_paths.root / "ADDRESSBOOK.yaml").write_text(
+        "contacts:\n"
+        "  alpha:\n"
+        "    telegram: 1111\n"
+    )
+    assert _contacts.default_telegram_chat_id(tmp_paths) is None

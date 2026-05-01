@@ -8,6 +8,7 @@ files).
 
 Schema::
 
+    default-recipient: <name>      # optional; the "main user" fallback
     contacts:
       <name>:
         telegram: <chat_id>
@@ -105,15 +106,34 @@ def load_addressbook(paths: Paths | None = None) -> dict[str, dict[str, Any]]:
     new entries.
     """
     return _load_cached(str(_addressbook_path(paths)),
-                        str(_legacy_contacts_path(paths)))
+                        str(_legacy_contacts_path(paths))).get("contacts") or {}
+
+
+def _load_default_recipient_name(paths: Paths | None = None) -> str | None:
+    """Return the lowercase ``default-recipient`` name from
+    ADDRESSBOOK.yaml, or ``None`` if not configured.
+
+    Legacy ``telegram_contacts.json`` has no concept of
+    default-recipient; that path returns ``None`` here and callers
+    fall back to the historical ``julian`` convention.
+    """
+    return _load_cached(str(_addressbook_path(paths)),
+                        str(_legacy_contacts_path(paths))).get("default-recipient")
 
 
 @lru_cache(maxsize=4)
-def _load_cached(addressbook_path: str, legacy_path: str) -> dict[str, dict[str, Any]]:
+def _load_cached(addressbook_path: str, legacy_path: str) -> dict[str, Any]:
     """Cache key includes both paths so test fixtures don't bleed.
 
-    Returns lowercase-keyed contacts dict. The keys are normalized so
-    case-insensitive lookup is just a dict get on the lower form.
+    Returns the parsed addressbook with shape::
+
+        {
+          "contacts": {<lower-name>: {<method>: <handle>, ...}, ...},
+          "default-recipient": <lower-name> | None,
+        }
+
+    ``contacts`` keys are lowercased so case-insensitive lookup is
+    a plain dict get.
     """
     ab_path = Path(addressbook_path)
     lc_path = Path(legacy_path)
@@ -123,25 +143,27 @@ def _load_cached(addressbook_path: str, legacy_path: str) -> dict[str, dict[str,
 
     if lc_path.is_file():
         _emit_legacy_warn(lc_path)
-        return _load_legacy_json(lc_path)
+        return {"contacts": _load_legacy_json(lc_path),
+                "default-recipient": None}
 
     _emit_missing_warn(ab_path)
-    return {}
+    return {"contacts": {}, "default-recipient": None}
 
 
-def _load_yaml(path: Path) -> dict[str, dict[str, Any]]:
+def _load_yaml(path: Path) -> dict[str, Any]:
     """Parse a single ADDRESSBOOK.yaml. Tolerates malformed YAML by
     returning empty + WARN."""
+    empty: dict[str, Any] = {"contacts": {}, "default-recipient": None}
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError as e:
         print(f"[WARN] failed to read {path}: {e}", file=sys.stderr)
-        return {}
+        return empty
     try:
         data = yaml.safe_load(raw) or {}
     except yaml.YAMLError as e:
         print(f"[WARN] malformed YAML at {path}: {e}", file=sys.stderr)
-        return {}
+        return empty
     contacts = data.get("contacts") or {}
     if not isinstance(contacts, dict):
         print(
@@ -149,13 +171,17 @@ def _load_yaml(path: Path) -> dict[str, dict[str, Any]]:
             f"{type(contacts).__name__}",
             file=sys.stderr,
         )
-        return {}
-    out: dict[str, dict[str, Any]] = {}
+        contacts = {}
+    out_contacts: dict[str, dict[str, Any]] = {}
     for name, methods in contacts.items():
         if not isinstance(methods, dict):
             continue
-        out[str(name).lower()] = dict(methods)
-    return out
+        out_contacts[str(name).lower()] = dict(methods)
+
+    raw_default = data.get("default-recipient")
+    default_name = str(raw_default).lower() if raw_default else None
+
+    return {"contacts": out_contacts, "default-recipient": default_name}
 
 
 def _load_legacy_json(path: Path) -> dict[str, dict[str, Any]]:
@@ -198,6 +224,31 @@ def has_contact(name: str, paths: Paths | None = None) -> bool:
     """Return True iff ``name`` exists in the addressbook (any method)."""
     contacts = load_addressbook(paths)
     return name.lower() in contacts
+
+
+LEGACY_DEFAULT_RECIPIENT_NAME = "julian"
+
+
+def default_telegram_chat_id(paths: Paths | None = None) -> int | None:
+    """Resolve the configured "main user" Telegram chat id.
+
+    Order:
+    1. ``default-recipient: <name>`` in ADDRESSBOOK.yaml → that
+       contact's ``telegram`` entry.
+    2. Legacy convention: the contact named ``julian`` (the
+       historical default baked into ``telegram_contacts.json``
+       installs).
+
+    Returns ``None`` when neither path resolves. Callers must treat
+    ``None`` as "no fallback configured" — the leak-vector fix
+    requires we never silently substitute a last-inbound chat id.
+    """
+    name = _load_default_recipient_name(paths)
+    if name:
+        chat_id = lookup_telegram(name, paths)
+        if chat_id is not None:
+            return chat_id
+    return lookup_telegram(LEGACY_DEFAULT_RECIPIENT_NAME, paths)
 
 
 def clear_cache() -> None:

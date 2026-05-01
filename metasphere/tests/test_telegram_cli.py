@@ -213,3 +213,165 @@ def test_send_at_name_falls_back_to_legacy_contacts(tmp_paths, stub_send,
     # Deprecation WARN fires once on legacy load.
     err = capsys.readouterr().err
     assert "deprecated" in err
+
+
+# ---------- bare-fallback chat-id resolution (PR D leak fix) ----------
+#
+# Before 2026-05-01 the bare ``send "<text>"`` form (no --to, no
+# --chat-id, no @<name>) fell through to a last-inbound rewrite file
+# that any group message could overwrite — leak vector. The new
+# fallback is the configured default-recipient, with a defense check
+# rejecting negative (group) chat ids.
+
+@pytest.fixture
+def _redirect_addressbook(tmp_paths, monkeypatch):
+    """Pin contacts._addressbook_path / _legacy_contacts_path to
+    tmp_paths so per-test fixtures land where the loader looks.
+
+    Returns the addressbook path so callers can write their own
+    fixture content. Unlike the ``addressbook`` fixture, no default
+    YAML is written — each test controls its own setup."""
+    ab = tmp_paths.root / "ADDRESSBOOK.yaml"
+    legacy = tmp_paths.root / "config" / "telegram_contacts.json"
+
+    def _ab_path(_paths=None):
+        return ab
+
+    def _legacy_path(_paths=None):
+        return legacy
+
+    monkeypatch.setattr(_contacts, "_addressbook_path", _ab_path)
+    monkeypatch.setattr(_contacts, "_legacy_contacts_path", _legacy_path)
+    return ab, legacy
+
+
+def test_send_bare_falls_back_to_default_recipient(_redirect_addressbook,
+                                                    stub_send, monkeypatch):
+    """No --to / --chat-id / @<name> → default-recipient resolves."""
+    ab, _legacy = _redirect_addressbook
+    ab.write_text(
+        "default-recipient: julian\n"
+        "contacts:\n"
+        "  julian:\n"
+        "    telegram: 228838013\n"
+    )
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    rc = _cli.main(["send", "morning briefing"])
+    assert rc == 0
+    assert stub_send == [(228838013, "morning briefing")]
+
+
+def test_send_bare_falls_back_to_legacy_julian(_redirect_addressbook,
+                                                stub_send, monkeypatch, capsys):
+    """No YAML, legacy JSON has julian → resolves to legacy julian."""
+    _ab, legacy = _redirect_addressbook
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(json.dumps({"julian": 228838013}))
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    rc = _cli.main(["send", "ping"])
+    assert rc == 0
+    assert stub_send == [(228838013, "ping")]
+
+
+def test_send_bare_no_config_errors(_redirect_addressbook, stub_send,
+                                     monkeypatch, capsys):
+    """No YAML, no legacy julian → error, no silent group send."""
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    rc = _cli.main(["send", "ping"])
+    assert rc == 2
+    assert stub_send == []
+    err = capsys.readouterr().err
+    assert "no chat id" in err
+    assert "default-recipient" in err
+
+
+def test_send_bare_default_recipient_resolves_to_group_rejected(
+        _redirect_addressbook, stub_send, monkeypatch, capsys):
+    """Operator misconfigured default-recipient to point at a group
+    (negative chat id). Defense-in-depth check refuses to send."""
+    ab, _legacy = _redirect_addressbook
+    ab.write_text(
+        "default-recipient: groupy\n"
+        "contacts:\n"
+        "  groupy:\n"
+        "    telegram: -5262638621\n"
+    )
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    rc = _cli.main(["send", "secret briefing"])
+    assert rc == 2
+    assert stub_send == []
+    err = capsys.readouterr().err
+    assert "group chat id -5262638621" in err
+
+
+def test_send_explicit_chat_id_group_rejected(addressbook, stub_send,
+                                                monkeypatch, capsys):
+    """`--chat-id <negative>` is rejected: defense check fires
+    independent of the default-recipient logic."""
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    rc = _cli.main(["send", "leak", "--chat-id", "-1001234567890"])
+    assert rc == 2
+    assert stub_send == []
+    err = capsys.readouterr().err
+    assert "group chat id -1001234567890" in err
+
+
+def test_send_explicit_to_resolving_to_group_rejected(
+        _redirect_addressbook, stub_send, monkeypatch, capsys):
+    """`--to <name>` resolves a contact whose telegram entry is a
+    group id. Defense check still rejects."""
+    ab, _legacy = _redirect_addressbook
+    ab.write_text(
+        "contacts:\n"
+        "  groupy:\n"
+        "    telegram: -5262638621\n"
+    )
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    rc = _cli.main(["send", "leak", "--to", "groupy"])
+    assert rc == 2
+    assert stub_send == []
+    err = capsys.readouterr().err
+    assert "group chat id -5262638621" in err
+
+
+# ---------- send-document fallback (same chain) ----------
+
+def test_send_document_bare_falls_back_to_default_recipient(
+        _redirect_addressbook, monkeypatch, tmp_path):
+    """send-document also flows through default_telegram_chat_id."""
+    ab, _legacy = _redirect_addressbook
+    ab.write_text(
+        "default-recipient: julian\n"
+        "contacts:\n"
+        "  julian:\n"
+        "    telegram: 228838013\n"
+    )
+    sent: list[tuple] = []
+
+    def fake_send(chat_id, *_args, **kwargs):
+        sent.append((chat_id, kwargs.get("document_path")))
+        return {"ok": True, "result": {"document": {"file_id": "xyz"}}}
+
+    monkeypatch.setattr(_cli.api, "send_with_cc", fake_send)
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    f = tmp_path / "doc.txt"
+    f.write_text("payload")
+    rc = _cli.main(["send-document", str(f)])
+    assert rc == 0
+    assert sent == [(228838013, str(f))]
+
+
+def test_send_document_explicit_group_chat_id_rejected(
+        monkeypatch, tmp_path, capsys):
+    """`send-document --chat-id <negative>` is rejected too."""
+    sent: list = []
+    monkeypatch.setattr(_cli.api, "send_with_cc",
+                        lambda *a, **k: sent.append(a) or {"ok": True, "result": {}})
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    f = tmp_path / "doc.txt"
+    f.write_text("payload")
+    rc = _cli.main(["send-document", str(f), "--chat-id", "-100"])
+    assert rc == 2
+    assert sent == []
+    err = capsys.readouterr().err
+    assert "group chat id -100" in err
