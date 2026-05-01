@@ -657,11 +657,18 @@ def wake_persistent(
     _tmux_run("set-option", "-t", session, "history-limit", "100000")
 
     # shlex.quote each value so apostrophes in scope/path don't break the shell.
+    # CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 disables the TUI feedback
+    # modal that otherwise captures input and causes stuck-paste
+    # accumulation (2026-04-16). ``CLAUDE_CODE_DISABLE_NONESSENTIAL_
+    # TRAFFIC=1`` is the superset that also suppresses the telemetry
+    # pressing Dismiss would otherwise emit.
     env_export = (
         f"export METASPHERE_AGENT_ID={shlex.quote(agent_id)} "
         f"METASPHERE_SCOPE={shlex.quote(scope_str)} "
         f"METASPHERE_PROJECT_ROOT={shlex.quote(str(paths.project_root))} "
-        f"METASPHERE_DIR={shlex.quote(str(paths.root))}"
+        f"METASPHERE_DIR={shlex.quote(str(paths.root))} "
+        f"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 "
+        f"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
     )
     _tmux_run("send-keys", "-t", session, env_export, "Enter")
 

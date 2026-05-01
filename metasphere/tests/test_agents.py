@@ -276,6 +276,20 @@ def test_wake_persistent_cold_start_runs_tmux_new_session(tmp_paths: Paths):
     assert "-s" in nc
     assert "metasphere-waker" in nc
 
+    # PR #21: env_export for the pane must include the feedback-modal
+    # disable flags so the claude TUI doesn't show "How is Claude doing
+    # this session?" for metasphere-spawned agent REPLs (the modal
+    # captures input and caused stuck-paste accumulation 2026-04-16).
+    send_keys_calls = [c for c in calls if "send-keys" in c]
+    env_exports = [
+        c for c in send_keys_calls
+        if any("METASPHERE_AGENT_ID" in part for part in c)
+    ]
+    assert env_exports, f"expected an env-export send-keys call, got {send_keys_calls}"
+    env_line = " ".join(env_exports[0])
+    assert "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1" in env_line
+    assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1" in env_line
+
 
 def test_wake_persistent_project_scoped_uses_project_cwd(tmp_paths: Paths, tmp_path: Path):
     # When a project-scoped agent has no explicit `scope` file but its
