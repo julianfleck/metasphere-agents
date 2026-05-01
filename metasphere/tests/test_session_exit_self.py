@@ -104,6 +104,70 @@ def test_exit_self_headless_no_tmux_returns_1(monkeypatch, capsys):
     assert "metasphere-headless-spawn" in err
 
 
+def test_exit_self_emits_agent_exit_self_event(monkeypatch):
+    """Successful exit-self appends an ``agent.exit_self`` record so the
+    silent-success path is observable in the events log. Without this
+    emit, a cron-fired session that exits cleanly leaves no trace
+    between ``agent.session`` (start) and the next reap sweep.
+    """
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@worker-cron-1")
+
+    recorded: list[dict] = []
+
+    def _fake_log_event(type_, message, *, agent=None, meta=None, **_kw):
+        recorded.append(
+            {"type": type_, "message": message, "agent": agent, "meta": meta or {}}
+        )
+
+    with patch(
+        "metasphere.cli.session._resolve_session",
+        return_value="metasphere-worker-cron-1",
+    ), patch(
+        "metasphere.cli.session.session_alive", return_value=True
+    ), patch(
+        "metasphere.cli.session._tmux",
+        return_value=type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    ), patch(
+        "metasphere.cli.session.time.sleep", return_value=None
+    ), patch(
+        "metasphere.cli.session.log_event", side_effect=_fake_log_event
+    ):
+        rc = cli_session.main(["exit-self"])
+
+    assert rc == 0
+    exit_evts = [r for r in recorded if r["type"] == "agent.exit_self"]
+    assert len(exit_evts) == 1, f"expected one agent.exit_self event, got {recorded}"
+    evt = exit_evts[0]
+    assert evt["agent"] == "@worker-cron-1"
+    assert evt["meta"].get("session") == "metasphere-worker-cron-1"
+
+
+def test_exit_self_event_emit_failure_does_not_break_exit(monkeypatch):
+    """If ``log_event`` raises (disk full, permissions, etc), the actual
+    /exit send must still complete and return 0 — observability is
+    best-effort, the kill is load-bearing.
+    """
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@worker-cron-1")
+
+    with patch(
+        "metasphere.cli.session._resolve_session",
+        return_value="metasphere-worker-cron-1",
+    ), patch(
+        "metasphere.cli.session.session_alive", return_value=True
+    ), patch(
+        "metasphere.cli.session._tmux",
+        return_value=type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    ), patch(
+        "metasphere.cli.session.time.sleep", return_value=None
+    ), patch(
+        "metasphere.cli.session.log_event",
+        side_effect=OSError("disk full"),
+    ):
+        rc = cli_session.main(["exit-self"])
+
+    assert rc == 0
+
+
 def test_exit_self_resolves_project_scoped_agent(monkeypatch):
     """Project-scoped agents must resolve to the project-prefixed session
     name, not the bare ``session_name_for`` form. Regression mirrors the
