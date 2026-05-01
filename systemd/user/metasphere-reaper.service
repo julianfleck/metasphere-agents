@@ -1,6 +1,6 @@
 [Unit]
 Description=Metasphere reaper: kill stale `npm root -g` zombies
-Documentation=file:///home/openclaw/projects/metasphere-agents/docs/OPS.md
+Documentation=https://github.com/julianfleck/metasphere-agents/blob/main/docs/OPS.md
 
 [Service]
 Type=oneshot

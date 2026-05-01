@@ -284,7 +284,7 @@ def test_poller_captures_reply_to_fields():
         "message": {
             "message_id": 50,
             "chat": {"id": 1, "is_forum": False},
-            "from": {"username": "j0lian"},
+            "from": {"username": "testuser"},
             "text": "yes, do it",
             "date": 1700000000,
             "reply_to_message": {
@@ -308,7 +308,7 @@ def test_poller_reply_preview_truncates_at_100_chars():
         "message": {
             "message_id": 2,
             "chat": {"id": 1},
-            "from": {"username": "j0lian"},
+            "from": {"username": "testuser"},
             "text": "ok",
             "reply_to_message": {"message_id": 1, "text": long},
         },
@@ -324,7 +324,7 @@ def test_poller_message_without_reply_has_none_reply_fields():
         "message": {
             "message_id": 3,
             "chat": {"id": 1},
-            "from": {"username": "j0lian"},
+            "from": {"username": "testuser"},
             "text": "hi",
         },
     }
@@ -340,7 +340,7 @@ def test_poller_parses_message_reaction_update():
         "message_reaction": {
             "chat": {"id": -1001, "is_forum": True},
             "message_id": 17,
-            "user": {"id": 99, "username": "j0lian"},
+            "user": {"id": 99, "username": "testuser"},
             "date": 1700000123,
             "old_reaction": [],
             "new_reaction": [{"type": "emoji", "emoji": "\U0001f44d"}],
@@ -350,7 +350,7 @@ def test_poller_parses_message_reaction_update():
     assert u.kind == "reaction"
     assert u.reaction_target_message_id == 17
     assert u.reaction_emojis == ["\U0001f44d"]
-    assert u.from_username == "j0lian"
+    assert u.from_username == "testuser"
     assert u.chat_id == -1001
 
 
@@ -383,7 +383,7 @@ def test_archive_message_lifts_reply_to_fields(tmp_path):
     msg = {
         "message_id": 60,
         "text": "replying now",
-        "from": {"username": "j0lian"},
+        "from": {"username": "testuser"},
         "chat": {"id": 5},
         "date": 1700000000,
         "reply_to_message": {
@@ -423,7 +423,7 @@ def test_archive_reaction_round_trip(tmp_path):
     path = archiver.archive_reaction(
         target_message_id=17,
         emojis=["\U0001f44d"],
-        from_username="j0lian",
+        from_username="testuser",
         chat_id=-1001,
         date=1700000000,
         base_dir=str(tmp_path),
@@ -432,7 +432,7 @@ def test_archive_reaction_round_trip(tmp_path):
         row = json.loads(f.readline())
     assert row["kind"] == "reaction"
     assert row["reaction_target_message_id"] == 17
-    assert row["reactions"] == [{"emoji": "\U0001f44d", "from": "j0lian"}]
+    assert row["reactions"] == [{"emoji": "\U0001f44d", "from": "testuser"}]
 
 
 # --- telegram_context() rendering ----------------------------------------
@@ -441,7 +441,7 @@ def test_telegram_context_renders_reply_indicator(tmp_path):
     msg = {
         "message_id": 61,
         "text": "yes please",
-        "from": {"username": "j0lian"},
+        "from": {"username": "testuser"},
         "chat": {"id": 5},
         "date": 1700000000,
         "reply_to_message": {
@@ -459,7 +459,7 @@ def test_telegram_context_renders_reaction_line(tmp_path):
     archiver.archive_reaction(
         target_message_id=99,
         emojis=["\U0001f525"],
-        from_username="j0lian",
+        from_username="testuser",
         chat_id=-1001,
         date=1700000000,
         base_dir=str(tmp_path),
@@ -467,7 +467,7 @@ def test_telegram_context_renders_reaction_line(tmp_path):
     out = archiver.telegram_context(history=5, base_dir=str(tmp_path))
     assert "reaction:" in out
     assert "\U0001f525" in out
-    assert "@j0lian" in out
+    assert "@testuser" in out
     assert "msg-99" in out
 
 
@@ -476,7 +476,7 @@ def test_telegram_context_reply_preview_truncates_at_60_chars(tmp_path):
     msg = {
         "message_id": 1,
         "text": "ok",
-        "from": {"username": "j0lian"},
+        "from": {"username": "testuser"},
         "chat": {"id": 1},
         "date": 1700000000,
         "reply_to_message": {"message_id": 99, "text": long_quote},
@@ -499,7 +499,7 @@ def test_telegram_context_backcompat_old_rows_without_new_fields(tmp_path):
         f.write(json.dumps({
             "message_id": 1,
             "text": "legacy row",
-            "from": {"username": "j0lian"},
+            "from": {"username": "testuser"},
             "chat": {"id": 1},
             "date": 1700000000,
         }) + "\n")
@@ -961,12 +961,12 @@ def test_handle_update_plain_text_unchanged(tmp_path, monkeypatch):
 
 def test_handle_update_telegram_inject_does_not_defer(tmp_path, monkeypatch):
     """Telegram-user inbound IS the user typing — clobbering visible
-    REPL content with a telegram is precisely what j0lian wants. The
+    REPL content with a telegram is precisely what testuser wants. The
     handler MUST pass ``defer_if_busy=False`` (or omit it / leave the
     default) so the input-buffer guard never gates this path.
 
     Regression for the 2026-04-16 PR #23 overreach: handler.py originally
-    passed defer_if_busy=True, which silently dropped j0lian's
+    passed defer_if_busy=True, which silently dropped testuser's
     12:15/12:48/12:54 CEST messages whenever the orchestrator pane had
     typed content. Telegram-side marked status=read but the pane never
     became a user-turn.
@@ -988,7 +988,7 @@ def test_handle_update_telegram_inject_does_not_defer(tmp_path, monkeypatch):
         "message": {
             "message_id": 901,
             "chat": {"id": 123, "is_forum": False},
-            "from": {"username": "j0lian"},
+            "from": {"username": "testuser"},
             "date": 1700000000,
             "text": "is this getting through?",
         },

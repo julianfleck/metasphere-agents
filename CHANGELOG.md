@@ -16,11 +16,11 @@ Re-implemented three CLI subcommands that the README promised but had no Python 
 
 ## 2026-04-15 — PR #11: Project-paths cleanup + consolidator routing + paused terminal
 
-Julian flagged that his view was seeing 7-8 STALE→escalated-user events per 15-min cycle from worldwire tasks. Bundled five related fixes:
+The maintainer flagged that the operator view was seeing 7-8 STALE→escalated-user events per 15-min cycle from worldwire tasks. Bundled five related fixes:
 
 - **Removed PR #10 migration bridges** — `load_project` / `save_project` are now canonical-only (no in-repo read fallback, no dual-write).
 - **Dropped unused `project_root` params** on `_find_task_file`, `scan_active_tasks`, `scan_inbox_messages`.
-- **Consolidator routes pings to `@<project>-lead`** before `task.assignee` (Julian directive). New `_route_ping_target` resolves `project → registered lead member → agent id`; falls back to assignee if no lead.
+- **Consolidator routes pings to `@<project>-lead`** before `task.assignee` (maintainer directive). New `_route_ping_target` resolves `project → registered lead member → agent id`; falls back to assignee if no lead.
 - **`VERDICT_PAUSED`** — `status: paused` now classifies terminal before the stale window check. `apply_verdict` treats it like BLOCKED / ACTIVE (noop, no ping, no archive).
 - Deployed clean; 13 PAUSED→noop, 0 escalations on the next consolidate cycle.
 
@@ -39,7 +39,7 @@ Fixed the root cause behind `metasphere task done <id>` raising `FileNotFoundErr
 
 ## 2026-04-15 — PR #8: Extended test-pollution guard + autouse sandbox
 
-PR #5's `b'BYTES:'`-only signature guard missed the 2026-04-15 Fix 1 leak where 41 fake task `.md` files and 64 stream JSONL lines landed in real `~/.metasphere/`. Three-pass session-end detector: signature match (pass 1); any new file with a pollution extension (.md/.lock/.jsonl/.bin) under a guarded subdir (pass 2); stream-content allow-listing Julian's real chat_id against a regex over the `"chat":{"id":N}` shape (pass 3). Autouse fixture redirects METASPHERE_DIR + 8 home-relative module constants + 8 function `__defaults__` tuples per test — closes the ignored-Paths-arg loophole that bypassed env monkeypatch.
+PR #5's `b'BYTES:'`-only signature guard missed the 2026-04-15 Fix 1 leak where 41 fake task `.md` files and 64 stream JSONL lines landed in real `~/.metasphere/`. Three-pass session-end detector: signature match (pass 1); any new file with a pollution extension (.md/.lock/.jsonl/.bin) under a guarded subdir (pass 2); stream-content allow-listing the operator's real chat_id against a regex over the `"chat":{"id":N}` shape (pass 3). Autouse fixture redirects METASPHERE_DIR + 8 home-relative module constants + 8 function `__defaults__` tuples per test — closes the ignored-Paths-arg loophole that bypassed env monkeypatch.
 
 ## 2026-04-15 — PR #5: Session-scoped pollution guard (signature-based)
 

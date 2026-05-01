@@ -200,7 +200,7 @@ direct accusation.
 
 Registered in `~/.metasphere/schedule/jobs.json` as `brain:explore`,
 cron `0 9 * * *` (daily at 09:00 UTC), `payload_kind=command`,
-running `/home/openclaw/projects/metasphere-agents/brain/brain
+running `<repo-root>/brain/brain
 explore` directly. The metasphere schedule daemon's PATH already
 includes `~/.metasphere/bin` and `~/.local/bin`, so the inner
 subprocess calls (`metasphere telegram send`, `claude`) resolve.
