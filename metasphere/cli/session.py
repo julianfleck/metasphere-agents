@@ -16,6 +16,7 @@ import sys
 import time
 
 from metasphere.agents import session_alive
+from metasphere.events import log_event
 from metasphere.gateway.session import _tmux
 from metasphere.session import (
     _resolve_session,
@@ -161,6 +162,15 @@ def main(argv: list[str] | None = None) -> int:
         _tmux("send-keys", "-t", target, "Enter")
         time.sleep(0.4)
         _tmux("send-keys", "-t", target, "Enter")
+        try:
+            log_event(
+                "agent.exit_self",
+                f"{caller} sent /exit to own session {target}",
+                agent=caller,
+                meta={"session": target},
+            )
+        except Exception:
+            pass
         print(f"sent /exit to {target} ({caller})")
         return 0
 
