@@ -150,6 +150,17 @@ git diff <base>..HEAD | grep -iE '<id-1>|<id-2>|<chat-id-int>'
 
 The grep takes 30 seconds; an amendment cycle takes 30 minutes.
 
+**Cover all surface variants of each identifier.** A single person
+can show up in a brief as both an agent-network handle (e.g.
+`@<handle>`) and a real first name (e.g. `<RealName>`). Same
+person, two greps. Likewise: a host can show up as both a homedir
+path (`/home/<user>/...`) and an SSH alias; a bot can show up as
+both `@<bot_username>` and `<BotDisplayName>`. The grep needs every
+form. Variant-blindness — checking only the agent-handle and
+forgetting the real-name (or vice versa) — has already slipped at
+least one prose-only operator-name leak past an otherwise clean
+self-check.
+
 This rule exists because the pattern is briefing-side leakage
 echoing into shipped code: `@orchestrator` includes identifiers in
 `!task` bodies as context, and the eng agent verbatim-copies them
