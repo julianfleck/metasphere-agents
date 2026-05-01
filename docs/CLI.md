@@ -890,8 +890,6 @@ metasphere telegram getme                        # bot info JSON
 #   1. --chat-id N                               (explicit numeric id)
 #   2. --to <name> / "@<name>"                   (addressbook lookup)
 #   3. ADDRESSBOOK.yaml `default-recipient`      (the configured "main user")
-#   4. Legacy `julian` contact                   (historical convention from
-#                                                 telegram_contacts.json installs)
 # When none resolves the command errors rather than silently substituting
 # a last-inbound chat id.
 #
