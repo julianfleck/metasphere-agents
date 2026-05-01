@@ -111,6 +111,50 @@ Branch shape: `<type>/<short-name>` (e.g.
 `fix/reaper-orchestrator-exempt`, `feat/cron-payload-exit-self`).
 One branch per spec, one or a small number of related commits.
 
+## Strip identifiers from incident-derived work
+
+**Equal weight to the harness-vs-instance rule** — a leak here is
+a public-repo identity leak.
+
+Briefs from `@orchestrator` may contain operator names, third-party
+bot usernames, real chat ids, user-host paths
+(`/home/<actual-username>/…`), and incident war stories ("the
+<colour>-<event>", "the <name> inbound", "the leak at <time>Z").
+**These are CONTEXT for you, not content for the artifact.** They
+show up in briefs because they help you understand the *why*; they
+must NOT show up in the *what* you ship.
+
+What goes into shipped sources — code, tests, comments, commit
+messages, PR titles + bodies, docstrings, CLI/docs MD:
+
+- Code logic and assertions: **generic placeholders only**
+  (`mybot`/`otherbot`, `user_1`/`testuser`, `chat_1111`,
+  `/home/<user>/…`). Tests assert behaviour, not specific handles —
+  the literal string from the brief is almost never load-bearing.
+- Comments and docstrings: **describe the bug class**, not the
+  incident protagonist. "the dormant-session 9-min-latency
+  incident from <date>" is fine; "the <named-incident>" is not.
+  Date anchors are good for git archaeology; third-party
+  identifiers are not.
+- Commit + PR copy: **same rule**. Don't preserve the war story
+  in the diff. The bug behaviour is the artifact; the war story
+  belongs in `@orchestrator/artifacts/`, not in shipped history.
+
+**Pre-PR self-check** (do this *before* `gh pr create`):
+
+```
+# List the identifiers you saw in the brief, then grep your diff
+# for each. Catch the leak before the PR + amendment cycle does.
+git diff <base>..HEAD | grep -iE '<id-1>|<id-2>|<chat-id-int>'
+```
+
+The grep takes 30 seconds; an amendment cycle takes 30 minutes.
+
+This rule exists because the pattern is briefing-side leakage
+echoing into shipped code: `@orchestrator` includes identifiers in
+`!task` bodies as context, and the eng agent verbatim-copies them
+into source. Both ends enforce or it keeps happening.
+
 ## Heartbeat turn etiquette
 
 Every turn-end emits an assistant message that the Stop hook routes
