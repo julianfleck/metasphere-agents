@@ -269,13 +269,21 @@ def handle_update(
     # Addressed inbound — the orchestrator's tmux session must be
     # alive when we inject, otherwise tmux_submit returns False and
     # the message sits in the archive until the next heartbeat tick
-    # (the clay-greeting 9-min-latency case from 2026-04-30). Idempotent
-    # start_session is a no-op when the session already exists.
+    # (the dormant-session 9-min-latency incident from 2026-04-30).
+    # Idempotent start_session is a no-op when the session already
+    # exists.
     try:
         from ..gateway.session import start_session as _start_session
         _start_session()
-    except Exception:  # noqa: BLE001 — never break inject on session-create failure
-        pass
+    except Exception as e:  # noqa: BLE001 — never break inject on session-create failure
+        # Surface the failure in the debug log so the original
+        # 9-min-latency bug doesn't recur silently when start_session
+        # itself starts failing (tmux missing, disk full, etc.).
+        attachments.debug_log({
+            "stage": "session_start_failed",
+            "update_id": u.update_id,
+            "error": f"{type(e).__name__}: {e}",
+        })
 
     # defer_if_busy=False: telegram-user inbound IS the user typing.
     # Clobbering visible REPL content with a telegram message is not a

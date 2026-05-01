@@ -57,8 +57,8 @@ def _load_token() -> str:
 
     Resolution order (canonical-first; rewrite token is opt-in only):
 
-    1. ``TELEGRAM_BOT_TOKEN`` env var (canonical @spotspotbotbot — what the
-       live orchestrator and human channel use).
+    1. ``TELEGRAM_BOT_TOKEN`` env var (the canonical bot — what the live
+       orchestrator and human channel use).
     2. ``~/.metasphere/config/telegram.env`` ``TELEGRAM_BOT_TOKEN``.
     3. ``TELEGRAM_BOT_TOKEN_REWRITE`` env var (explicit opt-in for a
        staging/sandbox bot during dev/testing only).

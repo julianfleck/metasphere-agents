@@ -1134,7 +1134,7 @@ def _bot_identity_stub(monkeypatch):
     """Force `api.bot_identity` to a fixed lowercased username + id so
     the wake matcher has a deterministic target without hitting getMe."""
     monkeypatch.setattr(api, "bot_identity",
-                        lambda: {"id": 9999, "username": "spotspotbotbot"})
+                        lambda: {"id": 9999, "username": "mybot"})
 
 
 def _build_message_update(*, chat_type: str, text: str,
@@ -1145,7 +1145,7 @@ def _build_message_update(*, chat_type: str, text: str,
         "message": {
             "message_id": message_id,
             "chat": {"id": chat_id, "type": chat_type, "is_forum": False},
-            "from": {"username": "operator-alex"},
+            "from": {"username": "testuser"},
             "date": 1700000000,
             "text": text,
         },
@@ -1160,7 +1160,7 @@ def _build_message_update(*, chat_type: str, text: str,
 def test_addressed_helper_private_chat_always_wakes(_bot_identity_stub):
     u = _build_message_update(chat_type="private", text="hello",
                                chat_id=123)
-    assert _handler._is_addressed_to_bot(u, "spotspotbotbot", 9999) is True
+    assert _handler._is_addressed_to_bot(u, "mybot", 9999) is True
 
 
 def test_addressed_helper_unknown_chat_type_falls_through_to_wake():
@@ -1169,37 +1169,37 @@ def test_addressed_helper_unknown_chat_type_falls_through_to_wake():
     u = _build_message_update(chat_type=None, text="hello", chat_id=42)
     # chat_type is None when the test fixture omits it (legacy shape).
     assert u.chat_type is None
-    assert _handler._is_addressed_to_bot(u, "spotspotbotbot", 9999) is True
+    assert _handler._is_addressed_to_bot(u, "mybot", 9999) is True
 
 
 def test_addressed_helper_group_with_bot_mention(_bot_identity_stub):
-    text = "@spotspotbotbot meet @clay_fieldwork_bot"
+    text = "@mybot meet @otherbot"
     u = _build_message_update(
         chat_type="group", text=text,
         entities=[{"type": "mention", "offset": 0,
-                   "length": len("@spotspotbotbot")},
+                   "length": len("@mybot")},
                   {"type": "mention",
-                   "offset": text.index("@clay"),
-                   "length": len("@clay_fieldwork_bot")}],
+                   "offset": text.index("@otherbot"),
+                   "length": len("@otherbot")}],
     )
-    assert _handler._is_addressed_to_bot(u, "spotspotbotbot", 9999) is True
+    assert _handler._is_addressed_to_bot(u, "mybot", 9999) is True
 
 
 def test_addressed_helper_group_without_mention_no_wake():
     """Bot-to-bot group chatter that doesn't @-mention us → no wake."""
     u = _build_message_update(
         chat_type="supergroup",
-        text="@clay_fieldwork_bot pinging the other bot",
+        text="@otherbot pinging the other bot",
         entities=[{"type": "mention", "offset": 0,
-                   "length": len("@clay_fieldwork_bot")}],
+                   "length": len("@otherbot")}],
     )
-    assert _handler._is_addressed_to_bot(u, "spotspotbotbot", 9999) is False
+    assert _handler._is_addressed_to_bot(u, "mybot", 9999) is False
 
 
 def test_addressed_helper_group_slash_command_wakes():
-    """`/help` (or `/help@spotspotbotbot`) in a group → addressed."""
-    u = _build_message_update(chat_type="group", text="/status@spotspotbotbot")
-    assert _handler._is_addressed_to_bot(u, "spotspotbotbot", 9999) is True
+    """`/help` (or `/help@mybot`) in a group → addressed."""
+    u = _build_message_update(chat_type="group", text="/status@mybot")
+    assert _handler._is_addressed_to_bot(u, "mybot", 9999) is True
 
 
 def test_addressed_helper_group_reply_to_bot_wakes():
@@ -1207,27 +1207,27 @@ def test_addressed_helper_group_reply_to_bot_wakes():
     explicit @-mention."""
     u = _build_message_update(
         chat_type="group", text="thanks for the brief",
-        reply_to={"message_id": 100, "from": {"id": 9999, "username": "spotspotbotbot"}},
+        reply_to={"message_id": 100, "from": {"id": 9999, "username": "mybot"}},
     )
-    assert _handler._is_addressed_to_bot(u, "spotspotbotbot", 9999) is True
+    assert _handler._is_addressed_to_bot(u, "mybot", 9999) is True
 
 
 def test_addressed_helper_group_reply_to_other_user_no_wake():
     """Reply to a non-bot user → no wake."""
     u = _build_message_update(
         chat_type="group", text="agreed",
-        reply_to={"message_id": 100, "from": {"id": 7777, "username": "operator-alex"}},
+        reply_to={"message_id": 100, "from": {"id": 7777, "username": "testuser"}},
     )
-    assert _handler._is_addressed_to_bot(u, "spotspotbotbot", 9999) is False
+    assert _handler._is_addressed_to_bot(u, "mybot", 9999) is False
 
 
 def test_addressed_helper_no_bot_username_degrades_safe():
     """getMe failed → bot_username='' → group messages don't wake.
     Safer than waking on everything when we can't identify ourselves."""
-    text = "@spotspotbotbot ping"
+    text = "@mybot ping"
     u = _build_message_update(
         chat_type="group", text=text,
-        entities=[{"type": "mention", "offset": 0, "length": len("@spotspotbotbot")}],
+        entities=[{"type": "mention", "offset": 0, "length": len("@mybot")}],
     )
     assert _handler._is_addressed_to_bot(u, "", None) is False
 
@@ -1247,17 +1247,17 @@ def test_handle_update_skips_wake_for_unaddressed_group(tmp_path, monkeypatch,
 def test_handle_update_wakes_for_group_mention(tmp_path, monkeypatch,
                                                  _bot_identity_stub):
     """Full handle_update path: group message with explicit @-mention
-    of the bot → tmux_submit fires (the clay-greeting case)."""
+    of the bot → tmux_submit fires (the addressed-group case)."""
     _http_log, tmux_log = _patch_handle_update(monkeypatch, tmp_path)
-    text = "@spotspotbotbot meet @clay_fieldwork_bot"
+    text = "@mybot meet @otherbot"
     u = _build_message_update(
         chat_type="group", text=text,
         entities=[{"type": "mention", "offset": 0,
-                   "length": len("@spotspotbotbot")}],
+                   "length": len("@mybot")}],
     )
     _handler.handle_update(u)
     assert len(tmux_log) == 1
-    assert "@spotspotbotbot meet" in tmux_log[0]["text"]
+    assert "@mybot meet" in tmux_log[0]["text"]
 
 
 def test_handle_update_addressed_group_calls_start_session(
@@ -1271,9 +1271,9 @@ def test_handle_update_addressed_group_calls_start_session(
     monkeypatch.setattr(_gw_session, "start_session",
                         lambda *a, **k: start_calls.append(a) or True)
     u = _build_message_update(
-        chat_type="group", text="@spotspotbotbot status?",
+        chat_type="group", text="@mybot status?",
         entities=[{"type": "mention", "offset": 0,
-                   "length": len("@spotspotbotbot")}],
+                   "length": len("@mybot")}],
     )
     _handler.handle_update(u)
     assert len(start_calls) == 1, "start_session must run for addressed inbound"
