@@ -16,11 +16,11 @@ Re-implemented three CLI subcommands that the README promised but had no Python 
 
 ## 2026-04-15 — PR #11: Project-paths cleanup + consolidator routing + paused terminal
 
-Julian flagged that his view was seeing 7-8 STALE→escalated-user events per 15-min cycle from worldwire tasks. Bundled five related fixes:
+The maintainer flagged that the operator view was seeing 7-8 STALE→escalated-user events per 15-min cycle from worldwire tasks. Bundled five related fixes:
 
 - **Removed PR #10 migration bridges** — `load_project` / `save_project` are now canonical-only (no in-repo read fallback, no dual-write).
 - **Dropped unused `project_root` params** on `_find_task_file`, `scan_active_tasks`, `scan_inbox_messages`.
-- **Consolidator routes pings to `@<project>-lead`** before `task.assignee` (Julian directive). New `_route_ping_target` resolves `project → registered lead member → agent id`; falls back to assignee if no lead.
+- **Consolidator routes pings to `@<project>-lead`** before `task.assignee` (maintainer directive). New `_route_ping_target` resolves `project → registered lead member → agent id`; falls back to assignee if no lead.
 - **`VERDICT_PAUSED`** — `status: paused` now classifies terminal before the stale window check. `apply_verdict` treats it like BLOCKED / ACTIVE (noop, no ping, no archive).
 - Deployed clean; 13 PAUSED→noop, 0 escalations on the next consolidate cycle.
 

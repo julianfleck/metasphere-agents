@@ -108,7 +108,7 @@ class Update:
               "message_reaction": {
                 "chat": {"id": -100..., "is_forum": true},
                 "message_id": 17,
-                "user": {"id": 99, "username": "j0lian"},
+                "user": {"id": 99, "username": "testuser"},
                 "date": 1700000000,
                 "old_reaction": [],
                 "new_reaction": [{"type": "emoji", "emoji": "👍"}]

@@ -177,7 +177,7 @@ def test_evaluate_accepts_plus_one_race_delta(tmp_paths: Paths, tmp_path: Path):
     transcript. The breadcrumb's stored count therefore lags the
     Stop-time fresh count by exactly 1 on every non-empty turn (root
     cause documented at
-    /home/openclaw/.metasphere/audits/2026-04-21/count-mismatch-diagnostic.md).
+    ~/.metasphere/audits/2026-04-21/count-mismatch-diagnostic.md).
     evaluate() must accept fresh - stored ∈ {0, 1} as a valid match
     while still rejecting any other delta — otherwise the fail-closed
     gate suppresses every orchestrator turn.

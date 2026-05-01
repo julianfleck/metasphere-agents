@@ -704,7 +704,7 @@ def test_restart_claude_skips_when_session_dead(tmp_paths, monkeypatch):
 #
 # 2026-04-16: the drift banner fired every context inject even when
 # nothing had changed. Baseline writer (gateway daemon with
-# METASPHERE_REPO_ROOT=/home/openclaw/projects/metasphere-agents)
+# METASPHERE_REPO_ROOT=/home/<user>/projects/metasphere-agents)
 # hashed source-repo CLAUDE.md; reader (@orchestrator REPL with
 # CWD=~/.metasphere, no env) hashed ~/.metasphere/CLAUDE.md. Two
 # different files, two different hashes, banner always mismatched.
