@@ -924,21 +924,6 @@ def run_update(
             _record_result(paths, result, cfg, notify_sender)
             return result
 
-    # Daemon restart (skippable via cfg.restart_daemons). Runs AFTER
-    # pip work and the test gate so daemons come back up against the
-    # newly installed package, not the stale version that was running
-    # when the update started. Pre-2026-04-30 the restart fired before
-    # _ensure_venv + the python_changes pip reinstall, so daemons
-    # would briefly run the OLD code while new commits sat unbuilt
-    # in the venv. Hosts that fell behind on updates went silent
-    # because their gateway/heartbeat daemons restarted into a stale
-    # build and never picked up the new bytes.
-    if cfg.restart_daemons:
-        try:
-            _restart_daemons()
-        except Exception as e:
-            log(f"auto-update: daemon restart warning: {e}")
-
     # Template drift check (warn-only). Surfaces shipped templates that
     # differ from the operator's local copies under ~/.metasphere/.
     # Operator opts in via `metasphere update --templates`; auto-update
@@ -966,7 +951,31 @@ def run_update(
         daemons_restarted=cfg.restart_daemons,
     )
     log(f"auto-update: ok ({len(subjects)} commits applied)")
+    # Persist BEFORE _restart_daemons. The schedule daemon spawns the
+    # cron-fired auto-update as a cgroup child; `systemctl restart
+    # metasphere-schedule` inside _restart_daemons kills the caller
+    # before any post-restart code runs. Same for tmux-pane-fired
+    # updates: gateway-restart kills its own supervised tmux. Pre-fix,
+    # state["last_run_at"] never advanced past the last externally-run
+    # update — operator-facing `metasphere update --status` showed
+    # stale info indefinitely (observed 2026-04-26 → 2026-05-01).
     _record_result(paths, result, cfg, notify_sender)
+
+    # Daemon restart (skippable via cfg.restart_daemons). Runs AFTER
+    # pip work and the test gate so daemons come back up against the
+    # newly installed package, not the stale version that was running
+    # when the update started. Pre-2026-04-30 the restart fired before
+    # _ensure_venv + the python_changes pip reinstall, so daemons
+    # would briefly run the OLD code while new commits sat unbuilt
+    # in the venv. Hosts that fell behind on updates went silent
+    # because their gateway/heartbeat daemons restarted into a stale
+    # build and never picked up the new bytes.
+    if cfg.restart_daemons:
+        try:
+            _restart_daemons()
+        except Exception as e:
+            log(f"auto-update: daemon restart warning: {e}")
+
     return result
 
 

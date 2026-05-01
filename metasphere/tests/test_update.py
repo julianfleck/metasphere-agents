@@ -302,6 +302,63 @@ def test_restart_daemons_orders_gateway_last(monkeypatch):
     ]
 
 
+def test_run_update_records_state_before_restart(tmp_paths, monkeypatch):
+    """State must persist BEFORE _restart_daemons runs. The cron-fired
+    auto-update is a cgroup child of metasphere-schedule.service; the
+    schedule restart inside _restart_daemons kills the caller before
+    any post-restart code can run. Same for tmux-pane-fired updates
+    (gateway-restart kills its own supervised tmux). Pre-fix, state
+    advanced only on externally-run updates — `metasphere update
+    --status` showed stale info indefinitely on host srv1399986
+    between 2026-04-26 (last successful external run) and 2026-05-01."""
+    head_seq = iter(["aaaa1111", "bbbb2222"])
+    state_during_restart: dict = {}
+
+    def fake_restart_records_state_at_call_time():
+        # Capture whether _record_result already wrote state. If state
+        # is empty here, the restart raced ahead of the bookkeeping
+        # and the bug has regressed.
+        state_during_restart.update(_update.load_state(tmp_paths))
+        # Simulate the cgroup-kill: raise so post-restart code never
+        # runs. The current callsite catches and logs; state must
+        # already be recorded at this point.
+        raise RuntimeError("simulated cgroup kill from systemctl restart")
+
+    _patch_update_helpers(monkeypatch)
+    monkeypatch.setattr(_update, "_restart_daemons",
+                        fake_restart_records_state_at_call_time)
+
+    def fake_runner(args):
+        import subprocess
+        if args[0] == "rev-parse":
+            return subprocess.CompletedProcess(args, 0, next(head_seq), "")
+        if args[0] == "log":
+            return subprocess.CompletedProcess(args, 0, "fix one\n", "")
+        if args[0] == "diff":
+            return subprocess.CompletedProcess(args, 0, "metasphere/x.py\n", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    result = _update.run_update(
+        paths=tmp_paths,
+        cfg=AutoUpdateConfig(enabled=True, notify=False),
+        quiet=True,
+        git_runner=fake_runner,
+        pip_runner=lambda _args: 0,
+        test_runner=lambda: True,
+    )
+    # Regression assertion: state was recorded BEFORE the restart ran.
+    assert state_during_restart, (
+        "_record_result must run before _restart_daemons; the schedule "
+        "daemon restart kills the caller mid-flight"
+    )
+    assert state_during_restart["last_result"]["ok"] is True
+    assert state_during_restart["last_result"]["new_hash"] == "bbbb2222"
+    assert state_during_restart["last_run_at"] > 0
+    # And the run still returns its UpdateResult (the restart-warning
+    # log is the only side effect of the simulated kill).
+    assert result.ok is True
+
+
 def test_run_update_test_gate_failure(tmp_paths, monkeypatch):
     head_seq = iter(["aaaa", "bbbb"])
     _patch_update_helpers(monkeypatch)
