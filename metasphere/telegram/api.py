@@ -227,6 +227,43 @@ def get_me() -> dict:
     return call("getMe")
 
 
+_bot_identity_cache: Optional[dict] = None
+
+
+def bot_identity() -> dict:
+    """Return the bot's identity ``{"id": int, "username": str}``.
+
+    Cached for the process lifetime — the bot's identity doesn't
+    change. ``username`` is lowercased so the gateway's @-mention
+    matcher can compare without re-casing on every inbound. On
+    transient ``getMe`` failure returns ``{"id": None, "username": ""}``
+    *without* caching so a later call can still succeed.
+
+    Tests should call :func:`clear_bot_identity_cache` between
+    fixtures or monkeypatch the function directly.
+    """
+    global _bot_identity_cache
+    if _bot_identity_cache is not None:
+        return _bot_identity_cache
+    try:
+        result = get_me().get("result") or {}
+    except Exception:  # noqa: BLE001 — network/token errors aren't ours to surface here
+        return {"id": None, "username": ""}
+    if not result:
+        return {"id": None, "username": ""}
+    _bot_identity_cache = {
+        "id": result.get("id"),
+        "username": (result.get("username") or "").lower(),
+    }
+    return _bot_identity_cache
+
+
+def clear_bot_identity_cache() -> None:
+    """Forget the cached bot identity. Used by tests + ``getme`` CLI."""
+    global _bot_identity_cache
+    _bot_identity_cache = None
+
+
 def _http_post_multipart(url: str, fields: dict, file_field: str, file_path: str,
                          filename: str, timeout: float = DEFAULT_TIMEOUT) -> dict:
     """Multipart/form-data POST. Used by sendDocument; everything else

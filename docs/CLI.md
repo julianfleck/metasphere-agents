@@ -901,6 +901,15 @@ metasphere telegram getme                        # bot info JSON
 # Polling lives in the metasphere-gateway systemd service; there is no
 # CLI poller (neither `poll` nor `once`). The gateway calls
 # `metasphere.telegram.poller.run_poll_iteration` on every tick.
+#
+# Wake gating: private DMs always wake the orchestrator's tmux REPL
+# on inbound. In group / supergroup chats (privacy mode OFF), only
+# messages addressed to the bot wake — explicit @<bot_username>
+# mention, /command, or reply to one of the bot's own messages.
+# Unaddressed group chatter is archived but does not clobber the
+# REPL. Addressed inbound also calls start_session, so a dormant
+# orchestrator is respawned rather than dropping the message until
+# the next heartbeat tick.
 ```
 
 ### Slash commands routed
