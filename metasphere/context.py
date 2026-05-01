@@ -126,47 +126,61 @@ def _render_status_header(paths: Paths, agent: str) -> str:
     return "\n".join(out)
 
 
-_VOICE_BYTE_CAP = 1500
-_VOICE_LINE_CAP = 40
+def _read_persona_body(path: Path) -> str:
+    """Read a persona file; strip the leading H1 line; return the
+    body. Returns ``""`` on missing file, OSError, or empty body
+    after H1 stripping."""
+    if not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    lines = text.splitlines()
+    if lines and lines[0].startswith("# "):
+        lines = lines[1:]
+    return "\n".join(lines).strip()
 
 
 def _render_voice_capsule(paths: Paths, agent: str) -> str:
-    """Inject a compact voice capsule from VOICE.md or SOUL.md.
+    """Inject the agent's full persona — SOUL / IDENTITY / USER — into
+    every turn's context.
 
-    Keeps the agent's persona resident in context every turn. Without
-    this, the agent drifts into flat, technical replies between turns.
-    Capped to ~1.5KB / 40 lines (whichever hits first).
+    No truncation: persona files are small and load-bearing. Pre-PR-B
+    behaviour capped the capsule at 1500B / 40 lines and only loaded
+    SOUL/VOICE, never IDENTITY or USER — so the kaomoji, warmth-marker,
+    calm-intensity / thinking-companion lines, and full user-model sat
+    on disk and never reached the model. Persona drift over time was
+    the symptom.
+
+    Each section is emitted iff its file exists. ``VOICE.md`` is a
+    backward-compat alias for ``SOUL.md`` (older agents still have
+    the file under the old name). The trailing pointer line is only
+    emitted when at least one persona file landed.
     """
     agent_dir = paths.agent_dir(agent)
-    voice_file = None
-    for name in ("VOICE.md", "SOUL.md"):
-        p = agent_dir / name
-        if p.is_file():
-            voice_file = p
-            break
-    if voice_file is None:
+    soul_body = (
+        _read_persona_body(agent_dir / "SOUL.md")
+        or _read_persona_body(agent_dir / "VOICE.md")
+    )
+    identity_body = _read_persona_body(agent_dir / "IDENTITY.md")
+    user_body = _read_persona_body(agent_dir / "USER.md")
+
+    sections: list[str] = []
+    if soul_body:
+        sections.append("## Voice (who you are, how you sound)\n\n" + soul_body)
+    if identity_body:
+        sections.append("## Identity\n\n" + identity_body)
+    if user_body:
+        sections.append("## User-model (who you collaborate with)\n\n" + user_body)
+
+    if not sections:
         return ""
-    try:
-        lines = voice_file.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ""
-    # Skip the top H1 line; emit up to _VOICE_LINE_CAP lines.
-    body_lines = lines[1 : _VOICE_LINE_CAP + 1]
-    body = "\n".join(body_lines)
-    # Cap at _VOICE_BYTE_CAP bytes.
-    data = body.encode("utf-8")[:_VOICE_BYTE_CAP]
-    body = data.decode("utf-8", errors="ignore").rstrip()
-    if not body:
-        return ""
-    out = [
-        "## Voice (who you are, how you sound)",
-        "",
-        body,
-        "",
-        f"_(Full persona at `{voice_file}` + persona-index.md. Read on demand for deeper context.)_",
-        "",
-    ]
-    return "\n".join(out)
+    sections.append(
+        f"_(Persona files at `{agent_dir}` + persona-index.md "
+        f"for lazy-loadables.)_"
+    )
+    return "\n\n".join(sections) + "\n"
 
 
 _MISSION_BYTE_CAP = 1024

@@ -347,3 +347,136 @@ def test_render_project_includes_timestamps(tmp_paths: Paths, monkeypatch):
     assert "Recent:" in out
     # Timestamp from commit should be present
     assert "2026-04-16T20:00" in out
+
+
+# ---------------------------------------------------------------------------
+# _render_voice_capsule — full persona injection (PR B)
+# ---------------------------------------------------------------------------
+#
+# Pre-PR-B behaviour: capsule loaded VOICE.md or SOUL.md only, capped
+# at 1500B / 40 lines. IDENTITY.md and USER.md were never injected.
+# Result: persona drift as the kaomoji/warmth-marker/user-model context
+# never reached the model.
+
+def _seed_agent_dir(tmp_paths: Paths, agent: str) -> Path:
+    d = tmp_paths.agent_dir(agent)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def test_voice_capsule_loads_soul_only(tmp_paths: Paths):
+    d = _seed_agent_dir(tmp_paths, "@orchestrator")
+    (d / "SOUL.md").write_text(
+        "# @orchestrator — soul\n\nCalm intensity, thinking companion.\n",
+        encoding="utf-8",
+    )
+    out = ctx._render_voice_capsule(tmp_paths, "@orchestrator")
+    assert "## Voice (who you are, how you sound)" in out
+    assert "Calm intensity, thinking companion." in out
+    # H1 stripped
+    assert "@orchestrator — soul" not in out
+    # Single section, no Identity / User-model emitted
+    assert "## Identity" not in out
+    assert "## User-model" not in out
+    # Trailing pointer line emitted because at least one file landed
+    assert "Persona files at" in out
+
+
+def test_voice_capsule_loads_all_three_in_order(tmp_paths: Paths):
+    d = _seed_agent_dir(tmp_paths, "@orchestrator")
+    (d / "SOUL.md").write_text("# soul\n\nVOICE-LINE.\n", encoding="utf-8")
+    (d / "IDENTITY.md").write_text(
+        "# identity\n\n( • ‿ • ) IDENTITY-LINE.\n", encoding="utf-8"
+    )
+    (d / "USER.md").write_text("# user\n\nUSER-LINE.\n", encoding="utf-8")
+    out = ctx._render_voice_capsule(tmp_paths, "@orchestrator")
+
+    # All three sections present, in declared order: Voice → Identity → User-model
+    voice_idx = out.index("## Voice")
+    identity_idx = out.index("## Identity")
+    user_idx = out.index("## User-model")
+    assert voice_idx < identity_idx < user_idx
+
+    # All three bodies landed unchanged
+    assert "VOICE-LINE." in out
+    assert "( • ‿ • ) IDENTITY-LINE." in out
+    assert "USER-LINE." in out
+
+
+def test_voice_capsule_no_truncation(tmp_paths: Paths):
+    """A 100-line / 8KB SOUL.md must render in full — no 1500B / 40-line
+    cap. Persona files are load-bearing and small; truncation was the
+    PR-B bug."""
+    d = _seed_agent_dir(tmp_paths, "@orchestrator")
+    body_lines = [f"line-{i:03d} this is non-trivial persona content."
+                  for i in range(100)]
+    (d / "SOUL.md").write_text("# soul\n\n" + "\n".join(body_lines) + "\n",
+                                 encoding="utf-8")
+    out = ctx._render_voice_capsule(tmp_paths, "@orchestrator")
+    # First and last lines both present — no truncation at either end.
+    assert "line-000" in out
+    assert "line-099" in out
+
+
+def test_voice_capsule_voice_md_alias_for_soul_md(tmp_paths: Paths):
+    """Backward-compat: agents that still have VOICE.md (pre-rename)
+    keep working. SOUL.md is preferred when both exist."""
+    d = _seed_agent_dir(tmp_paths, "@legacy")
+    (d / "VOICE.md").write_text("# voice\n\nLEGACY-VOICE-LINE.\n",
+                                  encoding="utf-8")
+    out = ctx._render_voice_capsule(tmp_paths, "@legacy")
+    assert "LEGACY-VOICE-LINE." in out
+    assert "## Voice" in out
+
+
+def test_voice_capsule_soul_wins_over_voice(tmp_paths: Paths):
+    """If both SOUL.md and VOICE.md exist, SOUL.md is used."""
+    d = _seed_agent_dir(tmp_paths, "@dual")
+    (d / "SOUL.md").write_text("# soul\n\nSOUL-WINS.\n", encoding="utf-8")
+    (d / "VOICE.md").write_text("# voice\n\nVOICE-LOSES.\n", encoding="utf-8")
+    out = ctx._render_voice_capsule(tmp_paths, "@dual")
+    assert "SOUL-WINS." in out
+    assert "VOICE-LOSES." not in out
+
+
+def test_voice_capsule_identity_only_no_voice(tmp_paths: Paths):
+    """Stranger agent has only IDENTITY.md — Voice section is omitted,
+    Identity section + pointer line still emitted."""
+    d = _seed_agent_dir(tmp_paths, "@id-only")
+    (d / "IDENTITY.md").write_text(
+        "# identity\n\nWARMTH-LINE.\n", encoding="utf-8"
+    )
+    out = ctx._render_voice_capsule(tmp_paths, "@id-only")
+    assert "## Voice" not in out
+    assert "## Identity" in out
+    assert "WARMTH-LINE." in out
+    assert "Persona files at" in out
+
+
+def test_voice_capsule_no_files_returns_empty(tmp_paths: Paths):
+    """Stranger install with no persona files at all → empty string,
+    no pointer-line orphan."""
+    _seed_agent_dir(tmp_paths, "@bare")
+    out = ctx._render_voice_capsule(tmp_paths, "@bare")
+    assert out == ""
+
+
+def test_voice_capsule_strips_only_top_h1(tmp_paths: Paths):
+    """## subheaders inside the body must survive — only the H1
+    (single hash) on line 1 is stripped."""
+    d = _seed_agent_dir(tmp_paths, "@struct")
+    (d / "SOUL.md").write_text(
+        "# top h1\n\n## a subheader\n\nbody under sub.\n",
+        encoding="utf-8",
+    )
+    out = ctx._render_voice_capsule(tmp_paths, "@struct")
+    assert "top h1" not in out
+    assert "## a subheader" in out
+    assert "body under sub." in out
+
+
+def test_voice_capsule_drops_legacy_byte_and_line_caps(tmp_paths: Paths):
+    """The _VOICE_BYTE_CAP / _VOICE_LINE_CAP constants are gone —
+    nothing in metasphere.context references them anymore."""
+    assert not hasattr(ctx, "_VOICE_BYTE_CAP")
+    assert not hasattr(ctx, "_VOICE_LINE_CAP")
