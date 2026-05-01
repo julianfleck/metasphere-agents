@@ -42,6 +42,51 @@ def _default_save_chat_id(chat_id: int) -> None:
         pass
 
 
+def _is_addressed_to_bot(u: poller.Update, bot_username: str,
+                         bot_id: Optional[int]) -> bool:
+    """Return True iff the update should wake the agent.
+
+    Restrictive only for ``chat_type in ("group", "supergroup")``.
+    Private DMs and channels (and unknown chat types — e.g.,
+    pre-2026-05-01 fixtures that don't set ``chat.type``) wake on
+    every body-bearing inbound, preserving existing behavior. Group
+    chatter, in contrast, only wakes when the message is explicitly
+    addressed to the bot — privacy mode is OFF on the production
+    bot so we receive every group message, and unaddressed lines
+    must NOT clobber the orchestrator's tmux REPL.
+
+    "Addressed" in a group means any of:
+      - text starts with ``/`` (slash command, with or without
+        ``@bot`` suffix).
+      - reply_to_message authored by the bot itself.
+      - explicit ``@<bot_username>`` mention entity in the message.
+
+    ``bot_username`` should be lowercased; either may be falsy if
+    ``getMe`` failed (we degrade to "no group wakes" — safer than
+    waking on everything).
+    """
+    if u.chat_type not in ("group", "supergroup"):
+        return True
+    msg = u.raw.get("message") or u.raw.get("edited_message") or {}
+    text = u.text or msg.get("caption") or ""
+    if text.startswith("/"):
+        return True
+    if bot_id is not None and u.reply_to_from_id == bot_id:
+        return True
+    if not bot_username:
+        return False
+    target = "@" + bot_username
+    for entity in (msg.get("entities") or msg.get("caption_entities") or []):
+        if entity.get("type") != "mention":
+            continue
+        offset = entity.get("offset") or 0
+        length = entity.get("length") or 0
+        handle = text[offset:offset + length].lower()
+        if handle == target:
+            return True
+    return False
+
+
 def _default_pending_ack_writer(chat_id: int, message_id: int) -> None:
     """Stash ``{chat_id, message_id}`` so the posthook can flip 👀 → 👍
     once the orchestrator's reply lands. Best-effort.
@@ -206,12 +251,46 @@ def handle_update(
         except Exception:
             pass
 
+    # Wake gating: privacy mode is OFF on the production bot, so we
+    # receive every group message — but only addressed ones should
+    # clobber the orchestrator's tmux REPL. Unaddressed group chatter
+    # stays in the stream/archive (already written above) and waits
+    # for the next heartbeat tick to surface.
+    bot = api.bot_identity()
+    if not _is_addressed_to_bot(u, bot.get("username") or "", bot.get("id")):
+        attachments.debug_log({
+            "stage": "wake_skipped",
+            "reason": "unaddressed group message",
+            "update_id": u.update_id,
+            "chat_type": u.chat_type,
+        })
+        return
+
+    # Addressed inbound — the orchestrator's tmux session must be
+    # alive when we inject, otherwise tmux_submit returns False and
+    # the message sits in the archive until the next heartbeat tick
+    # (the dormant-session 9-min-latency incident from 2026-04-30).
+    # Idempotent start_session is a no-op when the session already
+    # exists.
+    try:
+        from ..gateway.session import start_session as _start_session
+        _start_session()
+    except Exception as e:  # noqa: BLE001 — never break inject on session-create failure
+        # Surface the failure in the debug log so the original
+        # 9-min-latency bug doesn't recur silently when start_session
+        # itself starts failing (tmux missing, disk full, etc.).
+        attachments.debug_log({
+            "stage": "session_start_failed",
+            "update_id": u.update_id,
+            "error": f"{type(e).__name__}: {e}",
+        })
+
     # defer_if_busy=False: telegram-user inbound IS the user typing.
     # Clobbering visible REPL content with a telegram message is not a
-    # race — it's precisely what j0lian wants. Only NON-user injectors
+    # race — it's precisely what the user wants. Only NON-user injectors
     # (heartbeat, scheduled cron, agent-to-agent wakes, restart-wake)
     # defer; this path must always land. PR #23 originally set this to
-    # True and broke j0lian's telegram inbound when the orchestrator
+    # True and broke the user's telegram inbound when the orchestrator
     # pane had any visible typed content (12:15/12:48/12:54 CEST went
     # to /dev/null with status=read but no user-turn).
     tmux_submit(f"@{u.from_username or 'user'}", payload, defer_if_busy=False)

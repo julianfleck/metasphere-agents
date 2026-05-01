@@ -34,9 +34,19 @@ class Update:
     from_username: Optional[str]
     text: Optional[str]
     date: Optional[int]
+    # ``private`` | ``group`` | ``supergroup`` | ``channel`` | None.
+    # Drives the gateway's wake gating: private chats wake on every
+    # body-bearing inbound; non-private chats only wake on messages
+    # explicitly addressed to the bot (mention | reply | /command).
+    chat_type: Optional[str] = None
     # Reply metadata — set when this message is a reply to another one.
     reply_to_message_id: Optional[int] = None
     reply_to_text_preview: Optional[str] = None
+    # ``from.id`` of the replied-to message's author. Used by the
+    # gateway to recognise "reply to one of the bot's own messages"
+    # as an addressed inbound (the wake-on-mention complement for
+    # group chats with privacy mode off).
+    reply_to_from_id: Optional[int] = None
     # Kind discriminator. "message" is the default; "reaction" is emitted
     # for message_reaction updates (which have no `message` field, just
     # old_reaction / new_reaction arrays and a message_id reference).
@@ -60,12 +70,15 @@ class Update:
 
         reply_to_id: Optional[int] = None
         reply_preview: Optional[str] = None
+        reply_from_id: Optional[int] = None
         reply = msg.get("reply_to_message")
         if reply:
             reply_to_id = reply.get("message_id")
             reply_text = reply.get("text") or reply.get("caption") or ""
             if reply_text:
                 reply_preview = reply_text[:REPLY_PREVIEW_MAX]
+            reply_from = reply.get("from") or {}
+            reply_from_id = reply_from.get("id")
 
         return cls(
             update_id=payload["update_id"],
@@ -76,8 +89,10 @@ class Update:
             from_username=frm.get("username") or frm.get("first_name"),
             text=msg.get("text"),
             date=msg.get("date"),
+            chat_type=chat.get("type"),
             reply_to_message_id=reply_to_id,
             reply_to_text_preview=reply_preview,
+            reply_to_from_id=reply_from_id,
             kind="message",
             raw=payload,
         )
