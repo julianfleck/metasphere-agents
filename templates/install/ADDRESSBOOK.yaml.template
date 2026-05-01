@@ -16,7 +16,7 @@
 # contacts:
 #   operator:
 #     telegram: <chat_id>
-#   ella:
+#   teammate:
 #     telegram: <chat_id>
 #   # Add new contacts here. Names are case-insensitive at lookup
 #   # time. Each contact may carry multiple method handles (telegram
