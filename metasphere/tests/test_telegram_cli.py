@@ -281,7 +281,7 @@ def test_send_bare_legacy_json_without_default_recipient_errors(
     write the default-recipient pointer."""
     _ab, legacy = _redirect_addressbook
     legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text(json.dumps({"julian": 1111}))
+    legacy.write_text(json.dumps({"alice": 1111}))
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
     rc = _cli.main(["send", "ping"])
     assert rc == 2

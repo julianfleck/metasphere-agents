@@ -247,5 +247,5 @@ def test_default_recipient_legacy_json_only_returns_none(tmp_paths):
     paths must error rather than guess."""
     legacy = tmp_paths.root / "config" / "telegram_contacts.json"
     legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text(json.dumps({"julian": 1111, "ella": 2222}))
+    legacy.write_text(json.dumps({"alice": 1111, "bob": 2222}))
     assert _contacts.default_telegram_chat_id(tmp_paths) is None
