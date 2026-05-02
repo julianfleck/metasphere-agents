@@ -18,8 +18,8 @@ from metasphere.paths import Paths
 # ---------------------------------------------------------------------------
 
 def test_session_name_for_strips_at_prefix():
-    assert agents.session_name_for("@briefing") == "metasphere-briefing"
-    assert agents.session_name_for("briefing") == "metasphere-briefing"
+    assert agents.session_name_for("@example-cron") == "metasphere-example-cron"
+    assert agents.session_name_for("example-cron") == "metasphere-example-cron"
 
 
 def test_list_agents_finds_created_agents(tmp_paths: Paths):

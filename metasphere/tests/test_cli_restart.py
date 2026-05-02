@@ -107,10 +107,10 @@ def test_one_arg_unknown_agent_suggests_near_matches(capsys, monkeypatch):
     fake_agents = [
         mock.MagicMock(name="@metasphere-eng"),
         mock.MagicMock(name="@metasphere-critic"),
-        mock.MagicMock(name="@writing-lead"),
+        mock.MagicMock(name="@team-lead-a"),
     ]
     for fa, n in zip(fake_agents,
-                     ["@metasphere-eng", "@metasphere-critic", "@writing-lead"]):
+                     ["@metasphere-eng", "@metasphere-critic", "@team-lead-a"]):
         fa.name = n
     monkeypatch.setattr(R._agents, "list_agents", lambda paths: fake_agents)
     monkeypatch.setattr(R, "resolve", lambda: mock.MagicMock())
@@ -217,7 +217,7 @@ def test_alive_persistent_puts_orchestrator_last(monkeypatch, tmp_path):
     LAST so that running this from inside the orchestrator pane doesn't
     kill the process before earlier agents are rebuilt."""
     fake_records = []
-    for n in ("@writing-lead", "@orchestrator", "@metasphere-eng"):
+    for n in ("@team-lead-a", "@orchestrator", "@metasphere-eng"):
         fa = mock.MagicMock()
         fa.name = n
         fa.is_persistent = True

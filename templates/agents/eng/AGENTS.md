@@ -146,6 +146,12 @@ messages, PR titles + bodies, docstrings, CLI/docs MD:
 # List the identifiers you saw in the brief, then grep your diff
 # for each. Catch the leak before the PR + amendment cycle does.
 git diff <base>..HEAD | grep -iE '<id-1>|<id-2>|<chat-id-int>'
+
+# Spot-specific agent handles (extend list as new project-teams
+# spin up). Catches @-prefixed instance vocabulary baked into
+# tests/comments/docstrings as opaque fixture data.
+git grep -wnE "@(worldwire|masked|kf|recurse|writing|funding|briefing|rage-changelog|cam|visa|oecd|polymarket)[a-z-]*" \
+  -- ':!.tasks/' ':!CHANGELOG*' ':!docs/' ':!templates/install/'
 ```
 
 The grep takes 30 seconds; an amendment cycle takes 30 minutes.
