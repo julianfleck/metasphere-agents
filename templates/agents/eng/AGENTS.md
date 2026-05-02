@@ -147,10 +147,10 @@ messages, PR titles + bodies, docstrings, CLI/docs MD:
 # for each. Catch the leak before the PR + amendment cycle does.
 git diff <base>..HEAD | grep -iE '<id-1>|<id-2>|<chat-id-int>'
 
-# Spot-specific agent handles (extend list as new project-teams
-# spin up). Catches @-prefixed instance vocabulary baked into
-# tests/comments/docstrings as opaque fixture data.
-git grep -wnE "@(worldwire|masked|kf|recurse|writing|funding|briefing|rage-changelog|cam|visa|oecd|polymarket)[a-z-]*" \
+# @-prefixed instance vocabulary (project-team handles baked into
+# tests/comments/docstrings as opaque fixture data). Substitute your
+# instance's project-team prefixes for the placeholders below.
+git grep -wnE "@(<project-handle-1>|<project-handle-2>|...)[a-z-]*" \
   -- ':!.tasks/' ':!CHANGELOG*' ':!docs/' ':!templates/install/'
 ```
 
