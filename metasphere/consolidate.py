@@ -376,8 +376,8 @@ def classify_task(
     # the status is manually changed. Must be checked BEFORE the stale
     # window so a paused task doesn't get re-escalated every cycle
     # (the bug operator-flagged 2026-04-15T08:55Z that drove 8
-    # STALE→escalated-user events per 15-min cycle on his worldwire
-    # tasks).
+    # STALE→escalated-user events per 15-min cycle on a project's
+    # paused tasks).
     if status.startswith("paused"):
         return VERDICT_PAUSED
 
@@ -401,9 +401,9 @@ def classify_task(
     # Same for tasks assigned to a GC'd ephemeral whose agent dir no
     # longer exists anywhere — pinging a vanished assignee accomplishes
     # nothing, escalating to orchestrator forever fills the inbox.
-    # Verified live 2026-04-25T10:00Z: 25 worldwire-orphan tasks at
-    # ping_count 280-294, age 4d, all assigned to @ww-* ephemerals
-    # whose dirs were rmtree'd by the standard ephemeral GC.
+    # Verified live 2026-04-25T10:00Z: 25 orphan-assignee tasks at
+    # ping_count 280-294, age 4d, all assigned to project-team
+    # ephemerals whose dirs were rmtree'd by the standard ephemeral GC.
     is_orphan_assignee = (
         paths is not None
         and task.assignee
@@ -497,8 +497,8 @@ def _route_ping_target(task: _tasks.Task, paths: Paths) -> str:
 
     Per operator directive (2026-04-15T08:55Z): route to the project's lead first so
     external collaborators don't spam the operator's view with pings for
-    worldwire tasks he doesn't own. Falls back to the task's
-    ``assigned_to`` only when the project has no lead (or no
+    project-scoped tasks the operator doesn't own. Falls back to the
+    task's ``assigned_to`` only when the project has no lead (or no
     project at all).
 
     Order:

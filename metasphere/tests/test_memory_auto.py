@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from metasphere.memory.auto import AutoMemoryStrategy
+from metasphere.memory.auto import AutoMemoryStrategy, _default_memory_root
 
 
 def _setup_memory(tmp_path: Path) -> Path:
@@ -109,3 +109,20 @@ def test_search_respects_limit(tmp_path):
 def test_missing_memory_md_returns_empty(tmp_path):
     strat = AutoMemoryStrategy(root=tmp_path)
     assert strat.search("anything") == []
+
+
+def test_default_memory_root_fallback_has_no_operator_name(tmp_path, monkeypatch):
+    # Force the function past the PWD-derived branch and the iterdir
+    # scan so the last-resort fallback runs. Stranger installs land
+    # here whenever ~/.claude/projects/ either doesn't exist or holds
+    # no child with memory/MEMORY.md. Guard against any operator name
+    # creeping into the shipped fallback slug. Inspect only the
+    # function-controlled suffix (relative to HOME) so the assertion
+    # ignores any operator names that happen to live in the test
+    # runner's tmp prefix.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PWD", "")
+    fallback = _default_memory_root()
+    suffix = fallback.relative_to(tmp_path).as_posix().lower()
+    for needle in ("openclaw", "julian", "j0lian", "ella"):
+        assert needle not in suffix, f"fallback slug leaks {needle!r}: {suffix}"
