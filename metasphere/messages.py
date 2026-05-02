@@ -297,7 +297,7 @@ def collect_inbox(scope: Path, project_root: Path, *, view: bool = False) -> lis
 class Mention:
     name: str               # bare name without leading @
     type: str               # 'project' | 'agent' | 'unknown'
-    raw: str                # original token, e.g. '@recurse'
+    raw: str                # original token, e.g. '@example-project'
 
 
 # Match @name where name starts with a letter/digit/underscore and may

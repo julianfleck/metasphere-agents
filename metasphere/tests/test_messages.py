@@ -203,12 +203,12 @@ def _seed_agent(tmp_paths, name: str) -> None:
 
 
 def test_extract_mentions_project_only(tmp_paths):
-    _seed_project(tmp_paths, "recurse")
-    ms = m.extract_mentions("hey @recurse take a look", paths=tmp_paths)
+    _seed_project(tmp_paths, "example-project")
+    ms = m.extract_mentions("hey @example-project take a look", paths=tmp_paths)
     assert len(ms) == 1
-    assert ms[0].name == "recurse"
+    assert ms[0].name == "example-project"
     assert ms[0].type == "project"
-    assert ms[0].raw == "@recurse"
+    assert ms[0].raw == "@example-project"
 
 
 def test_extract_mentions_agent_only(tmp_paths):
@@ -218,9 +218,9 @@ def test_extract_mentions_agent_only(tmp_paths):
 
 
 def test_extract_mentions_collision_project_wins(tmp_paths):
-    _seed_project(tmp_paths, "recurse")
-    _seed_agent(tmp_paths, "recurse")
-    ms = m.extract_mentions("@recurse hi", paths=tmp_paths)
+    _seed_project(tmp_paths, "example-project")
+    _seed_agent(tmp_paths, "example-project")
+    ms = m.extract_mentions("@example-project hi", paths=tmp_paths)
     assert len(ms) == 1
     assert ms[0].type == "project"
 

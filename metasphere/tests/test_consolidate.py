@@ -226,7 +226,7 @@ def test_ping_routes_to_project_lead_before_assignee(repo, tmp_paths):
     """
     import json as _json
     _make_persistent(tmp_paths, "@test-user")
-    _make_persistent(tmp_paths, "@worldwire-lead")
+    _make_persistent(tmp_paths, "@team-lead")
 
     # Register "worldwire" with a lead member.
     reg = _json.loads((tmp_paths.root / "projects.json").read_text())
@@ -239,7 +239,7 @@ def test_ping_routes_to_project_lead_before_assignee(repo, tmp_paths):
     pdir.mkdir(parents=True, exist_ok=True)
     (pdir / "project.json").write_text(_json.dumps({
         "schema": 2, "name": "worldwire", "path": str(repo) + "/ww",
-        "members": [{"id": "@worldwire-lead", "role": "lead", "persistent": True}],
+        "members": [{"id": "@team-lead", "role": "lead", "persistent": True}],
     }))
 
     t = _create_task(repo, "ww task")
@@ -255,8 +255,8 @@ def test_ping_routes_to_project_lead_before_assignee(repo, tmp_paths):
     )
     assert result["action"] == "pinged"
     # Routed to lead, NOT @test-user (the assignee).
-    assert result["target"] == "@worldwire-lead"
-    assert sender.calls[0]["target"] == "@worldwire-lead"
+    assert result["target"] == "@team-lead"
+    assert sender.calls[0]["target"] == "@team-lead"
 
 
 def test_paused_task_is_terminal_not_stale(repo, tmp_paths):
@@ -443,10 +443,10 @@ def test_classify_stale_when_assignee_dir_present_global(repo, tmp_paths):
     # STALE — orphan check must NOT swallow live ephemerals or
     # persistent agents that are simply slow to respond.
     t = _create_task(repo, "alive owner")
-    t = _tasks.start_task(t.id, "@worldwire-eng", repo)
+    t = _tasks.start_task(t.id, "@team-eng", repo)
     t = _set_updated(t, _iso(60), repo)
-    (tmp_paths.agent_dir("@worldwire-eng")).mkdir(parents=True, exist_ok=True)
-    (tmp_paths.agent_dir("@worldwire-eng") / "MISSION.md").write_text("x")
+    (tmp_paths.agent_dir("@team-eng")).mkdir(parents=True, exist_ok=True)
+    (tmp_paths.agent_dir("@team-eng") / "MISSION.md").write_text("x")
     assert _con.classify_task(
         t, stale_window_minutes=15, paths=tmp_paths
     ) == _con.VERDICT_STALE
@@ -1356,9 +1356,9 @@ def test_gc_skips_persistent_agent_mid_bootstrap(tmp_paths):
     liveness-based GC, even with no tmux session, no pid, and no recent
     activity.
     """
-    agent_dir = tmp_paths.agents / "@masked-eng"
+    agent_dir = tmp_paths.agents / "@team-eng-b"
     agent_dir.mkdir(parents=True)
-    (agent_dir / "persona-index.md").write_text("# Persona Index — @masked-eng\n")
+    (agent_dir / "persona-index.md").write_text("# Persona Index — @team-eng-b\n")
     (agent_dir / "SOUL.md").write_text("# Soul\n")
     # No MISSION.md, no status, no session, no pid — looks dead to the
     # old heuristic.

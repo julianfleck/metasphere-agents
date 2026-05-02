@@ -86,8 +86,8 @@ def test_resolve_target_agent_uses_agent_id():
     ) == "@acme"
 
     assert _sched.resolve_target_agent(
-        _make_job(name="Morning briefing", agent_id="briefing")
-    ) == "@briefing"
+        _make_job(name="Morning briefing", agent_id="example-cron")
+    ) == "@example-cron"
 
 
 def test_resolve_target_agent_default_main():
@@ -471,7 +471,7 @@ def test_wire_exit_self_preserves_existing_funding_sink_stanza(tmp_paths):
         "Steps...\n\n"
         "---\n"
         "**Funding pipeline sink:** copy report to "
-        "~/.metasphere/agents/@funding-research/sources/residency/<date>.md"
+        "~/.metasphere/agents/@example-research/sources/residency/<date>.md"
     )
     job = _make_job(
         id="job-residency",
