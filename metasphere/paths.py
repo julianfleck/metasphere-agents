@@ -163,6 +163,30 @@ class Paths:
             return self.project_agent_dir(project_name, agent_id)
         return self.agent_dir(agent_id)
 
+    def find_agent_dir(self, agent_id: str) -> Path | None:
+        """Discover an agent's identity directory across project-scoped + global.
+
+        Project-scoped first (matches ``metasphere.agents._find_agent_dir``):
+        an agent registered under ``~/.metasphere/projects/<proj>/agents/<id>/``
+        wins over a same-named entry under ``~/.metasphere/agents/<id>/``.
+        Returns ``None`` if no directory exists in either layer — callers
+        decide whether to fall back to ``agent_dir(agent_id)`` for write
+        targets vs. emit nothing for read-only lookups.
+        """
+        if not agent_id.startswith("@"):
+            agent_id = "@" + agent_id
+        if self.projects.is_dir():
+            for proj_dir in sorted(self.projects.iterdir()):
+                if not proj_dir.is_dir():
+                    continue
+                candidate = proj_dir / "agents" / agent_id
+                if candidate.is_dir():
+                    return candidate
+        candidate = self.agents / agent_id
+        if candidate.is_dir():
+            return candidate
+        return None
+
     def messages_dir(self, scope_dir: Path | None = None) -> Path:
         return (scope_dir or self.scope) / ".messages"
 

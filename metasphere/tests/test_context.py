@@ -480,3 +480,60 @@ def test_voice_capsule_drops_legacy_byte_and_line_caps(tmp_paths: Paths):
     nothing in metasphere.context references them anymore."""
     assert not hasattr(ctx, "_VOICE_BYTE_CAP")
     assert not hasattr(ctx, "_VOICE_LINE_CAP")
+
+
+# ---------------------------------------------------------------------------
+# Project-scoped agent resolution — context renderers must find persona /
+# mission / status / task / child_reports under
+# ~/.metasphere/projects/<proj>/agents/<id>/, not just the global
+# ~/.metasphere/agents/<id>/. Pre-fix: paths.agent_dir() returned only the
+# global path, so persistent project-scoped agents (e.g. @explorer under
+# metasphere-agents, @polymarket under polymarket-agents) silently received
+# zero persona injection from PR #63 — the renderers fell off the empty
+# global dir without surfacing anything.
+# ---------------------------------------------------------------------------
+
+
+def _seed_project_agent_dir(tmp_paths: Paths, project: str, agent: str) -> Path:
+    d = tmp_paths.project_agent_dir(project, agent)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def test_voice_capsule_resolves_project_scoped_agent(tmp_paths: Paths):
+    d = _seed_project_agent_dir(tmp_paths, "acme", "@scoped")
+    (d / "SOUL.md").write_text("# soul\n\nproject-scoped voice.\n", encoding="utf-8")
+    (d / "USER.md").write_text("# user\n\nproject-scoped user-model.\n", encoding="utf-8")
+    out = ctx._render_voice_capsule(tmp_paths, "@scoped")
+    assert "project-scoped voice." in out
+    assert "project-scoped user-model." in out
+
+
+def test_mission_capsule_resolves_project_scoped_agent(tmp_paths: Paths):
+    d = _seed_project_agent_dir(tmp_paths, "acme", "@scoped")
+    (d / "MISSION.md").write_text(
+        "# mission\n\nProject-scoped mission body line.\n", encoding="utf-8"
+    )
+    out = ctx._render_mission_capsule(tmp_paths, "@scoped")
+    assert "## Mission" in out
+    assert "Project-scoped mission body line." in out
+
+
+def test_status_header_resolves_project_scoped_agent(tmp_paths: Paths):
+    d = _seed_project_agent_dir(tmp_paths, "acme", "@scoped")
+    (d / "status").write_text("active: persistent session", encoding="utf-8")
+    out = ctx._render_status_header(tmp_paths, "@scoped")
+    assert "active: persistent session" in out
+    assert "_Status: unknown_" not in out
+
+
+def test_voice_capsule_prefers_project_over_global(tmp_paths: Paths):
+    # Both layers exist for the same id — project-scoped wins, matching
+    # paths.find_agent_dir's tie-break.
+    proj_d = _seed_project_agent_dir(tmp_paths, "acme", "@dual")
+    (proj_d / "SOUL.md").write_text("# soul\n\nPROJECT-VOICE.\n", encoding="utf-8")
+    glob_d = _seed_agent_dir(tmp_paths, "@dual")
+    (glob_d / "SOUL.md").write_text("# soul\n\nGLOBAL-VOICE.\n", encoding="utf-8")
+    out = ctx._render_voice_capsule(tmp_paths, "@dual")
+    assert "PROJECT-VOICE." in out
+    assert "GLOBAL-VOICE." not in out

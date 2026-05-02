@@ -114,7 +114,7 @@ _STATUS_ICON = {
 
 
 def _render_status_header(paths: Paths, agent: str) -> str:
-    agent_dir = paths.agent_dir(agent)
+    agent_dir = paths.find_agent_dir(agent) or paths.agent_dir(agent)
     status = "unknown"
     sf = agent_dir / "status"
     if sf.is_file():
@@ -158,7 +158,7 @@ def _render_voice_capsule(paths: Paths, agent: str) -> str:
     the file under the old name). The trailing pointer line is only
     emitted when at least one persona file landed.
     """
-    agent_dir = paths.agent_dir(agent)
+    agent_dir = paths.find_agent_dir(agent) or paths.agent_dir(agent)
     soul_body = (
         _read_persona_body(agent_dir / "SOUL.md")
         or _read_persona_body(agent_dir / "VOICE.md")
@@ -190,7 +190,8 @@ _MISSION_LINE_CAP = 30
 def _render_mission_capsule(paths: Paths, agent: str) -> str:
     """Inject the agent's MISSION.md so persistent agents know their
     purpose every turn. Capped to ~1KB / 30 lines."""
-    mission_file = paths.agent_dir(agent) / "MISSION.md"
+    agent_dir = paths.find_agent_dir(agent) or paths.agent_dir(agent)
+    mission_file = agent_dir / "MISSION.md"
     if not mission_file.is_file():
         return ""
     try:
@@ -208,7 +209,8 @@ def _render_mission_capsule(paths: Paths, agent: str) -> str:
 
 def _render_child_reports(paths: Paths, agent: str) -> str:
     """Show pending child agent completion reports (max 5)."""
-    reports_dir = paths.agent_dir(agent) / "child_reports"
+    agent_dir = paths.find_agent_dir(agent) or paths.agent_dir(agent)
+    reports_dir = agent_dir / "child_reports"
     if not reports_dir.is_dir():
         return ""
     try:
@@ -371,7 +373,8 @@ def _render_memory_fts(paths: Paths, agent: str) -> str:
     out = ["## Memory Context (FTS)"]
 
     # Build query: static stem (task + project) + fresh signal (last event)
-    task_file = paths.agent_dir(agent) / "task"
+    agent_dir = paths.find_agent_dir(agent) or paths.agent_dir(agent)
+    task_file = agent_dir / "task"
     query_parts: list[str] = []
     if task_file.is_file():
         try:
