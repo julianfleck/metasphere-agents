@@ -33,7 +33,7 @@ def _default_memory_root() -> Path:
             mem = child / "memory"
             if (mem / "MEMORY.md").is_file():
                 return mem
-    return home / ".claude" / "projects" / "-home-openclaw--metasphere" / "memory"
+    return home / ".claude" / "projects" / "_no_memory" / "memory"
 
 
 def _tokenize(s: str) -> set[str]:

@@ -8,8 +8,9 @@ legacy patterns exist on disk:
 1. Tasks live at ``<registered_repo>/.tasks/`` instead of
    ``~/.metasphere/projects/<name>/.tasks/``.
 2. ``project.json`` lives at ``<registered_repo>/.metasphere/project.json``
-   instead of ``~/.metasphere/projects/<name>/project.json`` (only the
-   worldwire project hits this, AFAIK).
+   instead of ``~/.metasphere/projects/<name>/project.json`` (some
+   early-registered projects hit this when bootstrapped from a
+   pre-existing repo).
 
 PR #8 scope: migrate **tasks only** (`--what tasks`, the default).
 Messages, changelog, and learnings land in a follow-up PR that reuses
