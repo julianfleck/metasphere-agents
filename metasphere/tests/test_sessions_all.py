@@ -40,11 +40,11 @@ def test_list_alive_persistent_agents_filters_non_alive(tmp_paths: Paths):
     # Global persistent agent
     global_agent = _make_agent("@orchestrator", tmp_paths.agents / "@orchestrator")
     # Project-scoped persistent agent
-    proj_agents_dir = tmp_paths.projects / "polymarket" / "agents"
+    proj_agents_dir = tmp_paths.projects / "acme" / "agents"
     proj_agent = _make_agent(
-        "@polymarket",
-        proj_agents_dir / "@polymarket",
-        project="polymarket",
+        "@acme",
+        proj_agents_dir / "@acme",
+        project="acme",
     )
     # Ephemeral (no MISSION.md) — must be ignored
     ephemeral = tmp_paths.agents / "@ephem"
@@ -66,9 +66,9 @@ def test_list_alive_persistent_agents_filters_non_alive(tmp_paths: Paths):
 def test_list_alive_persistent_agents_includes_project_scoped(tmp_paths: Paths):
     _make_agent("@orchestrator", tmp_paths.agents / "@orchestrator")
     _make_agent(
-        "@polymarket",
-        tmp_paths.projects / "polymarket" / "agents" / "@polymarket",
-        project="polymarket",
+        "@acme",
+        tmp_paths.projects / "acme" / "agents" / "@acme",
+        project="acme",
     )
 
     with patch("metasphere.session.session_alive", return_value=True):
@@ -77,7 +77,7 @@ def test_list_alive_persistent_agents_includes_project_scoped(tmp_paths: Paths):
     by_name = {a.name: sname for a, sname in out}
     assert by_name["@orchestrator"] == "metasphere-orchestrator"
     # Project-scoped agents use the ``metasphere-<project>-<name>`` form.
-    assert by_name["@polymarket"] == "metasphere-polymarket-polymarket"
+    assert by_name["@acme"] == "metasphere-acme-acme"
 
 
 class _TmuxRecorder:
@@ -120,13 +120,13 @@ def test_build_viewer_session_no_agents_returns_empty(tmp_paths: Paths):
 def test_build_viewer_session_links_each_alive_agent(tmp_paths: Paths):
     a1 = _make_agent("@orchestrator", tmp_paths.agents / "@orchestrator")
     a2 = _make_agent(
-        "@polymarket",
-        tmp_paths.projects / "polymarket" / "agents" / "@polymarket",
-        project="polymarket",
+        "@acme",
+        tmp_paths.projects / "acme" / "agents" / "@acme",
+        project="acme",
     )
     fake_alive_list = [
         (a1, "metasphere-orchestrator"),
-        (a2, "metasphere-polymarket-polymarket"),
+        (a2, "metasphere-acme-acme"),
     ]
     recorder = _TmuxRecorder()
 
@@ -143,7 +143,7 @@ def test_build_viewer_session_links_each_alive_agent(tmp_paths: Paths):
         viewer, linked = sessmod.build_viewer_session(paths=tmp_paths)
 
     assert viewer == "metasphere-all"
-    assert [a.name for a in linked] == ["@orchestrator", "@polymarket"]
+    assert [a.name for a in linked] == ["@orchestrator", "@acme"]
 
     # Verify the tmux script: new-session placeholder, two link-windows,
     # kill-window placeholder, select-window.
@@ -158,7 +158,7 @@ def test_build_viewer_session_links_each_alive_agent(tmp_paths: Paths):
     sources = {c[c.index("-s") + 1] for c in link_args}
     assert sources == {
         "metasphere-orchestrator:0",
-        "metasphere-polymarket-polymarket:0",
+        "metasphere-acme-acme:0",
     }
     # Linked into the viewer session.
     dests = {c[c.index("-t") + 1] for c in link_args}

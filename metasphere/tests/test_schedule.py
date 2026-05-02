@@ -82,8 +82,8 @@ def test_resolve_target_agent_uses_agent_id():
     ) == "@brand-mentions"
 
     assert _sched.resolve_target_agent(
-        _make_job(name="polymarket:trading-run", agent_id="polymarket")
-    ) == "@polymarket"
+        _make_job(name="acme:trading-run", agent_id="acme")
+    ) == "@acme"
 
     assert _sched.resolve_target_agent(
         _make_job(name="Morning briefing", agent_id="briefing")
@@ -173,7 +173,7 @@ def test_set_enabled_accepts_id_or_name(tmp_paths):
 
 
 def test_dispatch_prefers_wake_persistent_when_global_mission_exists(tmp_paths):
-    target = "@polymarket"
+    target = "@acme"
     agent_dir = tmp_paths.agent_dir(target)
     agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "MISSION.md").write_text("mission\n")
@@ -212,7 +212,7 @@ def test_dispatch_wakes_project_scoped_persistent_agent(tmp_paths):
 
 
 def test_dispatch_to_agent_falls_back_to_inbox_when_wake_fails(tmp_paths):
-    target = "@polymarket"
+    target = "@acme"
     agent_dir = tmp_paths.agent_dir(target)
     agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "MISSION.md").write_text("mission\n")
@@ -247,9 +247,9 @@ def test_dispatch_to_agent_ephemeral_uses_inbox(tmp_paths):
 def test_extract_messages_send_target_bare_command():
     assert (
         _sched._extract_messages_send_target(
-            'messages send @polymarket !task "run pipeline"'
+            'messages send @acme !task "run pipeline"'
         )
-        == "@polymarket"
+        == "@acme"
     )
 
 
@@ -275,10 +275,10 @@ def test_extract_messages_send_target_malformed_payload():
 
 
 def test_dispatch_command_pre_wakes_messages_send_task_target(tmp_paths):
-    """The main regression fix: scheduled `messages send @polymarket !task`
+    """The main regression fix: scheduled `messages send @acme !task`
     commands must cold-start the agent's tmux+REPL before sending, so
     the inbox notice has a live session to inject into."""
-    target = "@polymarket"
+    target = "@acme"
     agent_dir = tmp_paths.agent_dir(target)
     agent_dir.mkdir(parents=True, exist_ok=True)
     (agent_dir / "MISSION.md").write_text("mission\n")
@@ -288,7 +288,7 @@ def test_dispatch_command_pre_wakes_messages_send_task_target(tmp_paths):
         wake_mock.return_value = mock.Mock()
         run_mock.return_value = mock.Mock(returncode=0, stdout="", stderr="")
         ok = _sched.dispatch_command(
-            'messages send @polymarket !task "run the poly pipeline"',
+            'messages send @acme !task "run the acme pipeline"',
             paths=tmp_paths,
         )
 
@@ -339,7 +339,7 @@ def test_dispatch_command_skips_wake_for_ephemeral_target(tmp_paths):
 
 def test_dispatch_command_does_not_wake_for_non_send_command(tmp_paths):
     # Arbitrary command, not `messages send` — never wake.
-    target_dir = tmp_paths.agent_dir("@polymarket")
+    target_dir = tmp_paths.agent_dir("@acme")
     target_dir.mkdir(parents=True, exist_ok=True)
     (target_dir / "MISSION.md").write_text("mission\n")
 
@@ -394,10 +394,10 @@ def _seed_jobs_for_wire_test(tmp_paths, *, payloads=None):
     # Untouched control: persistent agent without the flag.
     jobs.append(
         _make_job(
-            id="job-control-polymarket",
-            source_id="control-polymarket",
-            name="polymarket:trading-run",
-            payload_message="run polymarket pipeline",
+            id="job-control-acme",
+            source_id="control-acme",
+            name="acme:trading-run",
+            payload_message="run acme pipeline",
             wants_exit_self_cleanup=False,
         )
     )
@@ -418,8 +418,8 @@ def test_wire_exit_self_appends_to_flagged_jobs(tmp_paths):
         assert saved[name].payload_message.startswith(f"Run {name}")
 
     # Control job (flag unset) — payload must be unchanged.
-    assert saved["polymarket:trading-run"].payload_message == "run polymarket pipeline"
-    assert SENTINEL not in saved["polymarket:trading-run"].payload_message
+    assert saved["acme:trading-run"].payload_message == "run acme pipeline"
+    assert SENTINEL not in saved["acme:trading-run"].payload_message
 
 
 def test_wire_exit_self_is_idempotent(tmp_paths):
