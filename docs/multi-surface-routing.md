@@ -50,7 +50,7 @@ When an inbound from `(surface_id, chat_id)` lands for agent
 ```json
 {
   "surface_id": "telegram-relay",
-  "chat_id": "123456789",
+  "chat_id": "100000001",
   "ts": 1781821628.123
 }
 ```
@@ -95,7 +95,7 @@ working. New code should prefer `metasphere message send`.
 ```yaml
 contacts:
   alice:
-    telegram: 123456789                # surface_type fallback
+    telegram: 100000001                # surface_type fallback
     telegram-cluster-1: 999999         # exact surface_id override
     slack: U01ABC                      # surface_type fallback for slack
     slack-relay: C012XYZ           # exact surface_id override
@@ -128,7 +128,7 @@ with `TELEGRAM_BOT_TOKEN=<bot-token>`. Example:
 
 ## Adding a new surface adapter
 
-Forward-pointer for the upcoming Slack work (PR2):
+To add a surface beyond Telegram and Slack:
 
 1. Implement `metasphere.gateway.adapter.SurfaceAdapter`:
    `surface_type: str`, `surface_id: str`, `receive(timeout) -> int`,
