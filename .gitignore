@@ -1,0 +1,44 @@
+# Everything under .claude/ is per-machine runtime state. install.sh
+# (and ``metasphere update``) recreates the directory + slash command
+# symlinks from templates/claude-commands/, and writes
+# settings.local.json with the absolute hook paths for this venv.
+# scheduled_tasks.json + scheduled_tasks.lock are similarly local.
+/.claude/
+
+# Runtime state — fractal messages and tasks accumulate at any scope depth
+**/.messages/inbox/
+**/.messages/outbox/
+**/.messages/archive/
+**/.tasks/active/
+**/.tasks/completed/
+**/.tasks/archive/
+# Backup files
+*.bak
+
+# Credentials at any scope depth — never commit
+**/credentials/
+
+# Local-only metasphere projects nested under this repo
+# (these belong as siblings under ~/projects/ but live here for now)
+/vice-party/
+
+# Operator-local agent tooling lifted out of the public harness
+/brain/
+
+# Broadcast directives live under the installed instance
+# (~/.metasphere/DIRECTIVES.yaml), never in the harness repo.
+/DIRECTIVES.yaml
+
+# Working design/plan docs are operator-local and may reference client
+# routing literals. They live host-side under
+# ~/.metasphere/projects/<project>/plans/, never in the public harness repo.
+/docs/plans/
+
+# Python build/cache artifacts (metasphere/ Python port)
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+metasphere.egg-info/
+*.lock
+/home/

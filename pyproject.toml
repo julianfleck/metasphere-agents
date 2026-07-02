@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "metasphere"
+version = "0.297.0"
+description = "Metasphere agent system (Python rewrite)"
+requires-python = ">=3.11"
+dependencies = [
+  "croniter>=2,<7",
+  "PyYAML>=6,<7",
+  # Slack surface adapter — Socket Mode (slack-bolt) + WebClient
+  # (slack-sdk). Single-Telegram installs still pay the wheel cost
+  # (~3MB), which is small relative to the agent stack's footprint.
+  "slack-bolt>=1.21,<2",
+  "slack-sdk>=3.36,<4",
+]
+
+[project.optional-dependencies]
+# Voice-note transcription via OpenAI Whisper (CTranslate2 build). Optional
+# because the wheel pulls ~150MB of CUDA/CPU runtime + model files; the
+# harness degrades gracefully when this extra isn't installed and just
+# renders a "(transcription unavailable — install faster-whisper)" note
+# on voice attachments. Opt in with: pip install metasphere-agents[voice]
+voice = [
+  "faster-whisper>=1.0,<2",
+]
+
+[project.scripts]
+# Unified entry point — see metasphere/cli/main.py
+metasphere               = "metasphere.cli.main:main"
+
+# Deprecation shims (see metasphere/cli/_shims.py). Each prints a one-line
+# notice on TTY stderr and forwards into the unified dispatcher. Kept so
+# systemd units, hooks, and shell aliases keep working until individually
+# migrated.
+messages                  = "metasphere.cli._shims:messages_shim"
+tasks                     = "metasphere.cli._shims:tasks_shim"
+metasphere-context        = "metasphere.cli._shims:metasphere_context"
+metasphere-posthook       = "metasphere.cli._shims:metasphere_posthook"
+metasphere-heartbeat      = "metasphere.cli._shims:metasphere_heartbeat"
+metasphere-schedule       = "metasphere.cli._shims:metasphere_schedule"
+metasphere-telegram       = "metasphere.cli._shims:metasphere_telegram"
+metasphere-trace          = "metasphere.cli._shims:metasphere_trace"
+metasphere-session        = "metasphere.cli._shims:metasphere_session"
+metasphere-project        = "metasphere.cli._shims:metasphere_project"
+metasphere-telegram-groups = "metasphere.cli._shims:metasphere_telegram_groups"
+metasphere-git-hooks      = "metasphere.cli._shims:metasphere_git_hooks"
+metasphere-gateway        = "metasphere.cli._shims:metasphere_gateway"
+metasphere-fts            = "metasphere.cli._shims:metasphere_fts"
+metasphere-agent          = "metasphere.cli._shims:metasphere_agent"
+metasphere-spawn          = "metasphere.cli._shims:metasphere_spawn"
+metasphere-wake           = "metasphere.cli._shims:metasphere_wake"
+
+[tool.pytest.ini_options]
+# Live tests hit the real telegram API and send 6KB of yyyy spam to the
+# user's chat. They are opt-in only — run them with `pytest -m live` or
+# `pytest --override-ini='addopts='`.
+addopts = "-m 'not live'"
+markers = [
+  "live: tests that hit external services (excluded by default — opt in via -m live)",
+]
+
+[tool.setuptools]
+packages = [
+  "metasphere",
+  "metasphere.cli",
+  "metasphere.telegram",
+  "metasphere.memory",
+  "metasphere.gateway",
+]

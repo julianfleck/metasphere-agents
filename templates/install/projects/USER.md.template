@@ -1,0 +1,51 @@
+# USER.md — the team on {{ project_name }}
+
+_Read by every agent on this project at session start (per the
+session-start ritual in their AGENTS.md). Tells them who else is
+working on the project so they can calibrate tone, scope of trust,
+and reporting style._
+
+## Project
+
+- Name: {{ project_name }}
+- Goal: {{ project_goal }}
+
+## Humans
+
+_Who are the human operators and stakeholders on this project? Names,
+handles, what they do for this project, how they prefer to be
+addressed in agent output (Telegram messages, PR comments, etc.)._
+
+- TBD
+
+## Agents
+
+_Persistent agents on this project + their roles. Mirrors the
+members list in `project.json` but with extra context — what each
+one is good at, when to route to them vs another._
+
+- TBD
+
+## How the team prefers to work
+
+_Examples — fill in or delete:_
+- _"PR descriptions stay brief; details go in commit messages."_
+- _"Critic verdicts are APPROVE / BLOCK only — no soft language."_
+- _"Engineering reports always cite SHA + test count."_
+- _"Telegram updates are tight; long context goes to artifact files."_
+
+## What the team doesn't want
+
+_Examples — fill in or delete:_
+- _"Don't generate boilerplate documentation no human will read."_
+- _"Don't ship behind a feature flag without naming the flag."_
+- _"Don't recap what just happened — the orchestrator was there."_
+
+## Project-specific context
+
+_What does an agent need to know about THIS project that isn't
+obvious from the codebase? Recent decisions, in-flight migrations,
+'gotchas', external systems the project depends on, anything an
+incoming agent should learn before acting._
+
+- TBD

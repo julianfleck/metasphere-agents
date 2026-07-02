@@ -1,0 +1,18 @@
+[Unit]
+Description=Metasphere Schedule Daemon (cron-style job dispatcher)
+After=network.target
+
+[Service]
+Type=simple
+Environment=METASPHERE_DIR=@@METASPHERE_DIR@@
+Environment=METASPHERE_PROJECT_ROOT=@@METASPHERE_PROJECT_ROOT@@
+Environment=METASPHERE_REPO_ROOT=@@METASPHERE_PROJECT_ROOT@@
+Environment=PATH=@@METASPHERE_DIR@@/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=@@METASPHERE_VENV_BIN@@ schedule daemon
+Restart=always
+RestartSec=10
+StandardOutput=append:@@METASPHERE_DIR@@/logs/schedule.log
+StandardError=append:@@METASPHERE_DIR@@/logs/schedule.log
+
+[Install]
+WantedBy=default.target

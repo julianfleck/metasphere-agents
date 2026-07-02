@@ -1,0 +1,373 @@
+"""Persistent ``@orchestrator`` tmux+REPL session lifecycle.
+
+The session is named ``metasphere-orchestrator`` (note: NOT
+``metasphere-@orchestrator`` — the gateway predates the agent-naming
+convention used by :mod:`metasphere.agents` and has historically used
+the bare name. Preserved for compatibility.)
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import time
+from pathlib import Path
+from typing import Tuple
+
+from ..agents import (
+    _last_active_idle_seconds as _orchestrator_sidecar_idle,
+    session_alive as _agents_session_alive,
+)
+from ..context import harness_hash
+from ..events import log_event
+from ..io import atomic_write_text
+from ..paths import Paths, resolve
+
+
+def write_harness_hash_baseline(paths: Paths) -> None:
+    """Snapshot the current harness content hash so the per-turn context
+    hook can detect drift and surface a reload warning to the agent.
+    Best-effort; never raises."""
+    try:
+        paths.state.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(paths.state / "harness_hash_baseline", harness_hash(paths) + "\n")
+    except OSError:
+        pass
+
+SESSION_NAME = "metasphere-orchestrator"
+
+# Build the respawn command for a given agent. For ``persistent`` class
+# agents (default) the command is an infinite loop that respawns claude
+# whenever it exits and writes a per-agent restart_pending marker so the
+# watchdog can inject a continuation prompt into the fresh instance.
+# For ``ephemeral`` class agents the command runs claude exactly once
+# and drops to an interactive bash on exit — the idle pane is then the
+# reap_ephemeral_idle reaper's job, and a clean exit-self can no longer
+# be misread as a crash and respawned into a /exit-menu stall.
+def _respawn_cmd(
+    agent: str = "@orchestrator",
+    *,
+    model: str = "",
+    agent_class: str = "persistent",
+) -> str:
+    """Return the per-pane bring-up command for ``agent``.
+
+    For ``agent_class="persistent"`` (default): an infinite respawn loop
+    that writes ``restart_pending.<agent>.json`` after each exit so the
+    watchdog can inject a continuation prompt into the fresh instance.
+    The marker is a JSON file with timestamp + reason + agent. If
+    restart_session() already wrote one (programmatic restart), the loop
+    overwrites it with a fresh timestamp — harmless, and ensures the
+    grace period resets to when the new process actually starts.
+
+    For ``agent_class="ephemeral"``: a one-shot — claude runs once, and
+    on exit (clean or otherwise) the pane drops to an interactive bash
+    so :func:`metasphere.agents.reap_ephemeral_idle` cleans up the tmux
+    session via its session_activity timer. No respawn marker is
+    written, which is what stops the watchdog from injecting a
+    continuation into a non-existent successor (2026-05-05
+    research-monitor zombies: clean exit-self → respawn loop → fresh
+    claude stuck on /exit slash menu).
+
+    If ``model`` is set, the claude invocation includes ``--model <model>``
+    so the agent runs on a specific Anthropic model (e.g. Haiku for
+    low-stakes work).
+    """
+    safe_agent = agent.replace("'", "")  # paranoia
+    model_flag = f" --model {model}" if model else ""
+
+    if agent_class == "ephemeral":
+        # No respawn loop. ``exec bash`` after claude exits leaves the
+        # pane idle at an interactive shell so reap_ephemeral_idle can
+        # collect it on its session_activity timer.
+        return (
+            "exec bash -c '"
+            'export METASPHERE_PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$METASPHERE_PROJECT_ROOT")"; '
+            # Mark this as a gateway-spawned (non-interactive) session so the
+            # PreToolUse hook can deny interactive prompts that would hang the
+            # pane (AskUserQuestion / ExitPlanMode — see metasphere/cli/pretool.py).
+            "export METASPHERE_GATEWAY_SESSION=1; "
+            "export CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 "
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1; "
+            f"claude --dangerously-skip-permissions{model_flag}; "
+            'ec=$?; echo "[gateway] claude exited ($ec), ephemeral — pane idle for reap"; '
+            "exec bash"
+            "'"
+        )
+
+    return (
+        "exec bash -c '"
+        'STATE_DIR="$HOME/.metasphere/state"; '
+        "mkdir -p \"$STATE_DIR\"; "
+        "while true; do "
+        # Refresh METASPHERE_PROJECT_ROOT from git on each restart so
+        # stale env vars from a previous session don't persist.
+        'export METASPHERE_PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$METASPHERE_PROJECT_ROOT")"; '
+        # Disable the Claude TUI feedback modal for metasphere-spawned
+        # agent REPLs. The modal captures input when visible — wakes /
+        # scheduled tasks bounce off its button layout instead of
+        # reaching the prompt, leading to stuck-paste accumulation
+        # (2026-04-16 research-monitor outage). Scoped to agent REPLs
+        # only — the operator's interactive claude sessions are
+        # unaffected.
+        # Setting ``CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`` is the
+        # superset that also kills any telemetry emitted via Dismiss
+        # (per upstream: even pressing 0 may transmit session data).
+        # METASPHERE_GATEWAY_SESSION marks this as a non-interactive
+        # gateway pane so the PreToolUse hook can deny interactive
+        # prompts that would hang it (see metasphere/cli/pretool.py).
+        "export METASPHERE_GATEWAY_SESSION=1; "
+        "export CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 "
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1; "
+        f"claude --dangerously-skip-permissions{model_flag}; "
+        'ec=$?; echo "[gateway] claude exited ($ec), respawning in 1s..."; '
+        'echo "{\\"timestamp\\": '
+        "$(date +%s)"
+        ', \\"reason\\": \\"claude exited (code $ec)\\"'
+        f', \\"agent\\": \\"{safe_agent}\\"'
+        '}" '
+        f'> "$STATE_DIR/restart_pending.{safe_agent}.json"; '
+        "sleep 1; "
+        "done'"
+    )
+
+
+# Backward-compat alias — the orchestrator's loop.
+_RESPAWN_CMD = _respawn_cmd("@orchestrator")
+
+
+def _tmux_bin() -> str:
+    return shutil.which("tmux") or "tmux"
+
+
+def _tmux(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [_tmux_bin(), *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+
+def session_alive(name: str = SESSION_NAME) -> bool:
+    # Delegate to metasphere.agents.session_alive so a future fix to one
+    # path doesn't silently desync the other.
+    return _agents_session_alive(name)
+
+
+def session_health(paths: Paths | None = None) -> Tuple[bool, int]:
+    """Return ``(alive, idle_seconds)``.
+
+    Idle is read from the @orchestrator agent's ``last_active`` sidecar
+    file when present (refreshed by every hook signal the REPL
+    processes — UserPromptSubmit, Stop, telegram-inject, heartbeat-tick),
+    and falls back to tmux ``session_activity`` only when the sidecar is
+    missing. The tmux signal advances on keystrokes only, so unattended
+    sessions that are processing pasted prompts read as "idle" forever
+    in the keystroke view — the sidecar fixes that for ``metasphere
+    status`` and the gateway CLI's reported idle. Matches the signal
+    ``reap_dormant`` already uses.
+
+    ``idle_seconds`` is 0 when the session is dead or activity cannot be
+    parsed (an unparseable activity is treated as "fine" — the watchdog
+    only acts on stuck-prompt patterns, never on idle time alone).
+    """
+    if not session_alive(SESSION_NAME):
+        return (False, 0)
+    paths = paths or resolve()
+    sidecar = _orchestrator_sidecar_idle(paths.agents / "@orchestrator")
+    if sidecar is not None:
+        return (True, sidecar)
+    r = _tmux("display-message", "-t", SESSION_NAME, "-p", "#{session_activity}")
+    if r.returncode != 0 or not r.stdout.strip():
+        return (True, 0)
+    try:
+        activity = int(r.stdout.strip())
+    except ValueError:
+        return (True, 0)
+    return (True, max(0, int(time.time()) - activity))
+
+
+def start_session(paths: Paths | None = None) -> bool:
+    """Create the orchestrator tmux session and start the claude respawn loop.
+
+    Returns True on success. Idempotent: if the session already exists,
+    returns True without touching it. Does not inject initial context —
+    claude-code auto-loads ``CLAUDE.md`` from the repo root, so we
+    deliberately do not paste any bootstrap text into the pane.
+    """
+    paths = paths or resolve()
+    if session_alive(SESSION_NAME):
+        return True
+
+    scope_file = paths.agents / "@orchestrator" / "scope"
+    try:
+        scope_str = scope_file.read_text(encoding="utf-8").strip() or str(paths.project_root)
+    except (OSError, FileNotFoundError):
+        scope_str = str(paths.project_root)
+    # If the configured scope is gone, fall back to repo root with a
+    # log_event so the failure is debuggable instead of tmux failing
+    # silently with `-c <bad-path>`.
+    if not Path(scope_str).is_dir():
+        try:
+            log_event(
+                "agent.session",
+                f"configured scope missing, falling back to repo: {scope_str}",
+                agent="@orchestrator",
+                paths=paths,
+            )
+        except Exception:
+            pass
+        scope_str = str(paths.project_root)
+
+    r = _tmux("new-session", "-d", "-s", SESSION_NAME, "-c", scope_str)
+    if r.returncode != 0:
+        return False
+    _tmux("set-option", "-t", SESSION_NAME, "mouse", "on")
+    _tmux("set-option", "-t", SESSION_NAME, "history-limit", "100000")
+    # Set METASPHERE_PROJECT_ROOT explicitly so it matches the repo we're in,
+    # regardless of what the parent process had in its env.
+    _tmux("send-keys", "-t", SESSION_NAME,
+          f"export METASPHERE_PROJECT_ROOT={scope_str}", "Enter")
+    _tmux("send-keys", "-t", SESSION_NAME, _RESPAWN_CMD, "Enter")
+
+    # Write restart marker so watchdog injects a wake-up prompt into the
+    # fresh instance (same path as restart_session — new sessions need a
+    # kick too).
+    _write_restart_pending(paths, "session created", agent="@orchestrator")
+
+    # Snapshot harness hash so drift detection has a reference point.
+    write_harness_hash_baseline(paths)
+
+    # Status marker for the agent dir (best-effort).
+    try:
+        agent_dir = paths.agents / "@orchestrator"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(agent_dir / "status", "active: persistent session\n")
+    except OSError:
+        pass
+
+    try:
+        log_event(
+            "agent.session",
+            "Orchestrator session started",
+            agent="@orchestrator",
+            paths=paths,
+        )
+    except Exception:
+        pass
+    return True
+
+
+def _restart_marker_path(paths: Paths, agent: str = "@orchestrator") -> Path:
+    """Return the per-agent restart marker path."""
+    # Normalize: ensure @ prefix, use it in filename
+    if not agent.startswith("@"):
+        agent = "@" + agent
+    return paths.state / f"restart_pending.{agent}.json"
+
+
+def _write_restart_pending(paths: Paths, reason: str, agent: str = "@orchestrator") -> None:
+    """Write a restart-pending marker so the watchdog knows to inject a
+    continuation prompt once the fresh Claude instance is ready."""
+    try:
+        paths.state.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(
+            _restart_marker_path(paths, agent),
+            json.dumps({
+                "timestamp": int(time.time()),
+                "reason": reason,
+                "agent": agent,
+            }) + "\n",
+        )
+    except OSError:
+        pass
+
+
+def restart_agent_session(
+    agent: str,
+    reason: str,
+    session_name: str | None = None,
+    paths: Paths | None = None,
+) -> bool:
+    """Restart claude inside any agent's tmux session.
+
+    Sends C-c twice + ``/exit``, then the respawn loop (already running
+    in the pane's shell) revives Claude automatically. A per-agent
+    restart-pending marker is written so the watchdog can inject a
+    continuation prompt once the new instance is ready.
+
+    Returns True if the restart was initiated.
+    """
+    paths = paths or resolve()
+    target = session_name or SESSION_NAME
+    if not session_alive(target):
+        try:
+            log_event(
+                "supervisor.restart_claude",
+                f"session {target} not alive, skipped: {reason}",
+                agent="@daemon-supervisor",
+                paths=paths,
+            )
+        except Exception:
+            pass
+        return False
+
+    try:
+        log_event(
+            "supervisor.restart_claude",
+            f"{agent} restart: {reason}",
+            agent="@daemon-supervisor",
+            paths=paths,
+        )
+    except Exception:
+        pass
+
+    # Write marker BEFORE killing the process so the watchdog can
+    # detect the restart even if this function is interrupted.
+    _write_restart_pending(paths, reason, agent=agent)
+
+    # Enter-race fix (2026-04-16): previously ``send-keys /exit Enter``
+    # was a single invocation, which races with the REPL's input-state
+    # machine post-C-c. Observed symptom: supervisor.restart_claude
+    # fired but the pane never cycled. Fix mirrors the prior art in
+    # ``metasphere.tmux.submit_to_tmux``:
+    #   1. C-c twice to kill any in-flight tool call / input buffer.
+    #   2. C-u to clear readline kill-line.
+    #   3. ``/exit`` as literal (``-l``) — types characters into the
+    #      current prompt line without trailing newline semantics.
+    #   4. Settle, then Enter as a separate send-keys call.
+    #   5. Re-Enter once after a longer settle (belt-and-suspenders
+    #      for the case where the first Enter races the REPL's
+    #      paste-buffer commit).
+    _tmux("send-keys", "-t", target, "C-c")
+    time.sleep(0.3)
+    _tmux("send-keys", "-t", target, "C-c")
+    time.sleep(0.3)
+    _tmux("send-keys", "-t", target, "C-u")
+    time.sleep(0.2)
+    _tmux("send-keys", "-t", target, "-l", "--", "/exit")
+    time.sleep(0.3)
+    _tmux("send-keys", "-t", target, "Enter")
+    time.sleep(0.4)
+    # Belt-and-suspenders: a second Enter if the first raced the
+    # paste-buffer commit. Harmless no-op if /exit already took.
+    _tmux("send-keys", "-t", target, "Enter")
+    # The respawn loop (already running in the pane shell) handles
+    # restarting Claude. We do NOT re-send the respawn command — that
+    # would nest a second loop inside the first.
+    return True
+
+
+def restart_session(reason: str, paths: Paths | None = None) -> None:
+    """Restart the orchestrator session. Backward-compat wrapper."""
+    restart_agent_session("@orchestrator", reason, SESSION_NAME, paths)
+
+
+def ensure_session(paths: Paths | None = None) -> None:
+    """Start the session if it isn't alive. Idempotent."""
+    paths = paths or resolve()
+    if not session_alive(SESSION_NAME):
+        start_session(paths)
