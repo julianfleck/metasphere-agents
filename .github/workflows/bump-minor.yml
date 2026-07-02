@@ -1,0 +1,51 @@
+name: Auto-bump minor version on merge to main
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    # Don't recurse on our own [skip ci] bump commits.
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if pyproject.toml version was manually changed
+        id: manual
+        run: |
+          if git diff HEAD~1 HEAD -- pyproject.toml | grep -q '^[+-]version'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Version field was manually changed — skipping auto-bump."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump minor version
+        if: steps.manual.outputs.skip == 'false'
+        run: |
+          current=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          IFS='.' read -r major minor patch <<< "$current"
+          new_minor=$((minor + 1))
+          new_version="${major}.${new_minor}.0"
+          sed -i "s/^version = \"${current}\"/version = \"${new_version}\"/" pyproject.toml
+          echo "OLD_VERSION=${current}" >> "$GITHUB_ENV"
+          echo "NEW_VERSION=${new_version}" >> "$GITHUB_ENV"
+          echo "Bumped ${current} → ${new_version}"
+
+      - name: Commit + tag + push
+        if: steps.manual.outputs.skip == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml
+          git commit -m "chore: bump version ${OLD_VERSION} → ${NEW_VERSION} [skip ci]"
+          git tag "v${NEW_VERSION}"
+          git push origin main --follow-tags

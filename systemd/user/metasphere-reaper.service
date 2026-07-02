@@ -1,0 +1,10 @@
+[Unit]
+Description=Metasphere reaper: kill stale `npm root -g` zombies
+Documentation=https://github.com/julianfleck/metasphere-agents/blob/main/docs/OPS.md
+
+[Service]
+Type=oneshot
+ExecStart=%h/projects/metasphere-agents/scripts/metasphere-reaper
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=metasphere-reaper

@@ -1,0 +1,20 @@
+[Unit]
+Description=Metasphere Gateway (Telegram <-> orchestrator tmux)
+After=network-online.target
+Wants=network-online.target
+Conflicts=metasphere-telegram.service
+
+[Service]
+Type=simple
+Environment=METASPHERE_DIR=@@METASPHERE_DIR@@
+Environment=METASPHERE_PROJECT_ROOT=@@METASPHERE_PROJECT_ROOT@@
+Environment=METASPHERE_REPO_ROOT=@@METASPHERE_PROJECT_ROOT@@
+Environment=PATH=@@METASPHERE_DIR@@/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=@@METASPHERE_VENV_BIN@@ gateway daemon
+Restart=always
+RestartSec=5
+StandardOutput=append:@@METASPHERE_DIR@@/logs/gateway.log
+StandardError=append:@@METASPHERE_DIR@@/logs/gateway.log
+
+[Install]
+WantedBy=default.target

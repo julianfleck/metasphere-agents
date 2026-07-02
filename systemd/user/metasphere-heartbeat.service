@@ -1,0 +1,19 @@
+[Unit]
+Description=Metasphere Heartbeat (periodic agent wake)
+After=network.target
+
+[Service]
+Type=simple
+Environment=HEARTBEAT_INVOKE_AGENT=true
+Environment=METASPHERE_DIR=@@METASPHERE_DIR@@
+Environment=METASPHERE_PROJECT_ROOT=@@METASPHERE_PROJECT_ROOT@@
+Environment=METASPHERE_REPO_ROOT=@@METASPHERE_PROJECT_ROOT@@
+Environment=PATH=@@METASPHERE_DIR@@/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=@@METASPHERE_VENV_BIN@@ heartbeat daemon 300
+Restart=always
+RestartSec=10
+StandardOutput=append:@@METASPHERE_DIR@@/logs/heartbeat.log
+StandardError=append:@@METASPHERE_DIR@@/logs/heartbeat.log
+
+[Install]
+WantedBy=default.target

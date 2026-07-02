@@ -1,0 +1,38 @@
+# Example slack-commands config (placeholders only).
+#
+# The REAL file lives HOST-SIDE at ~/.metasphere/config/slack-commands.yaml
+# (same posture as slack.env) — it is read at runtime and MUST NOT be committed,
+# because command names and the command->agent map are deployment/operator
+# specific (and may be client-confidential). This example is committed only to
+# document the shape.
+#
+# Three selector shapes, one resolver (metasphere.slack.routing.slash_resolver):
+#
+#   auto (ZERO CONFIG — the simple path): any slash command whose name matches a
+#     wakeable persistent agent routes straight to it —
+#     /relay <request>       -> @relay, full text is the request
+#     Just register /<agent> in the Slack app; NOTHING needed in this file.
+#     This is all most setups need.
+#
+#   canonical: one registered slash command, agent-as-first-arg —
+#     /<canonical_command> <agent> <request>
+#     e.g.  /ms demo-agent please summarise the latest run
+#     Useful when you'd rather register ONE command and pass the agent as a word.
+#
+#   literal: an explicit alias mapping a command name to a DIFFERENTLY-named
+#     agent (overrides auto) —
+#     /demo <request>            -> @demo-agent, full text is the request
+#
+# Register the matching slash command(s) in the Slack app config (Socket Mode
+# on -> no Request URL needed). For the auto path, "adding a command" is just
+# registering /<agent> in the app — no edit here, no code change.
+#
+# This whole file is OPTIONAL: with no slack-commands.yaml at all, the auto path
+# still routes every /<agent> to @<agent>. Set the keys below only for the
+# /ms-style single command (canonical) or to alias a command to a differently-
+# named agent (literal).
+
+# canonical_command: ms
+
+# literal:
+#   demo: "@demo-agent"        # /demo -> @demo-agent (command name differs)

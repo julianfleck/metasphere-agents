@@ -1,0 +1,157 @@
+"""Tests for AutoMemoryStrategy — MEMORY.md + linked files recall."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from metasphere.memory.auto import AutoMemoryStrategy, _default_memory_root
+
+
+def _setup_memory(tmp_path: Path) -> Path:
+    """Create a minimal MEMORY.md + linked files under tmp_path."""
+    root = tmp_path / "memory"
+    root.mkdir()
+
+    (root / "MEMORY.md").write_text(
+        "- [Tmux injection fix](tmux_fix.md) — fixed the interleaving bug\n"
+        "- [Telegram auth notes](telegram_auth.md) — token exchange design\n"
+        "- [Noise entry](noise.md) — irrelevant content about cooking\n"
+        "- [Missing file](does_not_exist.md) — broken link\n"
+        "- [Escape attempt](../../../etc/passwd) — path traversal\n",
+        encoding="utf-8",
+    )
+
+    (root / "tmux_fix.md").write_text(
+        "---\nname: tmux injection fix\ntype: project\n---\n"
+        "Fixed the tmux send-keys interleaving bug where concurrent "
+        "writers braided characters into the orchestrator pane. "
+        "The fix uses a per-pane fcntl lock around submit_to_tmux.\n",
+        encoding="utf-8",
+    )
+
+    (root / "telegram_auth.md").write_text(
+        "---\nname: Telegram auth\ntype: reference\n---\n"
+        "Token exchange for telegram user authorization. "
+        "Each new contact must present a token to register. "
+        "Address book maps chat_id to authorized user.\n",
+        encoding="utf-8",
+    )
+
+    (root / "noise.md").write_text(
+        "---\nname: Noise\ntype: user\n---\n"
+        "My favorite recipe for banana bread involves flour eggs "
+        "and sugar. Nothing about software engineering here.\n",
+        encoding="utf-8",
+    )
+
+    return root
+
+
+def test_search_ranks_tmux_file_first_for_tmux_query(tmp_path):
+    root = _setup_memory(tmp_path)
+    strat = AutoMemoryStrategy(root=root)
+    hits = strat.search("tmux injection interleaving submit")
+    assert len(hits) >= 1
+    assert hits[0].source == "auto-memory:tmux_fix.md"
+    assert hits[0].score > 0
+
+
+def test_search_ranks_telegram_for_telegram_query(tmp_path):
+    root = _setup_memory(tmp_path)
+    strat = AutoMemoryStrategy(root=root)
+    hits = strat.search("telegram authorization token exchange")
+    assert len(hits) >= 1
+    assert hits[0].source == "auto-memory:telegram_auth.md"
+
+
+def test_search_skips_broken_links(tmp_path):
+    root = _setup_memory(tmp_path)
+    strat = AutoMemoryStrategy(root=root)
+    hits = strat.search("does not exist missing file")
+    sources = {h.source for h in hits}
+    assert "auto-memory:does_not_exist.md" not in sources
+
+
+def test_search_blocks_path_traversal(tmp_path):
+    root = _setup_memory(tmp_path)
+    strat = AutoMemoryStrategy(root=root)
+    hits = strat.search("etc passwd escape")
+    sources = {h.source for h in hits}
+    assert not any("passwd" in s for s in sources)
+
+
+def test_search_empty_query_returns_empty(tmp_path):
+    root = _setup_memory(tmp_path)
+    strat = AutoMemoryStrategy(root=root)
+    assert strat.search("") == []
+    assert strat.search("   ") == []
+
+
+def test_search_strips_frontmatter_from_excerpts(tmp_path):
+    root = _setup_memory(tmp_path)
+    strat = AutoMemoryStrategy(root=root)
+    hits = strat.search("tmux injection fix")
+    assert hits
+    # Excerpt should NOT contain frontmatter delimiters
+    assert "---" not in hits[0].excerpt
+    assert "name:" not in hits[0].excerpt
+    # But should contain the actual body
+    assert "interleaving" in hits[0].excerpt
+
+
+def test_search_respects_limit(tmp_path):
+    root = _setup_memory(tmp_path)
+    strat = AutoMemoryStrategy(root=root)
+    hits = strat.search("the", limit=1)
+    assert len(hits) <= 1
+
+
+def test_missing_memory_md_returns_empty(tmp_path):
+    strat = AutoMemoryStrategy(root=tmp_path)
+    assert strat.search("anything") == []
+
+
+def test_default_memory_root_uses_pwd_single_dash_slug(tmp_path, monkeypatch):
+    # Claude Code names the project dir for cwd /a/b as '-a-b' (the leading
+    # '/' is the ONLY leading dash). _default_memory_root must reproduce that
+    # exact slug. A decoy dir that sorts first AND carries MEMORY.md would win
+    # the iterdir fallback — which is reached only when the PWD slug is wrong
+    # (the old '-' + pwd.replace bug produced a double leading dash). The
+    # correct dir carries NO MEMORY.md, so the fallback could never pick it:
+    # equality here proves the PWD branch matched.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PWD", "/home/op/projects/myproj")
+    projects = tmp_path / ".claude" / "projects"
+    correct = projects / "-home-op-projects-myproj" / "memory"
+    correct.mkdir(parents=True)
+    decoy = projects / "-aaa-other" / "memory"
+    decoy.mkdir(parents=True)
+    (decoy / "MEMORY.md").write_text("- [x](x.md)\n", encoding="utf-8")
+    assert _default_memory_root() == correct
+
+
+def test_default_memory_root_maps_dotted_segments(tmp_path, monkeypatch):
+    # A dotted cwd segment maps each '.' to '-' as well, so
+    # /home/op/.ms/p -> -home-op--ms-p (double dash from the '/.' pair).
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PWD", "/home/op/.ms/p")
+    correct = tmp_path / ".claude" / "projects" / "-home-op--ms-p" / "memory"
+    correct.mkdir(parents=True)
+    assert _default_memory_root() == correct
+
+
+def test_default_memory_root_fallback_is_fixed_slug(tmp_path, monkeypatch):
+    # Force the function past the PWD-derived branch and the iterdir
+    # scan so the last-resort fallback runs. Stranger installs land
+    # here whenever ~/.claude/projects/ either doesn't exist or holds
+    # no child with memory/MEMORY.md. The fallback slug must be a
+    # fixed constant (``.claude/projects/_no_memory/memory``) and must
+    # NOT derive from HOME, PWD, or any other environment-bound name,
+    # otherwise a shipped path can leak an operator identifier.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PWD", "")
+    fallback = _default_memory_root()
+    suffix = fallback.relative_to(tmp_path).as_posix()
+    assert suffix == ".claude/projects/_no_memory/memory", (
+        f"fallback slug must be fixed; got: {suffix!r}"
+    )
