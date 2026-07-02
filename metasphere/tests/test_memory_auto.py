@@ -111,6 +111,59 @@ def test_missing_memory_md_returns_empty(tmp_path):
     assert strat.search("anything") == []
 
 
+def test_scoring_favors_rare_distinctive_terms(tmp_path):
+    """IDF weighting ranks a doc matching a rare, distinctive query term
+    above one matching only a corpus-common term.
+
+    ``common`` appears in every doc (low IDF); ``zebracorn`` appears in one
+    (high IDF). A query carrying both must rank the distinctive doc first,
+    which a plain overlap/len score could not distinguish."""
+    root = tmp_path / "memory"
+    root.mkdir()
+    (root / "MEMORY.md").write_text(
+        "- [rare](rare.md) — distinctive\n"
+        "- [filler one](f1.md) — common only\n"
+        "- [filler two](f2.md) — common only\n"
+        "- [filler three](f3.md) — common only\n",
+        encoding="utf-8",
+    )
+    (root / "rare.md").write_text("common zebracorn payload\n", encoding="utf-8")
+    (root / "f1.md").write_text("common alpha bravo\n", encoding="utf-8")
+    (root / "f2.md").write_text("common charlie delta\n", encoding="utf-8")
+    (root / "f3.md").write_text("common echo foxtrot\n", encoding="utf-8")
+
+    hits = AutoMemoryStrategy(root=root).search("common zebracorn")
+    assert hits[0].source == "auto-memory:rare.md"
+    # The distinctive match must out-score any common-only match.
+    rare = next(h.score for h in hits if h.source == "auto-memory:rare.md")
+    others = [h.score for h in hits if h.source != "auto-memory:rare.md"]
+    assert all(rare > o for o in others)
+
+
+def test_scoring_length_damps_huge_vocab_files(tmp_path):
+    """A small, precisely-matching memo must out-rank a huge grab-bag file
+    that merely happens to contain the query terms among a vast vocabulary.
+
+    Without length damping the huge file's incidental overlap crowds the
+    top slot; the damping term pushes the focused memo above it."""
+    root = tmp_path / "memory"
+    root.mkdir()
+    (root / "MEMORY.md").write_text(
+        "- [focused](focused.md) — small precise memo\n"
+        "- [grabbag](grabbag.md) — huge mixed file\n",
+        encoding="utf-8",
+    )
+    (root / "focused.md").write_text("widget calibration procedure\n", encoding="utf-8")
+    # Huge vocabulary that also contains the query terms.
+    filler = " ".join(f"tok{i}" for i in range(6000))
+    (root / "grabbag.md").write_text(
+        "widget calibration procedure " + filler + "\n", encoding="utf-8"
+    )
+
+    hits = AutoMemoryStrategy(root=root).search("widget calibration procedure")
+    assert hits[0].source == "auto-memory:focused.md"
+
+
 def test_default_memory_root_uses_pwd_single_dash_slug(tmp_path, monkeypatch):
     # Claude Code names the project dir for cwd /a/b as '-a-b' (the leading
     # '/' is the ONLY leading dash). _default_memory_root must reproduce that

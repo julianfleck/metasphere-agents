@@ -91,6 +91,56 @@ class _StubStrategy(TokenOverlapStrategy):
         return list(self._hits[:limit])
 
 
+def test_hybrid_default_weights_dont_ceiling_below_default_floor():
+    """Regression: the merged score of a full-strength curated hit must be
+    able to clear the default noise floor.
+
+    Weights are applied as per-strategy *ceilings* (``max`` on dedupe, not a
+    sum). Previously ``auto-memory`` was absent from ``DEFAULT_WEIGHTS`` and
+    fell back to ``1/len``, capping its merged score below the default floor
+    so the per-turn recall block rendered empty every turn. auto-memory now
+    carries weight 1.0, so a perfect curated hit reaches the floor."""
+    from metasphere.memory.api import _DEFAULT_MIN_SCORE
+    from metasphere.memory.hybrid import DEFAULT_WEIGHTS, HybridStrategy
+
+    assert DEFAULT_WEIGHTS["auto-memory"] == 1.0
+    # cam/fts stay down-weighted as fuzzy corroborators, strictly below floor.
+    assert DEFAULT_WEIGHTS["cam"] < _DEFAULT_MIN_SCORE
+    assert DEFAULT_WEIGHTS["fts"] < _DEFAULT_MIN_SCORE
+
+    auto = _StubStrategy(
+        "auto-memory",
+        [MemoryHit(source="auto-memory:x.md", score=1.0, excerpt="curated")],
+    )
+    cam = _StubStrategy(
+        "cam", [MemoryHit(source="cam/y", score=1.0, excerpt="fuzzy")]
+    )
+    hyb = HybridStrategy([auto, cam])  # default weights
+    hits = {h.source: h.score for h in hyb.search("q", limit=10)}
+    # Curated hit keeps its full score; the cam corroborator is ceilinged.
+    assert hits["auto-memory:x.md"] == 1.0
+    assert hits["cam/y"] == DEFAULT_WEIGHTS["cam"]
+    # A full-strength curated hit clears the default floor; a cam-only one
+    # does not (fuzzy sources must not render alone).
+    assert hits["auto-memory:x.md"] >= _DEFAULT_MIN_SCORE
+    assert hits["cam/y"] < _DEFAULT_MIN_SCORE
+
+
+def test_context_for_default_floor_renders_curated_hit_only():
+    """With the default floor, a full-strength curated (auto-memory) hit
+    renders while a fuzzy cam-only hit at its ceiling is filtered."""
+    auto = _StubStrategy(
+        "auto-memory",
+        [MemoryHit(source="auto-memory:keep.md", score=1.0, excerpt="kept")],
+    )
+    cam = _StubStrategy(
+        "cam", [MemoryHit(source="cam/drop", score=1.0, excerpt="dropped")]
+    )
+    out = context_for("ignored", strategies=[HybridStrategy([auto, cam])])
+    assert "auto-memory:keep.md" in out
+    assert "cam/drop" not in out
+
+
 def test_hybrid_unions_and_dedupes():
     a = _StubStrategy("fts", [
         MemoryHit(source="docs/a.md", score=1.0, excerpt="quokka alpine"),
