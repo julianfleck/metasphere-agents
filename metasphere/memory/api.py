@@ -14,7 +14,13 @@ from .cam import CamStrategy
 from .fts import TokenOverlapStrategy
 from .hybrid import HybridStrategy
 
-_DEFAULT_MIN_SCORE = 0.65
+# Noise floor for the merged hybrid score. Sits just above the fuzzy
+# corroborator ceiling (cam 0.6 / fts 0.4) so those sources never render
+# alone, while clearing the way for the curated auto-memory index (weight
+# 1.0, real top hits ~0.8-0.93) to surface. The earlier 0.65 sat above the
+# then-max achievable score of 0.60 (cam ceiling, auto-memory unweighted at
+# 1/len), which filtered every hit and rendered the block empty every turn.
+_DEFAULT_MIN_SCORE = 0.61
 
 
 def _resolve_min_score(min_score: float | None) -> float:

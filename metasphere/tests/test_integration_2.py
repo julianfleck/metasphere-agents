@@ -207,9 +207,9 @@ def test_memory_recall_real_corpus():
     assert len(hits) >= 1, "expected ≥1 hit for polymarket recall"
     # Pass an explicit min_score so this test exercises rendering + budget
     # behaviour, not the operational noise-floor default
-    # (METASPHERE_MEMORY_MIN_SCORE, raised 0.35→0.65 in #152) — the live
-    # corpus's best "rewrite cleanup" hit sits at ~0.60, below the 0.65
-    # default, which would otherwise empty the block and fail spuriously.
+    # (METASPHERE_MEMORY_MIN_SCORE). The corpus- and scoring-dependent top
+    # score for an arbitrary fuzzy query is not a stable fixture, so pin the
+    # floor to 0 here and let the dedicated api/auto tests cover the default.
     txt = MEM.context_for("rewrite cleanup", budget_chars=1024, min_score=0.0)
     assert txt, "expected non-empty context block"
     assert len(txt) <= 1024
