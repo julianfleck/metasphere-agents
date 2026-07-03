@@ -555,6 +555,37 @@ def test_run_daemon_honors_watchdog_interval(tmp_paths: Paths):
     assert wd.call_count == 2
 
 
+def test_run_daemon_reensures_session_each_watchdog_tick(tmp_paths: Paths):
+    """Dead-session backstop: the daemon must call ``ensure_session`` on every
+    watchdog tick, not only once at boot. Regression guard for the 2026-07-03
+    'gateway-up, agent-dead' silent outage — a session whose boot-time rebuild
+    failed (or that died later) stayed dead ~3h because nothing re-ensured it.
+    Invariant: ensure_session runs once at boot, then once per watchdog tick
+    (1:1 with run_watchdog)."""
+    iterations = {"n": 0}
+
+    def stop():
+        iterations["n"] += 1
+        return iterations["n"] > 3
+
+    with patch.object(gw_daemon, "ensure_session") as ens, \
+         patch.object(gw_daemon, "run_watchdog") as wd:
+        gw_daemon.run_daemon(
+            tmp_paths,
+            poll_interval=0.01,
+            watchdog_interval=0.0,  # fire the tick every iteration
+            stop=stop,
+            poll_fn=lambda: 0,
+            sleep_fn=lambda s: None,
+            time_fn=lambda: 0.0,
+        )
+
+    # Re-ensured on ticks, not just at boot.
+    assert ens.call_count >= 2
+    # One boot call + one per tick, paired 1:1 with the watchdog.
+    assert ens.call_count == wd.call_count + 1
+
+
 def test_run_daemon_reap_dormant_fires_on_interval(tmp_paths: Paths):
     """Daemon must invoke ``reap_dormant`` on the dormancy cadence and
     pass through ``max_idle_seconds``. Longer-interval tick than the

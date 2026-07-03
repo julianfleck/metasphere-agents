@@ -302,6 +302,27 @@ def run_daemon(
         # 2) Watchdog tick.
         now = time_fn()
         if now - last_watchdog >= watchdog_interval:
+            # Dead-session backstop. ``ensure_session`` at boot (above) runs
+            # exactly once, so a session that failed to spawn at boot OR died
+            # later (e.g. a restart whose rebuild silently failed) would stay
+            # dead indefinitely while the gateway keeps accepting inbound into
+            # a void — no other path recreates a *fully dead* session (the
+            # watchdog checks below only rescue a stuck-but-ALIVE one, and the
+            # in-tmux respawn loop only catches claude exiting inside a live
+            # session). Re-ensure every tick so a dead orchestrator session
+            # self-heals within one watchdog interval. Cheap no-op when alive.
+            try:
+                ensure_session(paths)
+            except Exception as e:
+                try:
+                    log_event(
+                        "supervisor.daemon_error",
+                        f"ensure_session (watchdog tick) raised: {e}",
+                        agent="@daemon-supervisor",
+                        paths=paths,
+                    )
+                except Exception:
+                    pass
             try:
                 run_watchdog(paths)
             except Exception as e:
