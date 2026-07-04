@@ -104,7 +104,9 @@ def test_check_stuck_paste_detects_and_force_enters(tmp_paths: Paths):
 
 
 def test_check_stuck_paste_clears_when_placeholder_gone(tmp_paths: Paths):
-    state = tmp_paths.state / "stuck_paste_seen"
+    state = gw_watchdog._session_state_file(
+        tmp_paths, "stuck_paste_seen", gw_watchdog.SESSION_NAME
+    )
     state.parent.mkdir(parents=True, exist_ok=True)
     state.write_text("999")
     with patch.object(gw_watchdog, "session_alive", return_value=True), \
@@ -114,6 +116,42 @@ def test_check_stuck_paste_clears_when_placeholder_gone(tmp_paths: Paths):
     assert result is False
     assert not state.exists()
     assert send.call_count == 0
+
+
+def test_stuck_paste_timer_survives_sibling_session_tick(tmp_paths: Paths):
+    """Regression: linger markers must be keyed per session.
+
+    ``run_watchdog`` fans every check out over *all* live ``metasphere-*``
+    sessions with the same ``paths``. When ``check_stuck_paste`` finds no
+    placeholder it *unlinks* its marker. If that marker were global, a
+    clean sibling session would wipe a genuinely-stuck session's ``T0``
+    every ~5s tick, so ``now - first`` never reaches the 15s threshold and
+    stuck-paste recovery is silently disabled whenever ≥2 sessions live.
+    With per-session keying the stuck session's timer survives and fires.
+    """
+    stuck = "metasphere-orchestrator"
+    clean = "metasphere-metasphere-agents-explorer"
+    stuck_pane = "output\n[Pasted text #3 +12 lines]\n> "
+
+    def pane_for(session):
+        return stuck_pane if session == stuck else "clean pane"
+
+    with patch.object(gw_watchdog, "session_alive", return_value=True), \
+         patch.object(gw_watchdog, "_capture_pane", side_effect=lambda s: pane_for(s)), \
+         patch.object(gw_watchdog, "_send_keys") as send:
+        # Tick 0: stuck session records T0; clean sibling ticks right after.
+        assert gw_watchdog.check_stuck_paste(stuck, tmp_paths, now=1000) is False
+        assert gw_watchdog.check_stuck_paste(clean, tmp_paths, now=1000) is False
+        # The clean sibling's unlink must NOT have wiped the stuck timer.
+        stuck_marker = gw_watchdog._session_state_file(
+            tmp_paths, "stuck_paste_seen", stuck
+        )
+        assert stuck_marker.exists()
+        # Tick 1 (16s later): stuck session still stuck → force Enter fires.
+        gw_watchdog.check_stuck_paste(clean, tmp_paths, now=1016)  # sibling first
+        fired = gw_watchdog.check_stuck_paste(stuck, tmp_paths, now=1016)
+        assert fired is True
+        assert "Enter" in send.call_args.args
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +176,9 @@ def test_check_safety_hooks_confirmation_detects(tmp_paths: Paths, pane):
 
 def test_check_safety_hooks_rate_limited(tmp_paths: Paths):
     pane = "Do you want to proceed?\n  1. Yes\n"
-    marker = tmp_paths.state / "last_safety_hook_intervention"
+    marker = gw_watchdog._session_state_file(
+        tmp_paths, "last_safety_hook_intervention", gw_watchdog.SESSION_NAME
+    )
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("2000")
     with patch.object(gw_watchdog, "session_alive", return_value=True), \
@@ -206,7 +246,9 @@ def test_check_context_limit_uses_cm_submit_not_enter_keysym(tmp_paths: Paths):
 def test_check_context_limit_rate_limited(tmp_paths: Paths):
     """A second trigger within 10 minutes must be suppressed."""
     pane = "Context limit reached \u00b7 /compact or /clear to continue\n\u276f "
-    marker = tmp_paths.state / "last_context_limit_compact"
+    marker = gw_watchdog._session_state_file(
+        tmp_paths, "last_context_limit_compact", gw_watchdog.SESSION_NAME
+    )
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("5000")
     with patch.object(gw_watchdog, "session_alive", return_value=True), \
@@ -221,7 +263,9 @@ def test_check_context_limit_rate_limited(tmp_paths: Paths):
 def test_check_context_limit_allowed_after_rate_limit_window(tmp_paths: Paths):
     """After 10+ minutes the check must fire again."""
     pane = "Context limit reached \u00b7 /compact or /clear to continue\n\u276f "
-    marker = tmp_paths.state / "last_context_limit_compact"
+    marker = gw_watchdog._session_state_file(
+        tmp_paths, "last_context_limit_compact", gw_watchdog.SESSION_NAME
+    )
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("5000")
     with patch.object(gw_watchdog, "session_alive", return_value=True), \
@@ -285,7 +329,9 @@ def test_check_context_limit_deferred_when_busy_no_marker(tmp_paths: Paths):
     False; the check must NOT write the rate-limit marker, so the next
     tick retries once the pane frees."""
     pane = "Context limit reached \u00b7 /compact or /clear to continue\n\u276f "
-    marker = tmp_paths.state / "last_context_limit_compact"
+    marker = gw_watchdog._session_state_file(
+        tmp_paths, "last_context_limit_compact", gw_watchdog.SESSION_NAME
+    )
     with patch.object(gw_watchdog, "session_alive", return_value=True), \
          patch.object(gw_watchdog, "_capture_pane", return_value=pane), \
          patch.object(gw_watchdog, "submit_to_tmux", return_value=False) as submit:
@@ -310,7 +356,9 @@ def test_check_context_limit_writes_marker(tmp_paths: Paths):
     """After a successful compact injection, the rate-limit marker must be
     written so the next tick within the window is suppressed."""
     pane = "Context limit reached \u00b7 /compact or /clear to continue\n\u276f "
-    marker = tmp_paths.state / "last_context_limit_compact"
+    marker = gw_watchdog._session_state_file(
+        tmp_paths, "last_context_limit_compact", gw_watchdog.SESSION_NAME
+    )
     with patch.object(gw_watchdog, "session_alive", return_value=True), \
          patch.object(gw_watchdog, "_capture_pane", return_value=pane), \
          patch.object(gw_watchdog, "submit_to_tmux", return_value=True):
@@ -341,7 +389,9 @@ _PLAN_PANE = (
 def test_stuck_interactive_fires_after_linger_window(tmp_paths: Paths):
     """A multi-select widget that sits untouched past the threshold gets a
     single Escape + an async-channel nudge, and returns True."""
-    state = tmp_paths.state / "stuck_interactive_seen"
+    state = gw_watchdog._session_state_file(
+        tmp_paths, "stuck_interactive_seen", gw_watchdog.SESSION_NAME
+    )
     with patch.object(gw_watchdog, "session_alive", return_value=True), \
          patch.object(gw_watchdog, "_capture_pane", return_value=_MULTISELECT_PANE), \
          patch.object(gw_watchdog, "submit_to_tmux", return_value=True) as submit, \
@@ -420,7 +470,9 @@ def test_stuck_interactive_ignores_prose_mentioning_proceed(tmp_paths: Paths):
 def test_stuck_interactive_clears_timer_when_widget_gone(tmp_paths: Paths):
     """Once the widget disappears (answered / cancelled), the linger-state
     file is removed so a later widget starts a fresh timer."""
-    state = tmp_paths.state / "stuck_interactive_seen"
+    state = gw_watchdog._session_state_file(
+        tmp_paths, "stuck_interactive_seen", gw_watchdog.SESSION_NAME
+    )
     with patch.object(gw_watchdog, "session_alive", return_value=True), \
          patch.object(gw_watchdog, "_send_keys"):
         with patch.object(gw_watchdog, "_capture_pane", return_value=_MULTISELECT_PANE):
