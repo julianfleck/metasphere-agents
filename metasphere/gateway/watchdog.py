@@ -126,6 +126,20 @@ def _send_keys(session: str, *keys: str) -> None:
     )
 
 
+def _session_state_file(paths: Paths, name: str, session_name: str):
+    """Return a per-session linger/rate-limit marker path.
+
+    ``run_watchdog`` fans every check out over *all* live ``metasphere-*``
+    tmux sessions, so a marker keyed only by ``name`` is shared across
+    sessions: one session's tick clobbers (or unlinks) another's timer,
+    silently disabling recovery whenever ≥2 sessions are live. Keying the
+    marker by ``session_name`` isolates each session's state. tmux session
+    names (``metasphere-<...>``) are filename-safe. Mirrors the per-agent
+    ``restart_pending.@<agent>.json`` convention already used below.
+    """
+    return paths.state / f"{name}.{session_name}"
+
+
 def _read_int(path) -> int:
     try:
         return int(path.read_text().strip())
@@ -156,7 +170,7 @@ def check_stuck_paste(
     if not session_alive(session_name):
         return False
     pane = _capture_pane(session_name)
-    state_file = paths.state / "stuck_paste_seen"
+    state_file = _session_state_file(paths, "stuck_paste_seen", session_name)
     if not _PASTE_RE.search(pane):
         # No placeholder — clear the timer.
         try:
@@ -207,7 +221,7 @@ def check_safety_hooks_confirmation(
     pane = _capture_pane(session_name)
     if not (_SAFETY_HOOKS_PROMPT_RE.search(pane) and _SAFETY_HOOKS_OPTION_RE.search(pane)):
         return False
-    marker = paths.state / "last_safety_hook_intervention"
+    marker = _session_state_file(paths, "last_safety_hook_intervention", session_name)
     now = now if now is not None else int(time.time())
     last = _read_int(marker)
     if now - last < _SAFETY_HOOKS_RATE_LIMIT_S:
@@ -258,7 +272,7 @@ def check_context_limit(
     tail = "\n".join(pane.splitlines()[-_CONTEXT_LIMIT_TAIL_LINES:])
     if not _CONTEXT_LIMIT_RE.search(tail):
         return False
-    marker = paths.state / "last_context_limit_compact"
+    marker = _session_state_file(paths, "last_context_limit_compact", session_name)
     now = now if now is not None else int(time.time())
     last = _read_int(marker)
     if now - last < _CONTEXT_LIMIT_RATE_LIMIT_S:
@@ -353,7 +367,7 @@ def check_stuck_interactive_prompt(
     if not session_alive(session_name):
         return False
     pane = _capture_pane(session_name)
-    state_file = paths.state / "stuck_interactive_seen"
+    state_file = _session_state_file(paths, "stuck_interactive_seen", session_name)
 
     tail = _interactive_widget_tail(pane)
     if tail is None:
