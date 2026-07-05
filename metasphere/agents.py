@@ -843,33 +843,13 @@ def wake_persistent(
     session = rec.session_name  # uses project-aware naming
 
     if session_alive(session):
-        # Prefer input-side activity (``last_active``, refreshed by every
-        # hook signal the agent processes — UserPromptSubmit, Stop,
-        # telegram-inject, heartbeat-tick) over tmux ``session_activity``,
-        # which reflects terminal OUTPUT only and is blind to a silent
-        # multi-hour tool call. This is the same signal ``reap_dormant``
-        # uses; the wake-path stale-kill previously read tmux-only and
-        # nuked a busy-but-quiet session mid-compute (2026-07-05 @worker
-        # killed at "idle=7648s" while running silent CPU probes).
-        idle = _last_active_idle_seconds(agent_dir)
-        if idle is None:
-            idle = _session_idle_seconds(session)
-        stale = idle is not None and idle > _STALE_SESSION_THRESHOLD_SEC
-        if stale:
-            # Defense-in-depth liveness interlock (mirrors reap_dormant):
-            # never kill a session generating output this instant, even if
-            # every hook signal went quiet past the threshold — e.g. a
-            # single multi-hour tool call that prints but fires no hook.
-            # Fail OPEN to the stale-kill on any probe error: this is a
-            # core-loop kill path and a probe fault must not wedge the wake.
-            from metasphere.liveness import GENERATING, agent_liveness
-
-            try:
-                generating = agent_liveness(rec, paths=paths).state == GENERATING
-            except Exception:  # noqa: BLE001 — probe must never crash the wake
-                generating = False
-            if generating:
-                stale = False
+        # Shared two-layer stale-kill predicate (input-side idle signal
+        # + generating-veto) — single-sourced with ``reap_dormant`` so
+        # a future hardening lands at both call sites at once. Only
+        # the threshold is wake-specific.
+        stale, idle = _stale_and_not_generating(
+            rec, agent_dir, session, _STALE_SESSION_THRESHOLD_SEC, paths,
+        )
         if stale:
             try:
                 log_event(
@@ -1041,6 +1021,57 @@ def _last_active_idle_seconds(agent_dir: Path) -> Optional[int]:
     return max(0, int(delta.total_seconds()))
 
 
+def _stale_and_not_generating(
+    rec: AgentRecord,
+    agent_dir: Optional[Path],
+    session: str,
+    threshold_seconds: int,
+    paths: Paths,
+) -> tuple[bool, Optional[int]]:
+    """Shared stale-kill predicate for the reaper call sites
+    (``reap_dormant`` and ``wake_persistent``'s pre-cold-start kill).
+    Thresholds stay per-site; the *decision logic* is single-sourced —
+    PR #6/#7/#10 all fixed the same "second call site missed the fix"
+    class, and a third copy would re-create it.
+
+    Returns ``(stale, idle_seconds)``; ``idle_seconds`` is surfaced so
+    callers can log/status it. ``stale`` is True iff BOTH layers agree
+    the session is safe to kill:
+
+    1. Idle-signal preference — input-side ``last_active`` (refreshed
+       by every hook signal the agent processes: UserPromptSubmit,
+       Stop, telegram-inject, heartbeat-tick) wins over tmux
+       ``session_activity``, which reflects terminal OUTPUT only and
+       is blind to a silent multi-hour tool call (2026-07-05
+       @worker killed at "idle=7648s" mid silent CPU probes).
+       Unknown idle (no signal at all) is NOT stale.
+    2. Liveness interlock — never kill a session generating output
+       this instant, even if every hook signal went quiet past the
+       threshold (a single multi-hour tool call that prints but fires
+       no hook). Fails OPEN to the kill on any probe error: both
+       consumers are core-loop kill paths and a probe fault must not
+       wedge the sweep/wake. Local import avoids a circular dependency
+       (liveness imports from agents).
+    """
+    idle: Optional[int] = None
+    if agent_dir is not None:
+        idle = _last_active_idle_seconds(agent_dir)
+    if idle is None:
+        idle = _session_idle_seconds(session)
+    if idle is None or idle <= threshold_seconds:
+        return False, idle
+
+    from metasphere.liveness import GENERATING, agent_liveness
+
+    try:
+        generating = agent_liveness(rec, paths=paths).state == GENERATING
+    except Exception:  # noqa: BLE001 — probe must never crash a kill path
+        generating = False
+    if generating:
+        return False, idle
+    return True, idle
+
+
 def gc_dormant(paths: Paths | None = None, max_idle_seconds: int = 86400) -> list[str]:
     """Return persistent agent names whose tmux session has been idle
     longer than ``max_idle_seconds``. Does NOT kill — caller decides.
@@ -1102,36 +1133,14 @@ def reap_dormant(
         session = agent.session_name
         if not session_alive(session):
             continue
-        # Prefer input-side activity (refreshed by every hook signal
-        # the agent processes); fall back to tmux output activity.
-        idle: Optional[int] = None
-        if agent.agent_dir is not None:
-            idle = _last_active_idle_seconds(agent.agent_dir)
-        if idle is None:
-            idle = _session_idle_seconds(session)
-        if idle is None or idle <= max_idle_seconds:
-            continue
-        # Defense-in-depth liveness interlock: never reap an agent that is
-        # actively generating output this instant, even if every hook signal
-        # has gone quiet past the TTL — e.g. a single multi-hour tool call
-        # that prints but fires no hook, or a wedged-but-still-printing REPL.
-        # The probe degrades to UNKNOWN (not GENERATING) on any tmux hiccup
-        # and never raises, so a probe failure falls back to the existing
-        # reap decision and never blocks a legitimate reap. Local import
-        # avoids a circular dependency (liveness imports from agents).
-        #
-        # Belt-and-suspenders: `agent_liveness` is contract-bound never to
-        # raise, but this is a CORE-LOOP kill path — a contract violation
-        # (a future edit, a non-OSError from snapshot I/O) must NOT propagate
-        # and crash the sweep for every OTHER agent. Guard the call site and
-        # fail OPEN to the existing reap (generating=False) on any error.
-        from metasphere.liveness import GENERATING, agent_liveness
-
-        try:
-            generating = agent_liveness(agent, paths=paths).state == GENERATING
-        except Exception:  # noqa: BLE001 — probe must never crash the reap sweep
-            generating = False
-        if generating:
+        # Shared two-layer stale-kill predicate (input-side idle signal
+        # + generating-veto) — single-sourced with ``wake_persistent``'s
+        # pre-cold-start kill so a future hardening lands at both call
+        # sites at once. Only the TTL is dormancy-specific.
+        stale, idle = _stale_and_not_generating(
+            agent, agent.agent_dir, session, max_idle_seconds, paths,
+        )
+        if not stale:
             continue
         if agent.agent_dir is not None:
             try:
