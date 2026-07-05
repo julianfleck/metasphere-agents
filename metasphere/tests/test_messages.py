@@ -570,3 +570,53 @@ def test_done_tag_for_already_closed_task_is_noop(tmp_paths):
         paths=tmp_paths, wake=False,
     )
     assert _tasks._find_task_file(t.id, include_completed=False) is None
+
+
+def test_sandboxed_escalation_cold_start_never_reaches_real_tmux(
+    tmp_paths, monkeypatch,
+):
+    """Fast-follow to the 2026-07-05 wake leak (critic finding on PR #5):
+    a high-priority send to a MISSION.md-backed agent whose soft wake
+    fails escalates into ``wake_persistent`` — whose kill-session /
+    new-session / send-keys path ran on ``agents._tmux_bin``, previously
+    unguarded. One innocent test away from cold-starting a real claude
+    REPL (or killing a real idle session that shares the name). Pin:
+    the full escalation completes gracefully without ever exec'ing the
+    host tmux binary.
+    """
+    import shutil as _shutil
+
+    from metasphere.tmux import PYTEST_TMUX_SENTINEL
+
+    real_tmux = _shutil.which("tmux")
+    execs: list[str] = []
+
+    def spy_run(argv, **kw):
+        head = str(argv[0]) if argv else ""
+        execs.append(head)
+        if real_tmux and head == real_tmux:
+            pytest.fail(f"sandboxed escalation exec'd the host tmux: {argv}")
+        raise FileNotFoundError(head)
+
+    monkeypatch.setattr("subprocess.run", spy_run)
+    # Collapse _wait_for_ready's 1s polling sleeps.
+    monkeypatch.setattr("metasphere.agents.time.sleep", lambda s: None)
+
+    d = tmp_paths.agents / "@sleeper"
+    d.mkdir(parents=True)
+    (d / "MISSION.md").write_text("mission")
+    (d / "scope").write_text(str(tmp_paths.project_root))
+
+    # wake defaults to True; the guarded soft wake returns False, which
+    # is exactly what trips the !task escalation into wake_persistent.
+    msg = m.send_message(
+        "@sleeper", "!task", "urgent thing", "@orchestrator",
+        paths=tmp_paths,
+    )
+
+    # Inbox delivery must still have happened...
+    assert msg.path is not None and msg.path.exists()
+    # ...and every tmux exec attempt saw the sentinel, never the binary.
+    tmux_execs = [h for h in execs if "tmux" in h]
+    assert tmux_execs, "expected the escalation to attempt tmux calls"
+    assert all(h == PYTEST_TMUX_SENTINEL for h in tmux_execs), tmux_execs
