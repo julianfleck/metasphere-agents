@@ -36,7 +36,7 @@ import shlex
 import subprocess
 import sys
 
-from metasphere.agents import session_alive
+from metasphere.agents import mark_exit_self, session_alive
 from metasphere.events import log_event
 from metasphere.gateway.session import _tmux
 from metasphere.session import (
@@ -219,6 +219,15 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
+        # Tombstone before the kill is queued: once the detached kill
+        # lands, pid and session both read dead and the next
+        # reap_crashed sweep would classify this clean exit as a
+        # silent death (false crash !alert — 2026-07-05 @writing-lead
+        # case). Best-effort: a failed write must not block the exit.
+        try:
+            mark_exit_self(caller, target)
+        except Exception:
+            pass
         t = shlex.quote(target)
         # 20s pre-sleep: longer than the previous 2.5s graceful path
         # because this is now a hard kill — give the caller's Bash

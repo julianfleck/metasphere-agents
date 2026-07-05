@@ -242,3 +242,70 @@ def test_exit_self_resolves_project_scoped_agent(monkeypatch):
         "detached kill script must not target the bare session name "
         "(regression: 04-28 project-scope resolver bug)"
     )
+
+
+def test_exit_self_writes_tombstone_before_kill(monkeypatch):
+    """exit-self must record the clean-exit intent (mark_exit_self
+    tombstone) BEFORE queuing the detached kill — once the kill lands,
+    pid and session both read dead and reap_crashed would classify the
+    exit as a silent death (false crash !alert, 2026-07-05
+    @writing-lead case)."""
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@worker-cron-1")
+
+    order: list[str] = []
+
+    def _fake_mark(caller, target, paths=None):
+        order.append(f"tombstone:{caller}:{target}")
+        return True
+
+    class _FakePopen:
+        def __init__(self, *_args, **_kwargs):
+            order.append("kill-queued")
+
+    with patch(
+        "metasphere.cli.session._resolve_session",
+        return_value="metasphere-worker-cron-1",
+    ), patch(
+        "metasphere.cli.session.session_alive", return_value=True
+    ), patch(
+        "metasphere.cli.session.subprocess.Popen", _FakePopen
+    ), patch(
+        "metasphere.cli.session.mark_exit_self", side_effect=_fake_mark
+    ):
+        rc = cli_session.main(["exit-self"])
+
+    assert rc == 0
+    assert order == [
+        "tombstone:@worker-cron-1:metasphere-worker-cron-1",
+        "kill-queued",
+    ], f"tombstone must be written before the kill is queued; got {order}"
+
+
+def test_exit_self_tombstone_failure_does_not_block_kill(monkeypatch):
+    """A mark_exit_self failure (missing agent dir, IO error) is
+    bookkeeping — the kill spawn must still run and exit-self must
+    still return 0. Worst case is the pre-fix behavior (one false
+    crash alert), never a wedged exit path."""
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@worker-cron-1")
+
+    spawned: list[bool] = []
+
+    class _FakePopen:
+        def __init__(self, *_args, **_kwargs):
+            spawned.append(True)
+
+    with patch(
+        "metasphere.cli.session._resolve_session",
+        return_value="metasphere-worker-cron-1",
+    ), patch(
+        "metasphere.cli.session.session_alive", return_value=True
+    ), patch(
+        "metasphere.cli.session.subprocess.Popen", _FakePopen
+    ), patch(
+        "metasphere.cli.session.mark_exit_self",
+        side_effect=OSError("agent dir vanished"),
+    ):
+        rc = cli_session.main(["exit-self"])
+
+    assert rc == 0
+    assert spawned, "kill spawn must run even when the tombstone write fails"
