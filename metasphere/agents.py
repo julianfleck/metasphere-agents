@@ -474,6 +474,14 @@ def spawn_ephemeral(
     agent_dir = paths.agent_dir(agent_id)
     agent_dir.mkdir(parents=True, exist_ok=True)
 
+    # Name reuse: a leftover exit_self tombstone from a prior life would
+    # make reap_crashed misread this agent's next genuine crash as a
+    # clean exit — clear it before the new life starts.
+    try:
+        (agent_dir / _EXIT_SELF_TOMBSTONE).unlink(missing_ok=True)
+    except OSError:
+        pass
+
     _atomic_meta_write(agent_dir, "task", task)
     _atomic_meta_write(agent_dir, "status", f"spawned: {task}")
     _atomic_meta_write(agent_dir, "scope", str(scope_abs))
@@ -1276,6 +1284,62 @@ _TERMINAL_STATUS_PREFIXES = (
     "failed:",
 )
 
+#: Sidecar written by ``metasphere session exit-self`` (via
+#: :func:`mark_exit_self`) announcing a clean, intentional
+#: self-termination. ``reap_crashed`` consults it to transition such
+#: agents to ``complete:`` instead of ``crashed:`` — without it, every
+#: clean ephemeral exit the reaper visits before cleanup reads as a
+#: silent death (2026-07-05 @writing-lead false crash ``!alert``).
+_EXIT_SELF_TOMBSTONE = "exit_self"
+
+
+def mark_exit_self(
+    agent_name: str, session: str, paths: Paths | None = None,
+) -> bool:
+    """Record that ``agent_name`` is about to terminate its own session.
+
+    Writes the ``exit_self`` tombstone sidecar into the agent's dir so
+    the next ``reap_crashed`` sweep classifies the upcoming
+    pid-dead/session-gone state as a clean exit, not a crash. Returns
+    ``False`` (never raises) when the agent dir cannot be found or the
+    write fails — the caller's kill path must not be blocked by a
+    bookkeeping failure.
+    """
+    paths = paths or resolve()
+    agent_dir = _find_agent_dir(_normalize_name(agent_name), paths)
+    if agent_dir is None:
+        return False
+    try:
+        _atomic_meta_write(
+            agent_dir, _EXIT_SELF_TOMBSTONE, f"{_utcnow()} session {session}",
+        )
+    except OSError:
+        return False
+    return True
+
+
+def _exit_self_tombstone_current(
+    tomb: Path, pid_file: Optional[Path],
+) -> bool:
+    """True iff ``tomb`` exists and belongs to the agent's current life.
+
+    A tombstone older than the pid file is stale: the agent was
+    (re)launched after the exit intent was recorded, so a later
+    pid-dead/session-gone state is a genuine crash and must not be
+    masked by the leftover sidecar.
+    """
+    try:
+        tomb_mtime = tomb.stat().st_mtime
+    except OSError:
+        return False
+    if pid_file is not None:
+        try:
+            if pid_file.stat().st_mtime > tomb_mtime:
+                return False
+        except OSError:
+            pass
+    return True
+
 
 def _pid_alive(pid: int) -> bool:
     """True iff process ``pid`` exists.
@@ -1311,6 +1375,10 @@ def reap_crashed(paths: Paths | None = None) -> list[str]:
       pre-pid-write window during spawn).
     - Skips the parent ``!alert`` if the ``parent`` sidecar is missing
       (no addressee), but still writes the ``crashed:`` status.
+    - Agents carrying a current ``exit_self`` tombstone (see
+      :func:`mark_exit_self`) are transitioned to ``complete:`` instead
+      — a clean self-termination the sweep visited before cleanup is
+      not a crash, and must not ``!alert`` the parent.
 
     Per-agent failures are swallowed — this runs on a daemon tick and
     must never abort the gateway loop. Returns the list of agent names
@@ -1334,10 +1402,42 @@ def reap_crashed(paths: Paths | None = None) -> list[str]:
         if session_alive(session):
             continue
 
-        # Both signals say the agent is gone — silent death.
-        reason = f"crashed: pid {pid} dead, session gone"
         if agent.agent_dir is None:
             continue
+
+        # Both signals dead, but an exit_self tombstone from this life
+        # means the agent killed its own session on purpose — a clean
+        # exit the sweep merely beat cleanup to. Transition to
+        # ``complete:`` and skip the parent ``!alert``.
+        tomb = agent.agent_dir / _EXIT_SELF_TOMBSTONE
+        if _exit_self_tombstone_current(tomb, agent.pid_file):
+            try:
+                _atomic_meta_write(
+                    agent.agent_dir, "status",
+                    "complete: exit_self (clean self-termination)",
+                )
+            except OSError:
+                continue
+            try:
+                tomb.unlink()
+            except OSError:
+                pass
+            try:
+                log_event(
+                    "agent.exited",
+                    f"{agent.name} clean exit_self confirmed — pid {pid} "
+                    f"dead, session {session} gone, tombstone consumed",
+                    agent=agent.name,
+                    meta={"pid": pid, "session": session},
+                    paths=paths,
+                )
+            except Exception:
+                pass
+            out.append(agent.name)
+            continue
+
+        # Both signals say the agent is gone — silent death.
+        reason = f"crashed: pid {pid} dead, session gone"
         try:
             _atomic_meta_write(agent.agent_dir, "status", reason)
         except OSError:
