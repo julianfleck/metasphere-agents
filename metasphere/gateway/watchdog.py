@@ -103,27 +103,38 @@ _INTERACTIVE_REDIRECT_NOTE = (
 
 
 def _tmux_bin() -> str:
+    # Pytest sentinel: see metasphere.tmux.tmux_sandboxed — a sandboxed
+    # test must never capture from or type into live panes.
+    from ..tmux import PYTEST_TMUX_SENTINEL, tmux_sandboxed
+    if tmux_sandboxed():
+        return PYTEST_TMUX_SENTINEL
     return shutil.which("tmux") or "tmux"
 
 
 def _capture_pane(session: str) -> str:
-    r = subprocess.run(
-        [_tmux_bin(), "capture-pane", "-t", session, "-p", "-S", "-50"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
+    try:
+        r = subprocess.run(
+            [_tmux_bin(), "capture-pane", "-t", session, "-p", "-S", "-50"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return ""
     return r.stdout if r.returncode == 0 else ""
 
 
 def _send_keys(session: str, *keys: str) -> None:
-    subprocess.run(
-        [_tmux_bin(), "send-keys", "-t", session, *keys],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
+    try:
+        subprocess.run(
+            [_tmux_bin(), "send-keys", "-t", session, *keys],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except FileNotFoundError:
+        pass
 
 
 def _session_state_file(paths: Paths, name: str, session_name: str):
