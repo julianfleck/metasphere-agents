@@ -401,7 +401,12 @@ def _patch_function_default(monkeypatch, module, fn_name, param_name, new_value)
 # ---------------------------------------------------------------------------
 
 #: argv[0] basenames that must NEVER execute during a sandboxed test run.
-_LIVE_SPAWN_DENYLIST = frozenset({"claude", "systemctl", "launchctl"})
+#: Grounded in real production call sites, not speculation — each name here is
+#: something the shipped code actually spawns against the live host:
+#:   claude               heartbeat one-shot (tokens + side-effects)
+#:   systemctl/launchctl  service restart / daemon-reload / update
+#:   ssh                  cmd_spot() reaches METASPHERE_REMOTE_HOST over the wire
+_LIVE_SPAWN_DENYLIST = frozenset({"claude", "systemctl", "launchctl", "ssh"})
 
 
 def _spawn_argv0_basename(args) -> str:
@@ -437,10 +442,11 @@ def _block_live_process_spawns(request, monkeypatch):
         if base in _LIVE_SPAWN_DENYLIST:
             raise AssertionError(
                 f"Test spawned live process {base!r} (args={first_arg!r}). "
-                "Commands that mutate the live host or spawn a real Claude "
-                "(claude/systemctl/launchctl) must be mocked under pytest — "
-                "monkeypatch subprocess.run, or mark the test "
-                "@pytest.mark.live if it genuinely needs the external service."
+                "Commands that mutate the live host, spawn a real Claude, or "
+                "reach a remote host (claude/systemctl/launchctl/ssh) must be "
+                "mocked under pytest — monkeypatch subprocess.run, or mark the "
+                "test @pytest.mark.live if it genuinely needs the external "
+                "service."
             )
 
     def guarded_run(*a, **k):
