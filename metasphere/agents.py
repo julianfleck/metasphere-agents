@@ -835,8 +835,34 @@ def wake_persistent(
     session = rec.session_name  # uses project-aware naming
 
     if session_alive(session):
-        idle = _session_idle_seconds(session)
-        if idle is not None and idle > _STALE_SESSION_THRESHOLD_SEC:
+        # Prefer input-side activity (``last_active``, refreshed by every
+        # hook signal the agent processes — UserPromptSubmit, Stop,
+        # telegram-inject, heartbeat-tick) over tmux ``session_activity``,
+        # which reflects terminal OUTPUT only and is blind to a silent
+        # multi-hour tool call. This is the same signal ``reap_dormant``
+        # uses; the wake-path stale-kill previously read tmux-only and
+        # nuked a busy-but-quiet session mid-compute (2026-07-05 @rage-lead
+        # killed at "idle=7648s" while running silent CPU probes).
+        idle = _last_active_idle_seconds(agent_dir)
+        if idle is None:
+            idle = _session_idle_seconds(session)
+        stale = idle is not None and idle > _STALE_SESSION_THRESHOLD_SEC
+        if stale:
+            # Defense-in-depth liveness interlock (mirrors reap_dormant):
+            # never kill a session generating output this instant, even if
+            # every hook signal went quiet past the threshold — e.g. a
+            # single multi-hour tool call that prints but fires no hook.
+            # Fail OPEN to the stale-kill on any probe error: this is a
+            # core-loop kill path and a probe fault must not wedge the wake.
+            from metasphere.liveness import GENERATING, agent_liveness
+
+            try:
+                generating = agent_liveness(rec, paths=paths).state == GENERATING
+            except Exception:  # noqa: BLE001 — probe must never crash the wake
+                generating = False
+            if generating:
+                stale = False
+        if stale:
             try:
                 log_event(
                     "agent.session",
