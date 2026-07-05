@@ -22,21 +22,6 @@ def _fake_cp(rc: int = 0, stdout: str = "", stderr: str = ""):
     return cp
 
 
-def test_start_all_services_shells_out_three_times(monkeypatch, capsys):
-    calls = []
-
-    def fake_run(argv, **kwargs):
-        calls.append(list(argv))
-        return _fake_cp(rc=0)
-
-    rc = d.main(["start"])
-    # Sanity: injected runner not used in this code path; we patch the
-    # module-level _run instead via monkeypatch.
-    # Actually we need to inject via _run — use monkeypatch.
-    # (above was wrong; redoing below)
-    pass  # ignore first attempt
-
-
 def test_start_all_services_calls_each_unit(monkeypatch, capsys):
     calls: list[list[str]] = []
 
