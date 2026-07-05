@@ -823,6 +823,195 @@ def test_wake_persistent_returns_delivered_true_when_no_first_task(tmp_paths: Pa
 
 
 # ---------------------------------------------------------------------------
+# wake_persistent stale-kill hardening (mirrors the reap_dormant interlock):
+# the wake-path stale-session kill must use the same false-reap protections
+# reap_dormant already carries, or a busy-but-quiet session gets nuked on the
+# next wake. Regression source: 2026-07-05 @rage-lead killed at "idle=7648s"
+# (tmux output-only signal) mid-compute while running silent CPU probes.
+# ---------------------------------------------------------------------------
+
+def test_wake_persistent_stale_kills_when_idle_and_not_generating(tmp_paths: Paths):
+    """Baseline preserved: a genuinely idle session (both activity signals
+    past threshold, pane shows no generation indicator) is still killed and
+    cold-started. The last_active/liveness hardening must not weaken this."""
+    _make_persistent(tmp_paths, "@stale-waker")
+    d = tmp_paths.agents / "@stale-waker"
+    # Input-side signal ancient → idle ≫ threshold.
+    (d / "last_active").write_text("2020-01-01T00:00:00+00:00")
+
+    kill_sessions: list[str] = []
+    new_sessions: list[str] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "has-session" in cmd:
+            cp.returncode = 0  # alive
+        elif "display-message" in cmd:
+            cp.returncode = 0
+            cp.stdout = "1000000000"  # tmux idle also ancient
+        elif "capture-pane" in cmd:
+            cp.returncode = 0
+            cp.stdout = "bypass permissions on"  # ready marker, no gen indicator
+        elif "kill-session" in cmd:
+            cp.returncode = 0
+            kill_sessions.append(cmd[cmd.index("-t") + 1])
+        elif "new-session" in cmd:
+            cp.returncode = 0
+            new_sessions.append(cmd[cmd.index("-s") + 1])
+        else:
+            cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        agents.wake_persistent("@stale-waker", paths=tmp_paths)
+
+    assert kill_sessions == ["metasphere-stale-waker"], (
+        f"idle non-generating session must still be reaped, got {kill_sessions}"
+    )
+    assert "metasphere-stale-waker" in new_sessions, (
+        f"a fresh session must be cold-started after the kill, got {new_sessions}"
+    )
+
+
+def test_wake_persistent_fresh_last_active_survives_stale_tmux(tmp_paths: Paths):
+    """The fix: a session whose tmux OUTPUT has been silent past the
+    threshold (a long quiet compute) but whose input-side ``last_active`` is
+    fresh must NOT be killed — deliver into it. Previously the wake path read
+    tmux-only and nuked it (2026-07-05 @rage-lead)."""
+    _make_persistent(tmp_paths, "@busy-quiet")
+    # Input-side signal fresh even though tmux output activity is ancient.
+    agents.touch_last_active("@busy-quiet", paths=tmp_paths)
+
+    kill_sessions: list[str] = []
+    new_sessions: list[str] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "has-session" in cmd:
+            cp.returncode = 0  # alive
+        elif "display-message" in cmd:
+            cp.returncode = 0
+            cp.stdout = "1000000000"  # tmux idle ancient → would trip a tmux-only path
+        elif "kill-session" in cmd:
+            cp.returncode = 0
+            kill_sessions.append(cmd[cmd.index("-t") + 1])
+        elif "new-session" in cmd:
+            cp.returncode = 0
+            new_sessions.append(cmd[cmd.index("-s") + 1])
+        else:
+            cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        rec, delivered = agents.wake_persistent("@busy-quiet", paths=tmp_paths)
+
+    assert kill_sessions == [], (
+        f"fresh last_active must prevent the stale-kill, got {kill_sessions}"
+    )
+    assert new_sessions == [], (
+        f"a preserved session must not be cold-started, got {new_sessions}"
+    )
+    assert delivered is True
+
+
+def test_wake_persistent_vetoes_generating_session(tmp_paths: Paths):
+    """Liveness interlock on the wake path: even when BOTH activity signals
+    are past the threshold, a pane actively generating ('esc to interrupt')
+    is not killed — the exact @rage-lead case: a silent multi-hour compute
+    that fires no hook and writes nothing tmux counts as activity, yet is
+    doing real work."""
+    _make_persistent(tmp_paths, "@gen-waker")
+    d = tmp_paths.agents / "@gen-waker"
+    (d / "last_active").write_text("2020-01-01T00:00:00+00:00")  # input-side also stale
+
+    kill_sessions: list[str] = []
+    new_sessions: list[str] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "has-session" in cmd:
+            cp.returncode = 0  # alive
+        elif "display-message" in cmd:
+            cp.returncode = 0
+            cp.stdout = "1000000000"  # tmux idle ancient
+        elif "capture-pane" in cmd:
+            cp.returncode = 0
+            cp.stdout = "crunching numbers\n  esc to interrupt"
+        elif "kill-session" in cmd:
+            cp.returncode = 0
+            kill_sessions.append(cmd[cmd.index("-t") + 1])
+        elif "new-session" in cmd:
+            cp.returncode = 0
+            new_sessions.append(cmd[cmd.index("-s") + 1])
+        else:
+            cp.returncode = 0
+        return cp
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run):
+        agents.wake_persistent("@gen-waker", paths=tmp_paths)
+
+    assert kill_sessions == [], (
+        f"a generating session must not be killed, got {kill_sessions}"
+    )
+    assert new_sessions == [], f"no cold-start on veto, got {new_sessions}"
+
+
+def test_wake_persistent_probe_exception_fails_open_to_kill(tmp_paths: Paths):
+    """Core-loop guard: if ``agent_liveness`` violates its never-raise
+    contract, the wake-path stale-kill must fail OPEN (treat as
+    not-generating) and still cold-start, rather than propagate and wedge
+    the wake for this agent."""
+    _make_persistent(tmp_paths, "@boom-waker")
+    d = tmp_paths.agents / "@boom-waker"
+    (d / "last_active").write_text("2020-01-01T00:00:00+00:00")
+
+    kill_sessions: list[str] = []
+    new_sessions: list[str] = []
+
+    def fake_run(cmd, *args, **kwargs):
+        cp = MagicMock()
+        cp.stdout = ""
+        cp.stderr = ""
+        if "has-session" in cmd:
+            cp.returncode = 0  # alive
+        elif "display-message" in cmd:
+            cp.returncode = 0
+            cp.stdout = "1000000000"
+        elif "capture-pane" in cmd:
+            cp.returncode = 0
+            cp.stdout = "bypass permissions on"
+        elif "kill-session" in cmd:
+            cp.returncode = 0
+            kill_sessions.append(cmd[cmd.index("-t") + 1])
+        elif "new-session" in cmd:
+            cp.returncode = 0
+            new_sessions.append(cmd[cmd.index("-s") + 1])
+        else:
+            cp.returncode = 0
+        return cp
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("probe contract violated")
+
+    with patch("metasphere.agents.subprocess.run", side_effect=fake_run), \
+         patch("metasphere.liveness.agent_liveness", side_effect=boom):
+        agents.wake_persistent("@boom-waker", paths=tmp_paths)
+
+    assert kill_sessions == ["metasphere-boom-waker"], (
+        f"probe fault must fail open to the kill, got {kill_sessions}"
+    )
+    assert "metasphere-boom-waker" in new_sessions, (
+        f"cold-start must still run after the fail-open kill, got {new_sessions}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # gc_dormant
 # ---------------------------------------------------------------------------
 
