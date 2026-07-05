@@ -459,6 +459,49 @@ def test_wake_recipient_if_live_returns_false_on_submit_failure(tmp_paths, monke
     assert ok is False
 
 
+def test_sandboxed_mark_done_never_reaches_real_tmux(tmp_paths, monkeypatch):
+    """Regression — 2026-07-05: every run of this suite injected
+    ``[wake] new !done from @worker: all green`` into the LIVE
+    orchestrator pane on the host. ``mark_done`` replies via
+    ``send_message`` with wake enabled, and ``wake_recipient_if_live``
+    resolves tmux sessions globally — the ``paths=tmp_paths`` sandbox
+    contains every file write and log_event, but not the tmux
+    side-effect. ``_find_tmux``'s pytest guard is what keeps unmocked
+    tests off the real server; this pins it by asserting no tmux
+    subprocess fires from a sandboxed mark_done whose recipient has a
+    resolvable session.
+    """
+    import subprocess as _sp
+
+    from metasphere.agents import AgentRecord
+
+    calls: list[list[str]] = []
+
+    def spy_run(argv, **kw):
+        calls.append([str(a) for a in argv])
+        return _sp.CompletedProcess(argv, 1, "", "")
+
+    monkeypatch.setattr("subprocess.run", spy_run)
+    # Give the wake path a resolvable live-agent record so it proceeds
+    # all the way to session resolution + submit (mirrors the incident:
+    # the reply target @orchestrator always has a live session).
+    rec = AgentRecord(
+        name="@orchestrator", scope="", parent="", status="", spawned_at="",
+    )
+    monkeypatch.setattr("metasphere.session.list_agents", lambda: [rec])
+
+    task_msg = m.send_message(
+        "@orchestrator", "!task", "do the thing", "@worker",
+        paths=tmp_paths, wake=False,
+    )
+    m.mark_done(task_msg.id, "all green", "@orchestrator", paths=tmp_paths)
+
+    tmux_calls = [c for c in calls if c and "tmux" in Path(c[0]).name]
+    assert not tmux_calls, (
+        f"sandboxed mark_done reached a real tmux invocation: {tmux_calls}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fix #1 — !done auto-closes the dispatched task it references
 # ---------------------------------------------------------------------------

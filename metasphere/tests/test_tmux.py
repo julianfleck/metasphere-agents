@@ -685,3 +685,25 @@ def test_submit_returns_false_if_enter_never_lands(monkeypatch):
     assert T.submit_to_tmux("sess", "STUCK") is False
 
 
+
+
+def test_find_tmux_refuses_real_server_under_pytest(monkeypatch):
+    """Regression — 2026-07-05: sandboxed message tests leaked real
+    ``[wake] ...`` injections into live production panes because
+    ``_find_tmux`` happily located the host tmux during a pytest run.
+    Under pytest (``PYTEST_CURRENT_TEST`` set) discovery must return
+    None so submit_to_tmux / submit_watchdog fall into their graceful
+    no-tmux mode; ``METASPHERE_ALLOW_TMUX_IN_TESTS=1`` is the explicit
+    opt-in for tests that really want a live server.
+    """
+    import os
+    import shutil
+
+    # pytest sets this for every test; the guard keys off it.
+    assert os.environ.get("PYTEST_CURRENT_TEST")
+
+    monkeypatch.delenv("METASPHERE_ALLOW_TMUX_IN_TESTS", raising=False)
+    assert T._find_tmux() is None
+
+    monkeypatch.setenv("METASPHERE_ALLOW_TMUX_IN_TESTS", "1")
+    assert T._find_tmux() == shutil.which("tmux")
