@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -153,6 +154,18 @@ def zombie_counters() -> ZombieCounters:
 _AGENT_SESSION_PREFIX = "metasphere-"
 
 
+def _tmux_bin() -> str:
+    # Pytest sentinel: see metasphere.tmux.tmux_sandboxed. This probe is
+    # read-only (list-sessions), but a sandboxed test that reaches it
+    # unpatched would still hit the LIVE tmux server — the same discovery
+    # site PR #6 hoisted everywhere else but missed here (bare literal
+    # "tmux"). The sentinel execs to FileNotFoundError, caught below.
+    from ..tmux import PYTEST_TMUX_SENTINEL, tmux_sandboxed
+    if tmux_sandboxed():
+        return PYTEST_TMUX_SENTINEL
+    return shutil.which("tmux") or "tmux"
+
+
 def _tmux_list_sessions() -> list[str]:
     """Return tmux session names as reported by ``tmux list-sessions``.
 
@@ -160,7 +173,7 @@ def _tmux_list_sessions() -> list[str]:
     """
     try:
         r = subprocess.run(
-            ["tmux", "list-sessions", "-F", "#{session_name}"],
+            [_tmux_bin(), "list-sessions", "-F", "#{session_name}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
