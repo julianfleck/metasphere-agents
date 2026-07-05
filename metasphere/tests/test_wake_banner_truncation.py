@@ -170,10 +170,15 @@ _TMUX = shutil.which("tmux")
 
 
 @pytest.mark.skipif(_TMUX is None, reason="tmux not available")
-def test_real_tmux_long_body_pointer_lands_in_pane(tmp_paths: Paths):
+def test_real_tmux_long_body_pointer_lands_in_pane(
+    tmp_paths: Paths, monkeypatch,
+):
     """End-to-end on a real tmux session: a 5KB body must reach the
     inbox as a ``!task`` and the pane must show only the pointer
     banner — never the raw body that triggered the truncation."""
+    # This test intentionally drives a live tmux server (its own
+    # throwaway session) — opt out of _find_tmux's pytest guard.
+    monkeypatch.setenv("METASPHERE_ALLOW_TMUX_IN_TESTS", "1")
     _make_persistent(tmp_paths, "@waker")
     session = agents.session_name_for("@waker")
     # Force-kill in case a prior aborted run left it.

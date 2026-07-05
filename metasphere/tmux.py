@@ -14,6 +14,7 @@ Never raises — returns False on failure.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -31,7 +32,26 @@ _deferring_sessions: set[str] = set()
 
 
 def _find_tmux() -> str | None:
-    """Locate the tmux binary."""
+    """Locate the tmux binary.
+
+    Under pytest (``PYTEST_CURRENT_TEST`` is set) this returns None so
+    that every side-effecting path in this module — ``submit_to_tmux``,
+    ``submit_watchdog`` — degrades to its graceful no-tmux failure mode
+    instead of typing into LIVE panes. 2026-07-05: sandboxed
+    ``mark_done`` tests (tmp ``paths=``) still reached the real
+    ``wake_recipient_if_live`` → ``submit_to_tmux``, injecting
+    ``[wake] new !done from @worker: all green`` into the production
+    orchestrator pane on every suite run — file writes and log_event
+    respect the paths sandbox, tmux does not.
+
+    Tests that deliberately exercise the submit machinery monkeypatch
+    this function (see test_tmux.py). To intentionally reach a real
+    tmux server from a test, set ``METASPHERE_ALLOW_TMUX_IN_TESTS=1``.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get(
+        "METASPHERE_ALLOW_TMUX_IN_TESTS"
+    ):
+        return None
     return shutil.which("tmux")
 
 
