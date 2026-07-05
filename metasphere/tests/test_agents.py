@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import json
 from pathlib import Path
@@ -2113,6 +2114,127 @@ def test_reap_crashed_swallows_send_message_failure(tmp_paths: Paths):
     assert (d_ok / "status").read_text().strip().startswith("crashed:")
     # Both alerts were attempted — flaky_send saw both senders.
     assert sorted(call_targets) == ["@bad-alert", "@ok-alert"]
+
+
+def test_reap_crashed_exit_self_tombstone_marks_complete_not_crashed(
+    tmp_paths: Paths,
+):
+    """An agent that announced its own exit (``exit_self`` tombstone,
+    written by ``metasphere session exit-self``) and is then found
+    pid-dead/session-gone is a CLEAN exit the sweep beat cleanup to:
+      - status → ``complete:`` (not ``crashed:``)
+      - NO ``!alert`` to the parent
+      - tombstone consumed (one-shot)
+    2026-07-05 regression: @writing-lead's clean W27-roundup exit was
+    flagged as silent death 4 minutes after its ``agent.exit_self``."""
+    d = _seed_ephemeral_with_pid(
+        tmp_paths, "@clean-exit", pid=99999, parent="@orchestrator",
+    )
+    tomb = d / "exit_self"
+    tomb.write_text("2026-07-05T20:05:39Z session metasphere-clean-exit\n")
+    # Tombstone postdates the pid write (normal life ordering).
+    os.utime(d / "pid", (1000, 1000))
+    os.utime(tomb, (2000, 2000))
+
+    sent: list[tuple] = []
+
+    def fake_send(*a, **k):
+        sent.append((a, k))
+        return MagicMock(id="x")
+
+    with patch("metasphere.agents._pid_alive", return_value=False), \
+         patch("metasphere.agents.session_alive", return_value=False), \
+         patch("metasphere.messages.send_message", side_effect=fake_send):
+        reaped = agents.reap_crashed(paths=tmp_paths)
+
+    assert reaped == ["@clean-exit"], (
+        f"clean exit must still be transitioned this sweep, got {reaped}"
+    )
+    new_status = (d / "status").read_text().strip()
+    assert new_status.startswith("complete:"), (
+        f"expected complete: status for clean exit_self, got {new_status!r}"
+    )
+    assert "exit_self" in new_status
+    assert sent == [], (
+        f"clean self-termination must not !alert the parent, got {sent}"
+    )
+    assert not tomb.exists(), "tombstone must be consumed one-shot"
+
+
+def test_reap_crashed_stale_tombstone_still_marks_crashed(tmp_paths: Paths):
+    """A tombstone OLDER than the pid file belongs to a prior life —
+    the agent was relaunched after the exit intent, so a later
+    pid-dead/session-gone state is a genuine crash. The leftover
+    sidecar must not mask it."""
+    d = _seed_ephemeral_with_pid(
+        tmp_paths, "@respawned", pid=88888, parent="@orchestrator",
+    )
+    tomb = d / "exit_self"
+    tomb.write_text("2026-07-05T18:00:00Z session metasphere-respawned\n")
+    # Pid file rewritten AFTER the tombstone (relaunch) → tombstone stale.
+    os.utime(tomb, (1000, 1000))
+    os.utime(d / "pid", (2000, 2000))
+
+    sent: list[dict] = []
+
+    def fake_send(target, label, body, from_agent, paths=None, **kwargs):
+        sent.append({"target": target, "label": label})
+        return MagicMock(id="msg-x")
+
+    with patch("metasphere.agents._pid_alive", return_value=False), \
+         patch("metasphere.agents.session_alive", return_value=False), \
+         patch("metasphere.messages.send_message", side_effect=fake_send):
+        reaped = agents.reap_crashed(paths=tmp_paths)
+
+    assert reaped == ["@respawned"]
+    new_status = (d / "status").read_text().strip()
+    assert new_status.startswith("crashed:"), (
+        f"stale tombstone must not mask a real crash, got {new_status!r}"
+    )
+    assert len(sent) == 1 and sent[0]["label"] == "!alert"
+
+
+def test_mark_exit_self_writes_tombstone(tmp_paths: Paths):
+    """mark_exit_self drops the ``exit_self`` sidecar into the agent's
+    dir (found via _find_agent_dir, so project-scoped agents resolve
+    too) and returns True; unknown agents return False, never raise."""
+    d = _seed_ephemeral_with_pid(tmp_paths, "@about-to-exit", pid=77777)
+
+    ok = agents.mark_exit_self(
+        "@about-to-exit", "metasphere-about-to-exit", paths=tmp_paths,
+    )
+    assert ok is True
+    tomb = d / "exit_self"
+    assert tomb.is_file()
+    assert "metasphere-about-to-exit" in tomb.read_text()
+
+    assert agents.mark_exit_self(
+        "@never-spawned", "metasphere-never-spawned", paths=tmp_paths,
+    ) is False
+
+
+def test_spawn_ephemeral_clears_stale_exit_self_tombstone(
+    tmp_paths: Paths, monkeypatch,
+):
+    """Name reuse: respawning an agent whose prior life left an
+    ``exit_self`` tombstone must clear it — otherwise the new life's
+    first genuine crash would be misread as a clean exit."""
+    monkeypatch.setenv("METASPHERE_SPAWN_NO_EXEC", "1")
+    stale_dir = tmp_paths.agents / "@recycled"
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "exit_self").write_text(
+        "2026-07-05T18:00:00Z session metasphere-recycled\n"
+    )
+
+    with patch("metasphere.agents.subprocess.Popen"):
+        agents.spawn_ephemeral(
+            "@recycled", "/sub/", "second life", paths=tmp_paths,
+        )
+
+    assert not (stale_dir / "exit_self").exists(), (
+        "spawn_ephemeral must clear a prior life's exit_self tombstone"
+    )
+    assert (stale_dir / "status").read_text().startswith("spawned:")
 
 
 # ---------------------------------------------------------------------------
