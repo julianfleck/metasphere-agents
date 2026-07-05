@@ -372,6 +372,90 @@ def _patch_function_default(monkeypatch, module, fn_name, param_name, new_value)
     monkeypatch.setattr(fn, "__defaults__", new_defaults)
 
 
+# ---------------------------------------------------------------------------
+# Live-process-spawn guard
+#
+# Structural backstop, analogous to the tmux sandbox guard (``tmux.py``,
+# hardened by PRs #5-7) and the filesystem-pollution detector above:
+# some production code paths shell out to commands that mutate the LIVE
+# host or spawn a real Claude process — ``claude -p`` (heartbeat/session
+# one-shots), ``systemctl``/``launchctl`` (daemon control). Today those
+# never fire during a test run only because every test that reaches them
+# happens to monkeypatch ``subprocess.run``. That is convention-only —
+# exactly the fragility the critic flagged for tmux before #7 pinned it.
+#
+# This autouse fixture wraps ``subprocess.run``/``Popen`` for the whole
+# non-live suite and fails loudly if a test would spawn one of those
+# live-mutating commands, instead of silently restarting the gateway or
+# burning tokens on a real ``claude`` invocation. Read-only externals the
+# suite legitimately runs against tmp dirs (``git``, ``diff``) pass
+# straight through to the real implementation.
+#
+# Denylist basis (grounded in the actual production call sites, not a
+# guess): ``claude`` (heartbeat.py), ``systemctl`` (cli/restart, cli/daemon,
+# update, telegram/commands), ``launchctl`` (update, macOS). Tmux is
+# deliberately absent — it is already structurally guarded upstream.
+#
+# Opt out with ``@pytest.mark.live`` (test genuinely hits the external
+# service) or ``@pytest.mark.real_corpus``.
+# ---------------------------------------------------------------------------
+
+#: argv[0] basenames that must NEVER execute during a sandboxed test run.
+_LIVE_SPAWN_DENYLIST = frozenset({"claude", "systemctl", "launchctl"})
+
+
+def _spawn_argv0_basename(args) -> str:
+    """Best-effort argv[0] basename from a ``subprocess`` first arg.
+
+    Handles both the list/tuple argv form and the ``shell=True`` string
+    form; returns ``""`` for anything else so the caller waves it through.
+    """
+    if isinstance(args, (list, tuple)):
+        first = args[0] if args else ""
+    elif isinstance(args, (str, bytes)):
+        s = args.decode() if isinstance(args, bytes) else args
+        parts = s.split()
+        first = parts[0] if parts else ""
+    else:
+        return ""
+    return os.path.basename(str(first))
+
+
+@pytest.fixture(autouse=True)
+def _block_live_process_spawns(request, monkeypatch):
+    if (request.node.get_closest_marker("live") is not None
+            or request.node.get_closest_marker("real_corpus") is not None):
+        yield
+        return
+    import subprocess as _sp
+
+    real_run = _sp.run
+    real_popen = _sp.Popen
+
+    def _check(first_arg):
+        base = _spawn_argv0_basename(first_arg)
+        if base in _LIVE_SPAWN_DENYLIST:
+            raise AssertionError(
+                f"Test spawned live process {base!r} (args={first_arg!r}). "
+                "Commands that mutate the live host or spawn a real Claude "
+                "(claude/systemctl/launchctl) must be mocked under pytest — "
+                "monkeypatch subprocess.run, or mark the test "
+                "@pytest.mark.live if it genuinely needs the external service."
+            )
+
+    def guarded_run(*a, **k):
+        _check(a[0] if a else k.get("args"))
+        return real_run(*a, **k)
+
+    def guarded_popen(*a, **k):
+        _check(a[0] if a else k.get("args"))
+        return real_popen(*a, **k)
+
+    monkeypatch.setattr(_sp, "run", guarded_run)
+    monkeypatch.setattr(_sp, "Popen", guarded_popen)
+    yield
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
