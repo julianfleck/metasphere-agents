@@ -802,20 +802,19 @@ def _delivered_copy_exists(msg_id: str, paths: Paths) -> bool:
     return False
 
 
-def _msg_age_seconds(msg: Message, path: Path) -> int | None:
-    """Age of a message in seconds, from its ``created`` frontmatter;
-    falls back to file mtime when ``created`` is absent/unparseable.
-    ``None`` only when both signals are unavailable."""
-    raw = (msg.created or "").strip()
-    if raw:
-        try:
-            ts = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=_dt.timezone.utc)
-            delta = _dt.datetime.now(_dt.timezone.utc) - ts
-            return max(0, int(delta.total_seconds()))
-        except ValueError:
-            pass
+def _file_age_seconds(path: Path) -> int | None:
+    """Age of ``path`` in seconds by file MTIME; ``None`` if unstattable.
+
+    Deliberately ignores the embedded ``created`` frontmatter: the
+    orphan population is dominated by hand-written files whose
+    frontmatter is copy-pasted from older messages. A copied
+    ``created`` older than the sweep's max-age would orphan the
+    message FOREVER behind a green backstop, and a backdated one
+    would defeat the min-age quiescence guard (a mid-write partial
+    file could be delivered corrupted, and idempotency would make
+    that permanent). MTIME is the one signal the writer sets by the
+    act of writing itself. ``created`` is display-only here.
+    """
     try:
         return max(0, int(time.time() - path.stat().st_mtime))
     except OSError:
@@ -868,12 +867,16 @@ def sweep_outbox_orphans(
                 return out
             try:
                 msg_id = f.stem
+                # Age gate FIRST: one cheap stat filters the entire
+                # population of legitimately-sent outbox files (age >
+                # max or < min) before the multi-dir twin scan — the
+                # steady-state tick cost stays one stat per file.
+                age = _file_age_seconds(f)
+                if age is None or age < min_age_seconds or age > max_age_seconds:
+                    continue
                 if _delivered_copy_exists(msg_id, paths):
                     continue
                 msg = read_message(f)
-                age = _msg_age_seconds(msg, f)
-                if age is None or age < min_age_seconds or age > max_age_seconds:
-                    continue
                 if not msg.to or not msg.to.startswith("@"):
                     # No routable recipient — leave it; a fabricated file
                     # with a garbage ``to`` has no inbox to land in.
@@ -901,6 +904,10 @@ def sweep_outbox_orphans(
                 _index_add(msg_id, inbox_file, paths)
                 delivered += 1
 
+                # NOTE: the ``agent=`` attribution below repeats the
+                # file's self-declared ``from`` field — for hand-written
+                # orphans that is UNAUTHENTICATED by design. Event
+                # consumers must treat it as a claim, not an identity.
                 try:
                     log_event(
                         "message.orphan_delivered",
@@ -920,6 +927,12 @@ def sweep_outbox_orphans(
                     )
                 except Exception:
                     pass
+                # Known gap (accepted, on the ledger): unlike
+                # send_message, late delivery does NOT escalate
+                # high-priority labels to a session-respawn — an
+                # orphaned !urgent to a dormant recipient gets only
+                # this best-effort wake and otherwise waits for the
+                # recipient's next inbox view.
                 try:
                     wake_recipient_if_live(
                         msg.to, msg.label, msg.from_, msg.body, paths=paths,

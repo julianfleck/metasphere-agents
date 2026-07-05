@@ -12,16 +12,12 @@ primitives ``send_message`` uses, preserving the original id so
 
 from __future__ import annotations
 
-import datetime as dt
+import os
+import time
 from pathlib import Path
 from unittest.mock import patch
 
 from metasphere import messages as m
-
-
-def _iso_ago(seconds: int) -> str:
-    ts = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=seconds)
-    return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _write_orphan(
@@ -31,10 +27,17 @@ def _write_orphan(
     to: str = "@orchestrator",
     label: str = "!done",
     age_seconds: int = 600,
+    created: str = "2026-07-05T20:52:30Z",
     project: str = "testproj",
 ) -> Path:
     """Hand-write an outbox-only message file, exactly mirroring the
-    incident shape (fabricated id, no inbox copy, no event)."""
+    incident shape (fabricated id, no inbox copy, no event).
+
+    Age is applied via ``os.utime`` — the sweep windows on file MTIME
+    only. ``created`` stays a fixed copy-pasted-looking value because
+    that's what real hand-written orphans carry, and it must be
+    display-only.
+    """
     outbox = tmp_paths.projects / project / ".messages" / "outbox"
     outbox.mkdir(parents=True, exist_ok=True)
     f = outbox / f"{msg_id}.msg"
@@ -46,7 +49,7 @@ def _write_orphan(
         f'label: "{label}"\n'
         "status: unread\n"
         "scope: /\n"
-        f"created: {_iso_ago(age_seconds)}\n"
+        f"created: {created}\n"
         "read_at: \n"
         "replied_at: \n"
         "completed_at: \n"
@@ -57,6 +60,8 @@ def _write_orphan(
         "SIGN-OFF: ship the state-both render.\n",
         encoding="utf-8",
     )
+    t = time.time() - age_seconds
+    os.utime(f, (t, t))
     return f
 
 
@@ -125,6 +130,39 @@ def test_ancient_orphan_beyond_max_age_is_skipped(tmp_paths):
     assert not (_testproj_inbox(tmp_paths) / "msg-1783284750-189719841.msg").exists()
 
 
+def test_copied_ancient_created_is_display_only(tmp_paths):
+    """The critic's AMBER scenario: hand-written orphans copy-paste
+    frontmatter, so a copied ``created`` older than max-age must NOT
+    orphan the message forever — the window is file MTIME only."""
+    _write_orphan(
+        tmp_paths,
+        created="2026-06-01T00:00:00Z",  # copied, ~5 weeks stale
+        age_seconds=600,                  # actual file mtime: 10 min
+    )
+    with patch("metasphere.messages.wake_recipient_if_live", return_value=True):
+        results = m.sweep_outbox_orphans(tmp_paths)
+    assert len(results) == 1, (
+        "a stale copy-pasted created field must not push the orphan "
+        f"out of the mtime window; got {results}"
+    )
+    assert (_testproj_inbox(tmp_paths) / "msg-1783284750-189719841.msg").is_file()
+
+
+def test_backdated_created_cannot_defeat_min_age_quiescence(tmp_paths):
+    """Mirror scenario: a freshly-written (possibly still mid-heredoc)
+    file with a backdated ``created`` must still be held by the
+    min-age gate — delivering a partial write would be permanent
+    (idempotency: the corrupted inbox twin blocks the finished one)."""
+    _write_orphan(
+        tmp_paths,
+        created="2026-07-01T00:00:00Z",  # backdated well past min-age
+        age_seconds=5,                    # file actually just appeared
+    )
+    results = m.sweep_outbox_orphans(tmp_paths)
+    assert results == []
+    assert not (_testproj_inbox(tmp_paths) / "msg-1783284750-189719841.msg").exists()
+
+
 def test_normal_sent_message_is_not_touched(tmp_paths):
     """A message sent through send_message has an inbox twin from
     birth — the sweep must classify it as delivered even though its
@@ -172,9 +210,12 @@ def test_malformed_file_does_not_abort_sweep(tmp_paths):
     the sweep runs on the consolidate tick and must never raise."""
     outbox = tmp_paths.projects / "testproj" / ".messages" / "outbox"
     outbox.mkdir(parents=True, exist_ok=True)
-    (outbox / "msg-000-garbage.msg").write_text(
-        "not frontmatter at all", encoding="utf-8",
-    )
+    garbage = outbox / "msg-000-garbage.msg"
+    garbage.write_text("not frontmatter at all", encoding="utf-8")
+    # Age the garbage past min-age so it reaches the parse (the age
+    # gate runs first and would otherwise filter it before read).
+    t = time.time() - 600
+    os.utime(garbage, (t, t))
     _write_orphan(tmp_paths, msg_id="msg-1783285716-4410221", age_seconds=600)
     with patch("metasphere.messages.wake_recipient_if_live", return_value=True):
         results = m.sweep_outbox_orphans(tmp_paths)
