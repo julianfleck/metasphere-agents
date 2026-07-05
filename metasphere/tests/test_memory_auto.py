@@ -208,3 +208,79 @@ def test_default_memory_root_fallback_is_fixed_slug(tmp_path, monkeypatch):
     assert suffix == ".claude/projects/_no_memory/memory", (
         f"fallback slug must be fixed; got: {suffix!r}"
     )
+
+
+# --- Ranking-quality regression guards for the PR #1 recall fix ---------
+#
+# The pre-fix scorer ranked by ``overlap / |query tokens|`` — the fraction
+# of the query a memo matched, with no term weighting and no length term.
+# That let a long, vocabulary-rich memo win on size, and let several memos
+# matching many *common* tokens bury the one memo matching the *rare*,
+# distinctive token. The merged scorer adds (a) IDF weighting so rare tokens
+# carry the signal and (b) mild log-length damping so big memos stop winning
+# on volume. The two tests below pin those properties with corpora on which
+# the pre-fix scorer would rank the wrong memo first, so a regression that
+# drops either term fails here (a corpus-scale self-query eval over the live
+# memory tree lives in docs/plans/recall_selfquery_eval.py; these are its
+# deterministic, host-independent core).
+
+
+def test_length_damping_short_on_topic_beats_long_padded(tmp_path):
+    # Two memos match every query token, but one is a short note dedicated
+    # to the topic and the other buries the same tokens under ~2000 tokens
+    # of unrelated vocabulary. Log-length damping must keep the short,
+    # on-topic memo first — without it the padded memo wins on accumulated
+    # matched mass.
+    root = tmp_path / "memory"
+    root.mkdir()
+    (root / "MEMORY.md").write_text(
+        "- [Watchdog linger fix](wd.md) — watchdog linger marker keying\n"
+        "- [Grab-bag notes](big.md) — assorted long project notes\n",
+        encoding="utf-8",
+    )
+    (root / "wd.md").write_text(
+        "---\nname: watchdog linger\n---\n"
+        "Watchdog linger rate-limit marker keying per session.\n",
+        encoding="utf-8",
+    )
+    padding = " ".join(f"topic{i} note{i} detail{i}" for i in range(700))
+    (root / "big.md").write_text(
+        "---\nname: grab-bag\n---\n"
+        "Assorted notes. watchdog linger marker keying session here too. "
+        + padding + "\n",
+        encoding="utf-8",
+    )
+    hits = AutoMemoryStrategy(root=root).search(
+        "watchdog linger marker keying session"
+    )
+    assert hits[0].source == "auto-memory:wd.md"
+    by_src = {h.source: h.score for h in hits}
+    assert by_src["auto-memory:wd.md"] > by_src["auto-memory:big.md"]
+
+
+def test_idf_rare_token_beats_many_common_tokens(tmp_path):
+    # Target matches only the rare, distinctive query token; three filler
+    # memos each match the three *common* query tokens (high document
+    # frequency -> low IDF). The pre-fix overlap scorer ranks a filler
+    # first (3/4 of the query vs the target's 1/4); IDF weighting must put
+    # the distinctive-token memo on top instead.
+    root = tmp_path / "memory"
+    root.mkdir()
+    (root / "MEMORY.md").write_text(
+        "- [Kubernetes rollout](k8s.md) — kubernetes rollout distinctive\n"
+        "- [Alpha notes](a.md) — alpha beta gamma common filler\n"
+        "- [Beta notes](b.md) — alpha beta gamma common filler\n"
+        "- [Gamma notes](c.md) — alpha beta gamma common filler\n",
+        encoding="utf-8",
+    )
+    (root / "k8s.md").write_text(
+        "---\nname: k8s\n---\nKubernetes rollout distinctive.\n",
+        encoding="utf-8",
+    )
+    for name in ("a.md", "b.md", "c.md"):
+        (root / name).write_text(
+            f"---\nname: {name}\n---\nalpha beta gamma common filler notes.\n",
+            encoding="utf-8",
+        )
+    hits = AutoMemoryStrategy(root=root).search("kubernetes alpha beta gamma")
+    assert hits[0].source == "auto-memory:k8s.md"
