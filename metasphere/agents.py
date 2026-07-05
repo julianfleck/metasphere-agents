@@ -129,6 +129,13 @@ def _validate_agent_name(name: str) -> None:
 
 
 def _tmux_bin() -> str:
+    # Under pytest, hand back a guaranteed-nonexistent path so every
+    # exec raises FileNotFoundError instead of reaching the host tmux
+    # (cold-starting or killing REAL agent sessions from a sandboxed
+    # test). session_alive and _tmux_run treat that as tmux-absent.
+    from .tmux import PYTEST_TMUX_SENTINEL, tmux_sandboxed
+    if tmux_sandboxed():
+        return PYTEST_TMUX_SENTINEL
     return shutil.which("tmux") or "tmux"
 
 
@@ -640,13 +647,22 @@ def spawn_ephemeral(
 # ---------------------------------------------------------------------------
 
 def _tmux_run(*args: str, check: bool = False) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [_tmux_bin(), *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=check,
-    )
+    tmux = _tmux_bin()
+    try:
+        return subprocess.run(
+            [tmux, *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=check,
+        )
+    except FileNotFoundError:
+        # tmux absent (or the pytest sentinel from _tmux_bin) — degrade
+        # to a failed CompletedProcess so callers take their existing
+        # rc!=0 branches instead of crashing.
+        return subprocess.CompletedProcess(
+            [tmux, *args], 127, stdout="", stderr="tmux not found",
+        )
 
 
 def _capture_pane(session: str) -> str:

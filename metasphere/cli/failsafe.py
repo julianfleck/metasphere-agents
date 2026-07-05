@@ -77,7 +77,10 @@ def _mark_rotated() -> None:
 
 def _capture_pane(session: str) -> str:
     """Return the visible pane text for *session*, or '' on failure."""
-    tmux = "tmux"
+    from ..tmux import PYTEST_TMUX_SENTINEL, tmux_sandboxed
+    # The sentinel execs to FileNotFoundError, caught by the OSError
+    # branch below — a sandboxed test never reads a live pane.
+    tmux = PYTEST_TMUX_SENTINEL if tmux_sandboxed() else "tmux"
     try:
         r = subprocess.run(
             [tmux, "capture-pane", "-p", "-t", session],

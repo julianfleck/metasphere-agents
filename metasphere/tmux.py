@@ -31,26 +31,46 @@ import time
 _deferring_sessions: set[str] = set()
 
 
+#: Returned by tmux discovery when a pytest run must not reach the host
+#: server but the discovery contract requires a str (``_tmux_bin`` in
+#: agents.py / gateway modules). The path cannot exist, so any exec of
+#: it raises FileNotFoundError — which every call site treats as
+#: tmux-absent and degrades gracefully.
+PYTEST_TMUX_SENTINEL = "/nonexistent/tmux-blocked-under-pytest"
+
+
+def tmux_sandboxed() -> bool:
+    """True when tmux side-effects must be blocked: under pytest
+    (``PYTEST_CURRENT_TEST`` is set) without the explicit
+    ``METASPHERE_ALLOW_TMUX_IN_TESTS=1`` opt-in.
+
+    2026-07-05: sandboxed ``mark_done`` tests (tmp ``paths=``) reached
+    the real ``wake_recipient_if_live`` → ``submit_to_tmux``, injecting
+    ``[wake] new !done from @worker: all green`` into the production
+    orchestrator pane on every suite run — file writes and log_event
+    respect the paths sandbox, tmux does not. The same class of leak
+    exists at every tmux discovery site (agents cold-start/kill-session,
+    gateway watchdog, cli restart/failsafe), so they all key off this
+    single predicate.
+    """
+    return bool(os.environ.get("PYTEST_CURRENT_TEST")) and not os.environ.get(
+        "METASPHERE_ALLOW_TMUX_IN_TESTS"
+    )
+
+
 def _find_tmux() -> str | None:
     """Locate the tmux binary.
 
-    Under pytest (``PYTEST_CURRENT_TEST`` is set) this returns None so
-    that every side-effecting path in this module — ``submit_to_tmux``,
-    ``submit_watchdog`` — degrades to its graceful no-tmux failure mode
-    instead of typing into LIVE panes. 2026-07-05: sandboxed
-    ``mark_done`` tests (tmp ``paths=``) still reached the real
-    ``wake_recipient_if_live`` → ``submit_to_tmux``, injecting
-    ``[wake] new !done from @worker: all green`` into the production
-    orchestrator pane on every suite run — file writes and log_event
-    respect the paths sandbox, tmux does not.
+    Under pytest this returns None so that every side-effecting path in
+    this module — ``submit_to_tmux``, ``submit_watchdog`` — degrades to
+    its graceful no-tmux failure mode instead of typing into LIVE panes
+    (see ``tmux_sandboxed``).
 
     Tests that deliberately exercise the submit machinery monkeypatch
     this function (see test_tmux.py). To intentionally reach a real
     tmux server from a test, set ``METASPHERE_ALLOW_TMUX_IN_TESTS=1``.
     """
-    if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get(
-        "METASPHERE_ALLOW_TMUX_IN_TESTS"
-    ):
+    if tmux_sandboxed():
         return None
     return shutil.which("tmux")
 

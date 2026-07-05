@@ -138,17 +138,30 @@ _RESPAWN_CMD = _respawn_cmd("@orchestrator")
 
 
 def _tmux_bin() -> str:
+    # Pytest sentinel: see metasphere.tmux.tmux_sandboxed — a sandboxed
+    # test must never create/kill sessions or type into live panes.
+    from ..tmux import PYTEST_TMUX_SENTINEL, tmux_sandboxed
+    if tmux_sandboxed():
+        return PYTEST_TMUX_SENTINEL
     return shutil.which("tmux") or "tmux"
 
 
 def _tmux(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [_tmux_bin(), *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
+    tmux = _tmux_bin()
+    try:
+        return subprocess.run(
+            [tmux, *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        # tmux absent (or the pytest sentinel) — degrade to a failed
+        # CompletedProcess so callers take their rc!=0 branches.
+        return subprocess.CompletedProcess(
+            [tmux, *args], 127, stdout="", stderr="tmux not found",
+        )
 
 
 def session_alive(name: str = SESSION_NAME) -> bool:

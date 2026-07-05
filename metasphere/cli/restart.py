@@ -89,7 +89,10 @@ def _restart_systemd_daemons() -> dict[str, bool]:
 
 def _tmux_kill(session: str) -> bool:
     """``tmux kill-session -t <session>``. Returns True on rc=0."""
-    tmux = shutil.which("tmux")
+    from ..tmux import _find_tmux
+    # _find_tmux is pytest-guarded — a sandboxed test must never kill a
+    # live session (see metasphere.tmux.tmux_sandboxed).
+    tmux = _find_tmux()
     if not tmux:
         return False
     proc = subprocess.run(
