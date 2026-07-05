@@ -23,6 +23,12 @@ from metasphere.tests.conftest import (
     ["systemctl", "--user", "status", "metasphere-gateway"],
     ["claude", "-p", "--allowedTools", "Read"],
     ["launchctl", "load", "/tmp/x.plist"],
+    # ssh: cmd_spot() in telegram/commands.py spawns this against
+    # METASPHERE_REMOTE_HOST — a live cross-host connection, same class as
+    # the systemctl restarts. No test mocks it today (convention-only), so
+    # the structural guard is what actually keeps a future /spot test off
+    # the wire.
+    ["ssh", "-p", "22", "-o", "BatchMode=yes", "host", "metasphere status"],
 ])
 def test_guard_blocks_denylisted_argv(cmd):
     with pytest.raises(AssertionError, match="live process"):
@@ -72,4 +78,4 @@ def test_spawn_argv0_basename_parsing(args, expected):
 
 def test_denylist_covers_the_live_host_control_commands():
     # Guards against an accidental denylist edit dropping a command.
-    assert {"claude", "systemctl", "launchctl"} <= _LIVE_SPAWN_DENYLIST
+    assert {"claude", "systemctl", "launchctl", "ssh"} <= _LIVE_SPAWN_DENYLIST
