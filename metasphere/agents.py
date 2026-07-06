@@ -996,6 +996,29 @@ def touch_last_active(agent: str, paths: Paths | None = None) -> None:
         pass
 
 
+def touch_last_active_if_exists(agent: str, paths: Paths | None = None) -> bool:
+    """Refresh ``last_active`` for ``agent`` iff its agent dir already
+    exists; never creates one.
+
+    The no-create contract is the whole point: callers like
+    ``send_message`` fire for synthetic senders too (``@consolidate``,
+    ``@heartbeat``, ``@scheduler``, ``@posthook``) and the mkdir in
+    :func:`touch_last_active` would spawn MISSION-less ghost dirs that
+    the ephemeral GC then sweeps in a churn cycle (see the comment
+    there). Returns True iff a refresh was written. Best-effort — never
+    raises.
+    """
+    try:
+        paths = paths or resolve()
+        agent_dir = _find_agent_dir(_normalize_name(agent), paths)
+        if agent_dir is None:
+            return False
+        _atomic_meta_write(agent_dir, _LAST_ACTIVE_FILENAME, _utcnow())
+        return True
+    except Exception:  # noqa: BLE001 — activity signal is best-effort
+        return False
+
+
 def _last_active_idle_seconds(agent_dir: Path) -> Optional[int]:
     """Seconds since ``agent_dir/last_active`` was touched, or ``None``
     if the file is absent / empty / unparseable. ``None`` lets the

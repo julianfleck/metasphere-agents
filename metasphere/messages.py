@@ -546,6 +546,28 @@ def send_message(
     except Exception:
         pass
 
+    # Outbound activity IS activity: refresh the sender's last_active
+    # so the reapers' shared idle signal sees an agent that is quietly
+    # WORKING (sending bus traffic) even when no successful inject has
+    # landed for hours. 2026-07-05 21:05: @worker was stale-killed
+    # on wake FOUR MINUTES after sending a !task — every wake since
+    # ~18:10 had hit "submit failed" (queued, not submitted), so no
+    # input-side signal ever registered while the agent worked on.
+    # The no-create variant is load-bearing: synthetic senders
+    # (@consolidate, @heartbeat, @scheduler, @posthook) have no agent
+    # dir and must not get ghost dirs minted here.
+    if (
+        from_agent
+        and from_agent.startswith("@")
+        and from_agent not in ("@user", "@.", "@..")
+        and "/" not in from_agent
+    ):
+        try:
+            from . import agents as _agents
+            _agents.touch_last_active_if_exists(from_agent, paths)
+        except Exception:
+            pass
+
     delivered = False
     if wake and from_agent != "@user":
         try:

@@ -2482,3 +2482,57 @@ def test_contract_nonexistent_returns_error(tmp_paths: Paths):
     from metasphere.cli.agents import contract_main
     rc = contract_main(["@ghost"])
     assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# touch_last_active_if_exists (no-create outbound-activity variant)
+# ---------------------------------------------------------------------------
+
+
+def test_touch_last_active_if_exists_refreshes_existing_dir(tmp_paths: Paths):
+    d = tmp_paths.agents / "@busy"
+    d.mkdir(parents=True)
+    (d / "last_active").write_text("2026-07-01T00:00:00Z\n")
+
+    assert agents.touch_last_active_if_exists("@busy", paths=tmp_paths) is True
+    idle = agents._last_active_idle_seconds(d)
+    assert idle is not None and idle < 120
+
+
+def test_touch_last_active_if_exists_never_creates_dir(tmp_paths: Paths):
+    """The no-create contract is the point of the variant: synthetic
+    bus senders must not get MISSION-less ghost dirs (which the
+    ephemeral GC would then sweep in a churn cycle)."""
+    assert agents.touch_last_active_if_exists(
+        "@consolidate", paths=tmp_paths,
+    ) is False
+    assert not (tmp_paths.agents / "@consolidate").exists()
+
+
+def test_outbound_send_defeats_staleness(tmp_paths: Paths):
+    """End-to-end pin of the 2026-07-05 21:05 incident: ancient input
+    signal + huge tmux idle, but the agent just SENT a bus message —
+    the shared stale-kill predicate must read it as active."""
+    from metasphere import messages as _m
+
+    d = tmp_paths.agents / "@quiet-worker"
+    d.mkdir(parents=True)
+    (d / "last_active").write_text("2026-07-01T00:00:00Z\n")
+    rec = agents.AgentRecord(
+        name="@quiet-worker", scope="", parent="", status="",
+        spawned_at="", agent_dir=d,
+    )
+
+    _m.send_message(
+        "@orchestrator", "!task", "silent progress", "@quiet-worker",
+        paths=tmp_paths, wake=False,
+    )
+
+    with patch("metasphere.agents._session_idle_seconds", return_value=99999):
+        stale, idle = agents._stale_and_not_generating(
+            rec, d, "metasphere-quiet-worker", 7200, tmp_paths,
+        )
+    assert stale is False, (
+        "agent that sent bus traffic moments ago must not be stale"
+    )
+    assert idle is not None and idle < 120
