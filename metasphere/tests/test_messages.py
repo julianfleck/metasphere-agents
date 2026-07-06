@@ -623,7 +623,7 @@ def test_sandboxed_escalation_cold_start_never_reaches_real_tmux(
 
 
 # ---------------------------------------------------------------------------
-# Outbound activity feeds last_active (2026-07-05 21:05 @rage-lead incident)
+# Outbound activity feeds last_active (2026-07-05 21:05 @worker incident)
 # ---------------------------------------------------------------------------
 
 

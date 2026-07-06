@@ -549,7 +549,7 @@ def send_message(
     # Outbound activity IS activity: refresh the sender's last_active
     # so the reapers' shared idle signal sees an agent that is quietly
     # WORKING (sending bus traffic) even when no successful inject has
-    # landed for hours. 2026-07-05 21:05: @rage-lead was stale-killed
+    # landed for hours. 2026-07-05 21:05: @worker was stale-killed
     # on wake FOUR MINUTES after sending a !task — every wake since
     # ~18:10 had hit "submit failed" (queued, not submitted), so no
     # input-side signal ever registered while the agent worked on.

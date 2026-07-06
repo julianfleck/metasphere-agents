@@ -1066,7 +1066,7 @@ def _stale_and_not_generating(
        Stop, telegram-inject, heartbeat-tick) wins over tmux
        ``session_activity``, which reflects terminal OUTPUT only and
        is blind to a silent multi-hour tool call (2026-07-05
-       @rage-lead killed at "idle=7648s" mid silent CPU probes).
+       @worker killed at "idle=7648s" mid silent CPU probes).
        Unknown idle (no signal at all) is NOT stale.
     2. Liveness interlock — never kill a session generating output
        this instant, even if every hook signal went quiet past the

@@ -827,7 +827,7 @@ def test_wake_persistent_returns_delivered_true_when_no_first_task(tmp_paths: Pa
 # wake_persistent stale-kill hardening (mirrors the reap_dormant interlock):
 # the wake-path stale-session kill must use the same false-reap protections
 # reap_dormant already carries, or a busy-but-quiet session gets nuked on the
-# next wake. Regression source: 2026-07-05 @rage-lead killed at "idle=7648s"
+# next wake. Regression source: 2026-07-05 @worker killed at "idle=7648s"
 # (tmux output-only signal) mid-compute while running silent CPU probes.
 # ---------------------------------------------------------------------------
 
@@ -880,7 +880,7 @@ def test_wake_persistent_fresh_last_active_survives_stale_tmux(tmp_paths: Paths)
     """The fix: a session whose tmux OUTPUT has been silent past the
     threshold (a long quiet compute) but whose input-side ``last_active`` is
     fresh must NOT be killed — deliver into it. Previously the wake path read
-    tmux-only and nuked it (2026-07-05 @rage-lead)."""
+    tmux-only and nuked it (2026-07-05 @worker)."""
     _make_persistent(tmp_paths, "@busy-quiet")
     # Input-side signal fresh even though tmux output activity is ancient.
     agents.touch_last_active("@busy-quiet", paths=tmp_paths)
@@ -922,7 +922,7 @@ def test_wake_persistent_fresh_last_active_survives_stale_tmux(tmp_paths: Paths)
 def test_wake_persistent_vetoes_generating_session(tmp_paths: Paths):
     """Liveness interlock on the wake path: even when BOTH activity signals
     are past the threshold, a pane actively generating ('esc to interrupt')
-    is not killed — the exact @rage-lead case: a silent multi-hour compute
+    is not killed — the exact @worker case: a silent multi-hour compute
     that fires no hook and writes nothing tmux counts as activity, yet is
     doing real work."""
     _make_persistent(tmp_paths, "@gen-waker")

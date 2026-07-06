@@ -44,7 +44,7 @@ def _write_orphan(
     f.write_text(
         "---\n"
         f"id: {msg_id}\n"
-        'from: "@rage-annotator"\n'
+        'from: "@some-agent"\n'
         f'to: "{to}"\n'
         f'label: "{label}"\n'
         "status: unread\n"
