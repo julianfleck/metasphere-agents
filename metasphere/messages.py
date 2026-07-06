@@ -766,6 +766,186 @@ def _find_message_anywhere(
     return None
 
 
+# ---------------------------------------------------------------------------
+# Outbox-orphan sweep (silent-loss backstop)
+#
+# An outbox file with no inbox/archive twin is a message the bus never
+# carried: nothing woke the recipient, nothing shows in any inbox view,
+# and ``msg done`` can't resolve it — a silent loss. The 2026-07-05
+# 20:52 incident was exactly this: an agent bypassed ``send_message``
+# and hand-wrote its ``!done`` straight into its project outbox
+# (believing outbox = send queue); the sign-off sat invisible for an
+# hour. The sweep makes the outbox eventually-consistent with the
+# inbox: any orphan inside the age window is late-delivered through
+# the same primitives ``send_message`` uses, with a distinct
+# ``message.orphan_delivered`` event so bypass/misuse stays VISIBLE
+# instead of silently absorbed.
+# ---------------------------------------------------------------------------
+
+def _delivered_copy_exists(msg_id: str, paths: Paths) -> bool:
+    """True iff ``msg_id`` has a copy anywhere OTHER than an outbox —
+    live inbox or archive.
+
+    Deliberately does NOT consult the index: a read-only surface that
+    touched an orphan (``msg read`` walks outboxes last) indexes its
+    OUTBOX path, and that entry must not count as delivered.
+    """
+    for inbox in _canonical_inbox_dirs(paths):
+        if (inbox / f"{msg_id}.msg").exists():
+            return True
+    for messages_dir in _canonical_messages_dirs(paths):
+        archive_root = messages_dir / "archive"
+        if archive_root.is_dir():
+            for day_dir in sorted(archive_root.iterdir(), reverse=True):
+                if (day_dir / f"{msg_id}.msg").exists():
+                    return True
+    return False
+
+
+def _file_age_seconds(path: Path) -> int | None:
+    """Age of ``path`` in seconds by file MTIME; ``None`` if unstattable.
+
+    Deliberately ignores the embedded ``created`` frontmatter: the
+    orphan population is dominated by hand-written files whose
+    frontmatter is copy-pasted from older messages. A copied
+    ``created`` older than the sweep's max-age would orphan the
+    message FOREVER behind a green backstop, and a backdated one
+    would defeat the min-age quiescence guard (a mid-write partial
+    file could be delivered corrupted, and idempotency would make
+    that permanent). MTIME is the one signal the writer sets by the
+    act of writing itself. ``created`` is display-only here.
+    """
+    try:
+        return max(0, int(time.time() - path.stat().st_mtime))
+    except OSError:
+        return None
+
+
+def sweep_outbox_orphans(
+    paths: Paths | None = None,
+    *,
+    min_age_seconds: int = 300,
+    max_age_seconds: int = 86400,
+    max_deliveries: int = 25,
+    dry_run: bool = False,
+) -> list[dict]:
+    """Late-deliver outbox-only orphan messages.
+
+    Walks every canonical ``.messages/outbox/`` and, for each ``.msg``
+    with no inbox or archive twin whose age falls inside
+    ``[min_age_seconds, max_age_seconds]``, writes the inbox copy to
+    the recipient's canonical inbox (same id — threading and
+    ``reply_to`` references stay intact), indexes it, emits a
+    ``message.orphan_delivered`` event, and best-effort wakes the
+    recipient.
+
+    Window semantics:
+    - ``min_age_seconds`` keeps the sweep off in-flight sends (the
+      outbox copy lands milliseconds after the inbox copy on the
+      normal path, but don't race it).
+    - ``max_age_seconds`` bounds the blast radius of the FIRST sweep
+      over a backlog of historical orphans, and guards against
+      re-delivering a message whose inbox+archive copies were removed
+      by some future retention policy.
+    - ``max_deliveries`` caps one sweep; the remainder lands on
+      subsequent ticks (consolidate runs every ~5 min).
+
+    Idempotent by construction: a delivered orphan has an inbox twin
+    and is never picked up again. Per-file failures are swallowed —
+    this runs on the consolidate tick and must never abort it. Returns
+    one result dict per delivered (or would-deliver) orphan.
+    """
+    paths = paths or resolve()
+    out: list[dict] = []
+    delivered = 0
+    for messages_dir in _canonical_messages_dirs(paths):
+        outbox = messages_dir / "outbox"
+        if not outbox.is_dir():
+            continue
+        for f in sorted(outbox.glob("*.msg")):
+            if delivered >= max_deliveries:
+                return out
+            try:
+                msg_id = f.stem
+                # Age gate FIRST: one cheap stat filters the entire
+                # population of legitimately-sent outbox files (age >
+                # max or < min) before the multi-dir twin scan — the
+                # steady-state tick cost stays one stat per file.
+                age = _file_age_seconds(f)
+                if age is None or age < min_age_seconds or age > max_age_seconds:
+                    continue
+                if _delivered_copy_exists(msg_id, paths):
+                    continue
+                msg = read_message(f)
+                if not msg.to or not msg.to.startswith("@"):
+                    # No routable recipient — leave it; a fabricated file
+                    # with a garbage ``to`` has no inbox to land in.
+                    continue
+
+                result = {
+                    "action": "would-orphan-deliver" if dry_run else "orphan-delivered",
+                    "msg_id": msg_id,
+                    "from": msg.from_,
+                    "to": msg.to,
+                    "label": msg.label,
+                    "age_seconds": age,
+                }
+                if dry_run:
+                    out.append(result)
+                    continue
+
+                target_path = resolve_target(
+                    msg.to, paths.scope, paths.project_root, paths=paths,
+                )
+                target_inbox = _canonical_messages_dir(target_path, paths) / "inbox"
+                _ensure_dirs(target_inbox)
+                inbox_file = target_inbox / f"{msg_id}.msg"
+                write_message(msg, inbox_file)
+                _index_add(msg_id, inbox_file, paths)
+                delivered += 1
+
+                # NOTE: the ``agent=`` attribution below repeats the
+                # file's self-declared ``from`` field — for hand-written
+                # orphans that is UNAUTHENTICATED by design. Event
+                # consumers must treat it as a claim, not an identity.
+                try:
+                    log_event(
+                        "message.orphan_delivered",
+                        f"outbox orphan {msg_id} ({msg.from_} → {msg.to}: "
+                        f"{msg.label}) late-delivered after {age}s — the "
+                        f"sender-side copy had no inbox twin (bus bypass "
+                        f"or partial write)",
+                        agent=msg.from_,
+                        meta={
+                            "msg_id": msg_id,
+                            "to": msg.to,
+                            "label": msg.label,
+                            "age_seconds": age,
+                            "outbox_path": str(f),
+                        },
+                        paths=paths,
+                    )
+                except Exception:
+                    pass
+                # Known gap (accepted, on the ledger): unlike
+                # send_message, late delivery does NOT escalate
+                # high-priority labels to a session-respawn — an
+                # orphaned !urgent to a dormant recipient gets only
+                # this best-effort wake and otherwise waits for the
+                # recipient's next inbox view.
+                try:
+                    wake_recipient_if_live(
+                        msg.to, msg.label, msg.from_, msg.body, paths=paths,
+                    )
+                except Exception:
+                    pass
+                out.append(result)
+            except Exception:
+                # One bad file must not starve the rest of the sweep.
+                continue
+    return out
+
+
 def reply_to_message(
     orig_id: str,
     body: str,
