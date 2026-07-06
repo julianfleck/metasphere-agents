@@ -495,6 +495,119 @@ def test_stuck_interactive_skips_dead_session(tmp_paths: Paths):
     send.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# check_stuck_input (inline auto-inject recovery)
+# ---------------------------------------------------------------------------
+
+_SESS = gw_watchdog.SESSION_NAME
+
+
+def test_stuck_input_fires_after_linger_window(tmp_paths: Paths):
+    """A wake payload stuck inline in the box past the threshold draws a
+    single recovery C-m and returns True."""
+    state = gw_watchdog._session_state_file(tmp_paths, "stuck_input_seen", _SESS)
+    content = "[wake] new task from @orchestrator: do the thing"
+    with patch.object(gw_watchdog, "session_alive", return_value=True), \
+         patch.object(gw_watchdog, "input_box_content", return_value=content), \
+         patch.object(gw_watchdog, "_send_keys") as send:
+        first = gw_watchdog.check_stuck_input(paths=tmp_paths, now=1000)
+        mid = gw_watchdog.check_stuck_input(paths=tmp_paths, now=1020)
+        fired = gw_watchdog.check_stuck_input(paths=tmp_paths, now=1031)
+    assert first is False
+    assert mid is False
+    assert fired is True
+    # Recovery is a raw C-m (not the unreliable Enter keysym).
+    send.assert_called_once_with(_SESS, "C-m")
+    # Linger timer cleared after firing.
+    assert not state.exists()
+
+
+def test_stuck_input_ignores_human_typing(tmp_paths: Paths):
+    """Content without a harness marker is a human's message — never touched,
+    and the linger timer is cleared so a later inject starts fresh."""
+    human = "hey can you look at the deploy when you get a sec"
+    with patch.object(gw_watchdog, "session_alive", return_value=True), \
+         patch.object(gw_watchdog, "input_box_content", return_value=human), \
+         patch.object(gw_watchdog, "_send_keys") as send:
+        a = gw_watchdog.check_stuck_input(paths=tmp_paths, now=1000)
+        b = gw_watchdog.check_stuck_input(paths=tmp_paths, now=1031)
+    assert a is False and b is False
+    send.assert_not_called()
+
+
+def test_stuck_input_ignores_placeholder(tmp_paths: Paths):
+    """A ``[Pasted text #`` placeholder is check_stuck_paste's job — even if a
+    marker precedes it, the placeholder path must not double-fire here."""
+    content = "[task] see below [Pasted text #4 +30 lines]"
+    with patch.object(gw_watchdog, "session_alive", return_value=True), \
+         patch.object(gw_watchdog, "input_box_content", return_value=content), \
+         patch.object(gw_watchdog, "_send_keys") as send:
+        a = gw_watchdog.check_stuck_input(paths=tmp_paths, now=1000)
+        b = gw_watchdog.check_stuck_input(paths=tmp_paths, now=1031)
+    assert a is False and b is False
+    send.assert_not_called()
+
+
+def test_stuck_input_changed_content_resets_timer(tmp_paths: Paths):
+    """If the box content changes between ticks (turn processing / a fresh
+    inject), the linger timer restarts — we don't fire on transient content."""
+    with patch.object(gw_watchdog, "session_alive", return_value=True), \
+         patch.object(gw_watchdog, "_send_keys") as send:
+        with patch.object(gw_watchdog, "input_box_content",
+                          return_value="[wake] first"):
+            gw_watchdog.check_stuck_input(paths=tmp_paths, now=1000)
+        with patch.object(gw_watchdog, "input_box_content",
+                          return_value="[wake] second"):
+            r = gw_watchdog.check_stuck_input(paths=tmp_paths, now=1031)
+    assert r is False
+    send.assert_not_called()
+
+
+def test_stuck_input_clears_timer_when_box_empties(tmp_paths: Paths):
+    """Once the box drains (submit landed), the linger timer is removed so a
+    fresh episode must accrue the full threshold again."""
+    state = gw_watchdog._session_state_file(tmp_paths, "stuck_input_seen", _SESS)
+    with patch.object(gw_watchdog, "session_alive", return_value=True), \
+         patch.object(gw_watchdog, "_send_keys"):
+        with patch.object(gw_watchdog, "input_box_content", return_value="[task] x"):
+            gw_watchdog.check_stuck_input(paths=tmp_paths, now=1000)
+        assert state.exists()
+        with patch.object(gw_watchdog, "input_box_content", return_value=None):
+            r = gw_watchdog.check_stuck_input(paths=tmp_paths, now=1010)
+    assert r is False
+    assert not state.exists()
+
+
+def test_stuck_input_rate_limited_after_fire(tmp_paths: Paths):
+    """After a recovery C-m, a still-stuck payload (queued behind a long turn)
+    doesn't draw another C-m until the rate-limit window elapses."""
+    content = "[heartbeat] agent x idle"
+    with patch.object(gw_watchdog, "session_alive", return_value=True), \
+         patch.object(gw_watchdog, "input_box_content", return_value=content), \
+         patch.object(gw_watchdog, "_send_keys") as send:
+        gw_watchdog.check_stuck_input(paths=tmp_paths, now=1000)   # arm
+        assert gw_watchdog.check_stuck_input(paths=tmp_paths, now=1031) is True
+        # Still stuck 30s later, but inside the 90s rate-limit → no re-fire.
+        assert gw_watchdog.check_stuck_input(paths=tmp_paths, now=1062) is False
+        assert gw_watchdog.check_stuck_input(paths=tmp_paths, now=1093) is False
+        # Past the rate-limit window and still stuck+stable → fire again.
+        gw_watchdog.check_stuck_input(paths=tmp_paths, now=1122)   # re-arm timer
+        again = gw_watchdog.check_stuck_input(paths=tmp_paths, now=1153)
+    assert again is True
+    assert send.call_count == 2
+
+
+def test_stuck_input_skips_dead_session(tmp_paths: Paths):
+    """Dead session skips immediately without inspecting the pane."""
+    with patch.object(gw_watchdog, "session_alive", return_value=False), \
+         patch.object(gw_watchdog, "input_box_content") as content, \
+         patch.object(gw_watchdog, "_send_keys") as send:
+        r = gw_watchdog.check_stuck_input(paths=tmp_paths, now=5000)
+    assert r is False
+    content.assert_not_called()
+    send.assert_not_called()
+
+
 def test_check_restart_marker_uses_project_scoped_session(tmp_paths: Paths):
     """Regression: post-restart wake-up injection for a project-scoped
     agent must target ``metasphere-<project>-<agent>``, not the bare
