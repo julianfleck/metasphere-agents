@@ -137,31 +137,11 @@ def _input_line_has_typing(tmux: str, session: str) -> bool:
         )
         if r.returncode != 0:
             return False
-        lines = r.stdout.splitlines()
-        # Walk up from the end looking for the two border lines that
-        # bracket the input box.
-        bottom_idx: int | None = None
-        top_idx: int | None = None
-        for i in range(len(lines) - 1, -1, -1):
-            if _is_box_border(lines[i].strip()):
-                if bottom_idx is None:
-                    bottom_idx = i
-                else:
-                    top_idx = i
-                    break
-        if bottom_idx is None or top_idx is None:
+        inner_lines = _input_box_inner_lines(r.stdout.splitlines())
+        if inner_lines is None:
             return False  # no input box found — fail open
-        # Inspect every line between the borders (exclusive).
-        for line in lines[top_idx + 1:bottom_idx]:
-            # Strip the box side chars and whitespace.
-            inner = line.strip().lstrip("│|").rstrip("│|").strip()
-            if not inner:
-                continue
-            # Strip the ❯ / > prompt marker if this is the first line.
-            if inner.startswith("❯"):
-                inner = inner[len("❯"):].strip()
-            elif inner.startswith(">"):
-                inner = inner[1:].strip()
+        for line in inner_lines:
+            inner = _clean_input_inner(line)
             if not inner:
                 continue
             # A lingering paste placeholder is not typing — submit_watchdog
@@ -172,6 +152,77 @@ def _input_line_has_typing(tmux: str, session: str) -> bool:
         return False
     except OSError:
         return False
+
+
+def _input_box_inner_lines(pane_lines: list[str]) -> list[str] | None:
+    """Return the raw lines that sit *between* Claude Code's input-box
+    borders (the two nearest ``─────`` lines at the bottom of the pane),
+    or ``None`` when a full box isn't visible.
+
+    Walks up from the end for the two border lines that bracket the box —
+    the same detection ``_input_line_has_typing`` used inline before it was
+    extracted here, so wrapped multi-line input is handled correctly (all
+    wrapped content sits between the same two borders). Requiring *both*
+    borders means a box whose top border has scrolled off returns ``None``
+    (callers fail their own way — the typing-guard fails open, the
+    stuck-input recovery fails closed).
+    """
+    bottom_idx: int | None = None
+    top_idx: int | None = None
+    for i in range(len(pane_lines) - 1, -1, -1):
+        if _is_box_border(pane_lines[i].strip()):
+            if bottom_idx is None:
+                bottom_idx = i
+            else:
+                top_idx = i
+                break
+    if bottom_idx is None or top_idx is None:
+        return None
+    return pane_lines[top_idx + 1:bottom_idx]
+
+
+def _clean_input_inner(line: str) -> str:
+    """Strip box side-chars and the ``❯``/``>`` prompt marker from one
+    input-box line, returning the bare typed content (possibly empty)."""
+    inner = line.strip().lstrip("│|").rstrip("│|").strip()
+    if inner.startswith("❯"):
+        inner = inner[len("❯"):].strip()
+    elif inner.startswith(">"):
+        inner = inner[1:].strip()
+    return inner
+
+
+def input_box_content(session: str) -> str | None:
+    """Return the text currently typed into *session*'s Claude Code input
+    box (inner lines joined by ``\\n``, box chrome and prompt marker
+    stripped), or ``None`` when no input box is visible / on any error.
+
+    Unlike :func:`_input_line_has_typing` this returns the content verbatim
+    — including a lone ``[Pasted text #`` placeholder — so callers decide
+    what to do with it. The gateway watchdog uses it to recognise an
+    auto-inject that stuck *inline* in the box (no placeholder for
+    ``check_stuck_paste`` to catch) and force its submit. Never raises.
+    """
+    try:
+        tmux = _find_tmux()
+        if not tmux:
+            return None
+        r = subprocess.run(
+            [tmux, "capture-pane", "-p", "-t", session],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if r.returncode != 0:
+            return None
+        inner_lines = _input_box_inner_lines(r.stdout.splitlines())
+        if inner_lines is None:
+            return None
+        parts = [_clean_input_inner(line) for line in inner_lines]
+        joined = "\n".join(part for part in parts if part)
+        return joined or None
+    except OSError:
+        return None
 
 
 def _has_pending_paste(tmux: str, session: str) -> bool:

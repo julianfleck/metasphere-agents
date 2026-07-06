@@ -1,10 +1,20 @@
 """Stuck-prompt recovery for the orchestrator session.
 
-Four failure modes handled:
+Five failure modes handled:
 
 1. **Stuck pasted-text placeholder.** Bracketed-paste race occasionally
    leaves ``[Pasted text #N +M lines]`` in the pane with the Enter
    eaten. After 15s of the placeholder lingering we force an Enter.
+1b. **Stuck inline inject.** The same bracketed-paste race on a *short*
+   payload lands the content inline in the input box with NO
+   ``[Pasted text #`` placeholder (the submit ``C-m`` fired before the
+   paste landed, so the empty box submitted as a no-op and the text
+   arrived just after). ``check_stuck_paste`` can't see it, and because
+   auto-wakes ``defer_if_busy`` on the leftover typing signal, every
+   subsequent wake logs ``[submit failed]`` and the pane stays stranded.
+   When byte-stable content prefixed with a known harness marker
+   (``[wake]``/``[task]``/…) has lingered past the threshold we force a
+   submit — safe because a human never types those markers.
 2. **Safety-hooks confirmation prompt.** Plugins occasionally prompt
    ``Do you want to proceed?`` with a numbered ``1. Yes`` option. We
    auto-send ``1`` + Enter, rate-limited to once every 10s so we never
@@ -44,7 +54,7 @@ from ..events import log_event
 from ..paths import Paths, resolve
 from ..session import list_sessions
 from .session import SESSION_NAME, session_alive
-from ..tmux import submit_to_tmux
+from ..tmux import input_box_content, submit_to_tmux
 
 _PASTE_RE = re.compile(r"\[Pasted text #\d+")
 # Require BOTH a confirm-class line AND a "1. Yes" option line so prose
@@ -70,6 +80,30 @@ _CONTEXT_LIMIT_TAIL_LINES = 8
 _STUCK_PASTE_THRESHOLD_S = 15
 _SAFETY_HOOKS_RATE_LIMIT_S = 10
 _CONTEXT_LIMIT_RATE_LIMIT_S = 600  # 10 minutes
+
+# Auto-inject markers — the prefixes the HARNESS pastes into an agent's input
+# box via submit_to_tmux (agent-to-agent wakes, task dispatch, heartbeats; see
+# that function's docstring). Any input-box content STARTING with one of these
+# is un-committed harness residue: a paste whose submit ``C-m`` fired before
+# the bracketed paste landed, leaving the payload inline with NO
+# ``[Pasted text #`` placeholder for ``check_stuck_paste`` to recover. A human
+# never types these prefixes, so matching on them lets the recovery force a
+# submit that can't clobber an operator's half-written message. Deliberately
+# NOT included: ``[idle]``/``[silent]``/``[info]`` — those are agent-EMITTED
+# sigils, never pasted INTO an input box, so they can't be stuck residue and
+# admitting them would only widen the human-typed-lookalike surface.
+# ``\b`` after the name matches the ``[task:123]`` / ``[task.consolidate]``
+# dispatch variants too.
+_INJECT_MARKER_RE = re.compile(r"^\[(wake|task|heartbeat)\b")
+# Byte-stable linger before recovering: a human editing changes the buffer
+# (resetting the timer); stuck residue doesn't. Also lets a genuinely in-flight
+# submit (paste still landing / C-m queued behind a running turn) complete on
+# its own first.
+_STUCK_INPUT_THRESHOLD_S = 30
+# After a recovery C-m, back off before firing again so content that's merely
+# queued behind a long-running turn doesn't draw a fresh (benign, but noisy)
+# empty C-m every threshold-window.
+_STUCK_INPUT_RATE_LIMIT_S = 90
 
 # Interactive select-widget signatures. These are literal footer/option
 # strings lifted from the installed Claude Code bundle (v2.1.x), NOT guesses —
@@ -208,6 +242,95 @@ def check_stuck_paste(
     except Exception:
         pass
     _send_keys(session_name, "Enter")
+    try:
+        state_file.unlink()
+    except OSError:
+        pass
+    return True
+
+
+def check_stuck_input(
+    session_name: str = SESSION_NAME,
+    paths: Optional[Paths] = None,
+    *,
+    now: Optional[int] = None,
+) -> bool:
+    """Recover an auto-inject that stuck INLINE in the input box.
+
+    The bracketed-paste race in :func:`metasphere.tmux.submit_to_tmux` can
+    fire the submit ``C-m`` before a short paste has landed: the empty input
+    submits as a no-op and the payload arrives moments later, sitting in the
+    input box with no ``[Pasted text #`` placeholder. Because auto-wakes use
+    ``defer_if_busy=True``, every subsequent wake then DEFERS on the leftover
+    typing signal (logged ``[submit failed]``) and the pane stays stranded —
+    the exact perpetuating-stuck-state the ``submit_to_tmux`` comment flags
+    with "no placeholder for submit_watchdog to recover from". This is that
+    recovery path; :func:`check_stuck_paste` handles the placeholder variant.
+
+    Safe by construction. Fires ONLY when the lingering content starts with a
+    known harness inject marker (``[wake]``/``[task]``/``[heartbeat]``/…),
+    which a human never types — so a force-submit can never clobber an
+    operator's half-written message. Gated additionally on a byte-stable
+    linger (a human editing changes the buffer, resetting the timer; stuck
+    residue doesn't) so an in-flight submit is given time to complete on its
+    own, and rate-limited so content merely queued behind a long-running turn
+    doesn't draw a fresh empty ``C-m`` every window. In that residual
+    queued-behind-a-turn case the extra ``C-m`` is benign: it queues behind
+    the original submit, so the content delivers once and any extra ``C-m``
+    submits an empty prompt (a no-op).
+
+    Returns True iff a recovery ``C-m`` was fired.
+    """
+    paths = paths or resolve()
+    if not session_alive(session_name):
+        return False
+    content = input_box_content(session_name)
+    state_file = _session_state_file(paths, "stuck_input_seen", session_name)
+    # Not our stuck residue: empty box / placeholder (check_stuck_paste's job)
+    # / anything not prefixed with a harness marker (incl. real human typing).
+    # Clear the linger timer so a later genuine episode starts fresh.
+    if (
+        not content
+        or _PASTE_RE.search(content)
+        or not _INJECT_MARKER_RE.match(content)
+    ):
+        try:
+            if state_file.exists():
+                state_file.unlink()
+        except OSError:
+            pass
+        return False
+
+    now = now if now is not None else int(time.time())
+    rate_file = _session_state_file(paths, "stuck_input_last_submit", session_name)
+    if now - _read_int(rate_file) < _STUCK_INPUT_RATE_LIMIT_S:
+        return False
+
+    sig = hashlib.sha1(content.encode("utf-8", "replace")).hexdigest()[:16]
+    first, prev_sig = _read_seen_state(state_file)
+    if first == 0 or sig != prev_sig:
+        # First sighting, or the content changed (someone is editing / a new
+        # inject) — (re)start the linger timer from now.
+        _write_seen_state(state_file, now, sig)
+        return False
+    if now - first < _STUCK_INPUT_THRESHOLD_S:
+        return False
+
+    # Byte-stable harness residue past the threshold — submit it as its own
+    # user-turn with a raw ``C-m`` (the tmux ``Enter`` keysym doesn't reliably
+    # submit in Claude Code's Ink/React TUI — see metasphere.tmux).
+    try:
+        log_event(
+            "supervisor.force_submit",
+            f"[watchdog] stuck inline inject in {session_name} "
+            f"({content.splitlines()[0][:60]!r}) — forcing submit",
+            agent="@daemon-supervisor",
+            paths=paths,
+        )
+    except Exception:
+        pass
+    _send_keys(session_name, "C-m")
+    _write_int(rate_file, now)
     try:
         state_file.unlink()
     except OSError:
@@ -565,8 +688,9 @@ def run_watchdog(paths: Optional[Paths] = None) -> None:
     """Run all stuck-prompt checks across ALL active agent sessions.
 
     Enumerates all ``metasphere-*`` tmux sessions and runs per-session
-    checks (stuck paste, safety hooks, context limit, stuck interactive
-    prompt). Then scans for per-agent restart markers independently.
+    checks (stuck paste, stuck inline inject, safety hooks, context limit,
+    stuck interactive prompt). Then scans for per-agent restart markers
+    independently.
 
     Failures of one check do not abort the others. This is the only
     watchdog entry point the daemon calls.
@@ -578,6 +702,7 @@ def run_watchdog(paths: Optional[Paths] = None) -> None:
     for session_name in sessions:
         for fn in (
             check_stuck_paste,
+            check_stuck_input,
             check_safety_hooks_confirmation,
             check_context_limit,
             check_stuck_interactive_prompt,

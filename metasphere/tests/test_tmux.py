@@ -361,6 +361,83 @@ def test_input_line_has_typing_fails_open_on_error(monkeypatch):
     assert T._input_line_has_typing("/usr/bin/tmux", "sess") is False
 
 
+# ---------------------------------------------------------------------------
+# input_box_content (used by the watchdog's stuck-inline-inject recovery)
+# ---------------------------------------------------------------------------
+
+
+def test_input_box_content_returns_typed_text(monkeypatch):
+    def fake_run(argv, **kw):
+        if "capture-pane" in argv:
+            return _fake_cp(stdout=_pane(["❯ [wake] new task from @orchestrator"]))
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+    assert T.input_box_content("sess") == "[wake] new task from @orchestrator"
+
+
+def test_input_box_content_joins_wrapped_lines(monkeypatch):
+    lines = ["❯ [task] a long task body that", "wraps across two input rows"]
+
+    def fake_run(argv, **kw):
+        if "capture-pane" in argv:
+            return _fake_cp(stdout=_pane(lines))
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+    assert T.input_box_content("sess") == (
+        "[task] a long task body that\nwraps across two input rows"
+    )
+
+
+def test_input_box_content_none_for_empty_box(monkeypatch):
+    def fake_run(argv, **kw):
+        if "capture-pane" in argv:
+            return _fake_cp(stdout=_pane(["❯\xa0"]))
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+    assert T.input_box_content("sess") is None
+
+
+def test_input_box_content_returns_placeholder_verbatim(monkeypatch):
+    """Unlike _input_line_has_typing, a lone placeholder is returned as-is —
+    the watchdog decides (and excludes it, leaving it to check_stuck_paste)."""
+    def fake_run(argv, **kw):
+        if "capture-pane" in argv:
+            return _fake_cp(stdout=_pane(["❯ [Pasted text #4 +18 lines]"]))
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+    assert T.input_box_content("sess") == "[Pasted text #4 +18 lines]"
+
+
+def test_input_box_content_none_when_no_borders(monkeypatch):
+    def fake_run(argv, **kw):
+        if "capture-pane" in argv:
+            return _fake_cp(stdout="plain text, no input box\n")
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+    assert T.input_box_content("sess") is None
+
+
+def test_input_box_content_none_on_error(monkeypatch):
+    def fake_run(argv, **kw):
+        if "capture-pane" in argv:
+            return _fake_cp(returncode=1)
+        return _fake_cp(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+    assert T.input_box_content("sess") is None
+
+
 def test_submit_defer_if_busy_skips_when_input_has_typing(monkeypatch):
     """When ``defer_if_busy=True`` and the input area shows typed
     content, abort BEFORE firing any send-keys (no Escape, no typing,
