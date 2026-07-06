@@ -620,3 +620,47 @@ def test_sandboxed_escalation_cold_start_never_reaches_real_tmux(
     tmux_execs = [h for h in execs if "tmux" in h]
     assert tmux_execs, "expected the escalation to attempt tmux calls"
     assert all(h == PYTEST_TMUX_SENTINEL for h in tmux_execs), tmux_execs
+
+
+# ---------------------------------------------------------------------------
+# Outbound activity feeds last_active (2026-07-05 21:05 @rage-lead incident)
+# ---------------------------------------------------------------------------
+
+
+def test_send_message_refreshes_sender_last_active(tmp_paths):
+    """Sending a bus message refreshes the sender's ``last_active``
+    sidecar — outbound activity IS activity for the reapers' shared
+    idle signal. Incident pinned: an agent whose every wake hit
+    "submit failed" for hours (so no input-side signal registered)
+    was stale-killed 4 minutes after it SENT a !task."""
+    from metasphere import agents
+
+    d = tmp_paths.agents / "@quiet-worker"
+    d.mkdir(parents=True)
+    (d / "last_active").write_text("2026-07-01T00:00:00Z\n")
+
+    m.send_message(
+        "@orchestrator", "!task", "progress report", "@quiet-worker",
+        paths=tmp_paths, wake=False,
+    )
+
+    idle = agents._last_active_idle_seconds(d)
+    assert idle is not None and idle < 120, (
+        f"send must refresh sender last_active; idle={idle}"
+    )
+
+
+def test_send_message_synthetic_sender_mints_no_ghost_dir(tmp_paths):
+    """Synthetic senders (@consolidate, @heartbeat, @scheduler,
+    @posthook, @user) have no agent dir and must not get one minted by
+    the outbound-activity touch — a MISSION-less ghost dir would churn
+    against the ephemeral GC (the touch_last_active docstring bug)."""
+    for sender in ("@consolidate", "@heartbeat", "@scheduler",
+                   "@posthook", "@user"):
+        m.send_message(
+            "@orchestrator", "!info", "tick", sender,
+            paths=tmp_paths, wake=False,
+        )
+        assert not (tmp_paths.agents / sender).exists(), (
+            f"ghost agent dir minted for synthetic sender {sender}"
+        )
