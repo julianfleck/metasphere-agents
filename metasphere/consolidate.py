@@ -1592,6 +1592,7 @@ class ConsolidateReport:
     results: list[dict] = field(default_factory=list)
     message_results: list[dict] = field(default_factory=list)
     gc_results: list[dict] = field(default_factory=list)
+    orphan_results: list[dict] = field(default_factory=list)
 
     def counts(self) -> dict[str, int]:
         out: dict[str, int] = {}
@@ -1861,6 +1862,19 @@ def run_pass(
             sender=sender,
         )
         report.message_results.append(mresult)
+
+    # Outbox-orphan sweep — late-deliver sender-side-only messages the
+    # bus never carried (hand-written outbox files, partial writes).
+    # Silent loss otherwise: no inbox copy, no wake, unresolvable by
+    # ``msg done`` (2026-07-05 20:52 incident). Guarded: the sweep
+    # already swallows per-file failures, but a wholesale failure here
+    # must not abort the GC work below or the report.
+    try:
+        report.orphan_results = _messages.sweep_outbox_orphans(
+            paths, dry_run=dry_run,
+        )
+    except Exception:
+        pass
 
     # Ephemeral agent cleanup — remove dead one-shot agent directories,
     # preserving any useful output first.
