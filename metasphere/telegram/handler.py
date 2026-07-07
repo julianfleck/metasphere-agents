@@ -15,7 +15,7 @@ from typing import Callable, Optional
 
 from ..io import atomic_write_text
 from ..paths import resolve as _resolve_paths
-from . import api, archiver, attachments, commands, inject, poller
+from . import api, archiver, attachments, commands, inject, poller, routing
 
 
 # Injectable hooks, mostly for tests. The defaults call the real
@@ -26,6 +26,8 @@ Reactor = Callable[..., object]
 TmuxSubmit = Callable[..., bool]
 ChatIdSaver = Callable[[int], None]
 PendingAckWriter = Callable[[int, int], None]
+# (chat_id, username) -> (agent_id, allowed, deny_message_or_None)
+TargetResolver = Callable[..., routing.Resolution]
 
 
 def _default_save_chat_id(chat_id: int) -> None:
@@ -109,6 +111,7 @@ def handle_update(
     tmux_submit: Optional[TmuxSubmit] = None,
     save_chat_id: Optional[ChatIdSaver] = None,
     write_pending_ack: Optional[PendingAckWriter] = None,
+    resolve_target: Optional[TargetResolver] = None,
     surface_id: str = "telegram",
     target_agent_id: str = "@orchestrator",
 ) -> None:
@@ -134,6 +137,7 @@ def handle_update(
     tmux_submit = tmux_submit or inject.submit_to_tmux
     save_chat_id = save_chat_id or _default_save_chat_id
     write_pending_ack = write_pending_ack or _default_pending_ack_writer
+    resolve_target = resolve_target or routing.resolve_target
 
     if u.kind == "reaction":
         if u.chat_id is None:
@@ -268,22 +272,60 @@ def handle_update(
         })
         return
 
-    # Addressed inbound — the orchestrator's tmux session must be
-    # alive when we inject, otherwise tmux_submit returns False and
-    # the message sits in the archive until the next heartbeat tick
-    # (the dormant-session 9-min-latency incident from 2026-04-30).
-    # Idempotent start_session is a no-op when the session already
-    # exists.
+    # Per-sender routing + access gate (telegram-access.yaml; fail-open).
+    # Resolve which agent this sender reaches. With no config every sender
+    # resolves to (@orchestrator, allowed=True) — the historical
+    # single-operator behavior. A mapped sender routes to their own agent;
+    # an unmapped sender under `enforce: true` is DENIED (deny text sent,
+    # no inject). Only applied when the caller left target_agent_id at the
+    # default so an explicit caller-pinned target is never overridden.
+    if target_agent_id == "@orchestrator":
+        try:
+            resolved_agent, allowed, deny_message = resolve_target(
+                u.chat_id, u.from_username,
+            )
+        except Exception as e:  # noqa: BLE001 — routing must never break inbound
+            attachments.debug_log({
+                "stage": "route_resolve_failed",
+                "update_id": u.update_id,
+                "error": f"{type(e).__name__}: {e}",
+            })
+            resolved_agent, allowed, deny_message = "@orchestrator", True, None
+        if not allowed:
+            attachments.debug_log({
+                "stage": "access_denied",
+                "update_id": u.update_id,
+                "chat_id": u.chat_id,
+                "from": u.from_username,
+            })
+            if deny_message:
+                try:
+                    sender(u.chat_id, deny_message, message_thread_id=u.thread_id)
+                except Exception:
+                    pass
+            return
+        target_agent_id = resolved_agent
+
+    # Addressed inbound — the target agent's tmux session must be alive
+    # when we inject, otherwise tmux_submit returns False and the message
+    # sits in the archive until the next heartbeat tick (the dormant-
+    # session 9-min-latency incident from 2026-04-30). Both paths are
+    # idempotent no-ops when the session already exists.
     try:
-        from ..gateway.session import start_session as _start_session
-        _start_session()
+        if target_agent_id == "@orchestrator":
+            from ..gateway.session import start_session as _start_session
+            _start_session()
+        else:
+            from ..agents import wake_persistent
+            wake_persistent(target_agent_id)
     except Exception as e:  # noqa: BLE001 — never break inject on session-create failure
         # Surface the failure in the debug log so the original
-        # 9-min-latency bug doesn't recur silently when start_session
-        # itself starts failing (tmux missing, disk full, etc.).
+        # 9-min-latency bug doesn't recur silently when session
+        # creation itself starts failing (tmux missing, disk full, etc.).
         attachments.debug_log({
             "stage": "session_start_failed",
             "update_id": u.update_id,
+            "target_agent": target_agent_id,
             "error": f"{type(e).__name__}: {e}",
         })
 
@@ -336,4 +378,16 @@ def handle_update(
     # True and broke the user's telegram inbound when the orchestrator
     # pane had any visible typed content (12:15/12:48/12:54 CEST went
     # to /dev/null with status=read but no user-turn).
-    tmux_submit(f"@{u.from_username or 'user'}", payload, defer_if_busy=False)
+    #
+    # session: route to the RESOLVED agent's tmux session. For
+    # @orchestrator this is DEFAULT_SESSION (byte-identical to the
+    # historical call); a per-sender-mapped agent gets its own session.
+    try:
+        from ..session import _resolve_session
+        target_session = _resolve_session(target_agent_id)
+    except Exception:
+        target_session = inject.DEFAULT_SESSION
+    tmux_submit(
+        f"@{u.from_username or 'user'}", payload,
+        session=target_session, defer_if_busy=False,
+    )
