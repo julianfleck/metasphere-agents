@@ -37,21 +37,18 @@ def parse_env_file(path: Path) -> dict[str, str]:
     return out
 
 
-#: Per-surface multi-bot config files (``telegram-cluster-2.env``,
-#: ``slack-redaktion.env``, ...) are intentionally EXCLUDED from the
+#: Per-surface multi-bot config files (``telegram-field-agent.env``,
+#: ``slack-field-agent.env``, ...) are intentionally EXCLUDED from the
 #: blanket os.environ export below. Their whole purpose (see
 #: ``gateway/daemon.py::_discover_telegram_surface_ids`` /
 #: ``_discover_slack_surface_ids``) is to stay FILE-scoped so each bot's
 #: token only reaches the adapter/CLI call that explicitly requests that
 #: surface_id. Exporting them here would flatten every bot's credential
-#: into one process-wide ``TELEGRAM_BOT_TOKEN``/``SLACK_BOT_TOKEN`` —
-#: on a shared single-install-multi-agent box (e.g. the PT deployment)
-#: the first such file alphabetically silently becomes the DEFAULT token
-#: for every agent's legacy (non-surface-aware) send call, letting one
-#: agent's messages go out through another agent's bot unnoticed
-#: (found live 2026-07-08: a redaktion courtesy-ping went out through
-#: cluster-2's bot because ``telegram-cluster-2.env`` was the only file
-#: defining ``TELEGRAM_BOT_TOKEN`` on the box).
+#: into one process-wide ``TELEGRAM_BOT_TOKEN``/``SLACK_BOT_TOKEN`` — on
+#: a shared single-install-multi-agent deployment, the first such file
+#: alphabetically silently becomes the DEFAULT token for every agent's
+#: legacy (non-surface-aware) send call, letting one agent's messages go
+#: out through another agent's bot unnoticed.
 _SURFACE_SCOPED_PREFIXES = ("telegram-", "slack-")
 
 

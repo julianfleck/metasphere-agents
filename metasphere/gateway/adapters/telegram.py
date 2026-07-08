@@ -27,11 +27,11 @@ class TelegramAdapter:
             is not re-driven.
         surface_id: unique identifier for this Telegram bot instance.
             Defaults to ``"telegram"`` (the legacy single-bot identity).
-            Additional bots (e.g. ``"telegram-cluster-2"``) pass their
+            Additional bots (e.g. ``"telegram-field-agent"``) pass their
             own id so per-bot token files + offset isolation key on it.
         target_agent_id: the agent inbound on THIS bot routes to, e.g.
-            ``"@cluster-2"``. ``None`` (the legacy default) leaves routing
-            to ``handle_update``'s own default (``@orchestrator``).
+            ``"@field-agent"``. ``None`` (the legacy default) leaves
+            routing to ``handle_update``'s own default (``@orchestrator``).
     """
 
     surface_type: str = "telegram"

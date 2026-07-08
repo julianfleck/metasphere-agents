@@ -1331,3 +1331,41 @@ def test_load_token_falls_back_to_default_when_per_surface_missing(
     tok = api._load_token(surface_id='telegram-unknown')
     assert tok == 'default-token'
 
+
+def test_load_token_per_surface_file_wins_over_global_env_var(
+    tmp_path, monkeypatch,
+):
+    """A per-agent surface's own token file is authoritative even when a
+    process-wide TELEGRAM_BOT_TOKEN is ALSO set (e.g. leaked in via the
+    config loader, or set by systemd) — otherwise every per-agent bot
+    would silently collapse onto whichever token the process inherited,
+    defeating the whole point of a dedicated surface."""
+    monkeypatch.setenv('TELEGRAM_BOT_TOKEN', 'global-env-token')
+    monkeypatch.delenv('TELEGRAM_BOT_TOKEN_REWRITE', raising=False)
+    config_dir = tmp_path / '.metasphere' / 'config'
+    config_dir.mkdir(parents=True)
+    (config_dir / 'telegram-field-agent.env').write_text(
+        'TELEGRAM_BOT_TOKEN=field-agent-own-token\n'
+    )
+    monkeypatch.setenv('HOME', str(tmp_path))
+    tok = api._load_token(surface_id='telegram-field-agent')
+    assert tok == 'field-agent-own-token'
+
+
+def test_load_token_legacy_surface_still_prefers_global_env_var(
+    tmp_path, monkeypatch,
+):
+    """The bare "telegram"/None surface keeps its pre-existing
+    precedence: the global env var wins over telegram.env, byte-
+    identical to single-bot installs before per-surface routing."""
+    monkeypatch.setenv('TELEGRAM_BOT_TOKEN', 'global-env-token')
+    monkeypatch.delenv('TELEGRAM_BOT_TOKEN_REWRITE', raising=False)
+    config_dir = tmp_path / '.metasphere' / 'config'
+    config_dir.mkdir(parents=True)
+    (config_dir / 'telegram.env').write_text(
+        'TELEGRAM_BOT_TOKEN=file-token\n'
+    )
+    monkeypatch.setenv('HOME', str(tmp_path))
+    assert api._load_token(surface_id=None) == 'global-env-token'
+    assert api._load_token(surface_id='telegram') == 'global-env-token'
+

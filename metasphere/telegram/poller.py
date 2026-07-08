@@ -237,7 +237,7 @@ def run_poll_iteration(
     """
     # Resolve the offset file. ``None`` (the default) derives it: the bare
     # "telegram" surface keeps the legacy single path; any additional bot
-    # (surface_id like "telegram-cluster-2") gets its own file so two
+    # (surface_id like "telegram-field-agent") gets its own file so two
     # pollers never clobber each other's cursor and drop updates. An
     # explicit ``offset_path`` (tests / bespoke callers) always wins.
     if offset_path is None:

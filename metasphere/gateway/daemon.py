@@ -94,9 +94,9 @@ def _discover_telegram_surface_ids(config_dir: Optional[str] = None) -> List[str
 
     Each ``~/.metasphere/config/telegram*.env`` maps to a surface_id equal
     to the filename without ``.env``: ``telegram.env`` → ``telegram``
-    (legacy single-bot default), ``telegram-cluster-2.env`` →
-    ``telegram-cluster-2``. Mirrors :func:`_discover_slack_surface_ids` so a
-    new per-agent bot needs only a config file — no code change.
+    (legacy single-bot default), ``telegram-field-agent.env`` →
+    ``telegram-field-agent``. Mirrors :func:`_discover_slack_surface_ids`
+    so a new per-agent bot needs only a config file — no code change.
 
     ``telegram-rewrite.env`` is EXCLUDED: it holds the dev/staging rewrite
     token (``TELEGRAM_BOT_TOKEN_REWRITE``), not a bot surface. Returns a
@@ -130,7 +130,7 @@ def _derive_telegram_target_agent(surface_id: str) -> str:
 
     Mirrors :func:`metasphere.gateway.adapters.slack._derive_target_agent`:
     strip the ``telegram-`` prefix; the remainder is the agent id
-    (``telegram-cluster-2`` → ``@cluster-2``). The bare legacy default
+    (``telegram-field-agent`` → ``@field-agent``). The bare legacy default
     (``telegram``) has no agent body → ``@orchestrator`` (inbound lands in
     the orchestrator REPL, matching the pre-multi-bot single-bot surface).
     """

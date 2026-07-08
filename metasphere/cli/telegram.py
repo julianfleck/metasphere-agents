@@ -152,10 +152,9 @@ def _own_telegram_surface_id(agent: str) -> str:
     identical default for single-bot installs); any other agent ->
     ``telegram-<agent>`` so it only ever sends through ITS OWN bot token,
     never falling back to a token that happens to be visible in the
-    process env. On a shared single-install-multi-agent box, hardcoding
-    ``"telegram"`` here let one agent's default send silently go out
-    through a *different* agent's bot (found live 2026-07-08: a
-    redaktion courtesy-ping went out via cluster-2's bot).
+    process env. On a shared single-install-multi-agent deployment,
+    hardcoding ``"telegram"`` here let one agent's default send silently
+    go out through a *different* agent's bot.
     """
     if agent == "@orchestrator":
         return "telegram"

@@ -380,3 +380,53 @@ def test_send_document_explicit_group_chat_id_rejected(
     assert sent == []
     err = capsys.readouterr().err
     assert "group chat id -100" in err
+
+
+# --- _own_telegram_surface_id (per-agent outbound surface derivation) -----
+
+
+def test_own_telegram_surface_id_orchestrator_uses_legacy_bare_surface():
+    """@orchestrator keeps the byte-identical legacy default surface —
+    single-bot installs must see no behavior change."""
+    assert _cli._own_telegram_surface_id("@orchestrator") == "telegram"
+
+
+def test_own_telegram_surface_id_other_agent_gets_own_surface():
+    """Any other agent sends through its own dedicated surface, never
+    falling back to the shared/default one."""
+    assert _cli._own_telegram_surface_id("@field-agent") == "telegram-field-agent"
+
+
+def test_send_uses_own_agent_surface_id(monkeypatch):
+    """`metasphere telegram send` derives surface_id from
+    METASPHERE_AGENT_ID instead of hardcoding "telegram" — the actual
+    fix for the cross-agent token leak."""
+    calls: list = []
+
+    def fake_send(chat_id, text, *args, **kwargs):
+        calls.append((chat_id, kwargs.get("surface_id")))
+        return {"ok": True, "result": {}}
+
+    monkeypatch.setattr(_cli.api, "send_with_cc", fake_send)
+    monkeypatch.setattr(_cli.archiver, "archive_outgoing", lambda *a, **k: None)
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@field-agent")
+    rc = _cli.main(["send", "--chat-id", "42", "hello"])
+    assert rc == 0
+    assert calls == [(42, "telegram-field-agent")]
+
+
+def test_send_orchestrator_uses_legacy_surface_id(monkeypatch):
+    """@orchestrator's default send stays on the bare "telegram" surface
+    — byte-identical to pre-multi-bot behavior."""
+    calls: list = []
+
+    def fake_send(chat_id, text, *args, **kwargs):
+        calls.append((chat_id, kwargs.get("surface_id")))
+        return {"ok": True, "result": {}}
+
+    monkeypatch.setattr(_cli.api, "send_with_cc", fake_send)
+    monkeypatch.setattr(_cli.archiver, "archive_outgoing", lambda *a, **k: None)
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    rc = _cli.main(["send", "--chat-id", "42", "hello"])
+    assert rc == 0
+    assert calls == [(42, "telegram")]
