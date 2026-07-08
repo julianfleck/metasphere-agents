@@ -944,7 +944,7 @@ def test_poll_once_routes_photo_through_shared_handler(tmp_path, monkeypatch):
     }
     monkeypatch.setattr(
         _tg_poller, "get_updates",
-        lambda offset=0, timeout=30: [_tg_poller.Update.from_payload(photo_update)],
+        lambda offset=0, timeout=30, surface_id=None: [_tg_poller.Update.from_payload(photo_update)],
     )
     monkeypatch.setattr(_tg_poller, "load_offset", lambda path=None: 0)
     monkeypatch.setattr(_tg_poller, "save_offset", lambda offset, path=None: None)
@@ -1019,7 +1019,7 @@ def test_poll_once_does_not_drop_photo_only_messages(tmp_path, monkeypatch):
     }
     monkeypatch.setattr(
         _tg_poller, "get_updates",
-        lambda offset=0, timeout=30: [_tg_poller.Update.from_payload(bare_photo)],
+        lambda offset=0, timeout=30, surface_id=None: [_tg_poller.Update.from_payload(bare_photo)],
     )
     monkeypatch.setattr(_tg_poller, "load_offset", lambda path=None: 0)
     monkeypatch.setattr(_tg_poller, "save_offset", lambda offset, path=None: None)
@@ -1073,7 +1073,7 @@ def test_poll_once_handler_exception_does_not_block_offset_advance(tmp_path, mon
         }),
     ]
     monkeypatch.setattr(_tg_poller, "get_updates",
-                         lambda offset=0, timeout=30: fake_updates)
+                         lambda offset=0, timeout=30, surface_id=None: fake_updates)
     monkeypatch.setattr(_tg_poller, "load_offset", lambda path=None: 0)
 
     saved_offsets: list = []
@@ -1442,6 +1442,7 @@ def test_telegram_configured_true_when_token_present(monkeypatch):
 def test_default_adapters_skips_telegram_when_unconfigured(monkeypatch):
     # Slack-only box: no telegram token, one slack surface discovered.
     monkeypatch.setattr(gw_daemon, "_telegram_configured", lambda: False)
+    monkeypatch.setattr(gw_daemon, "_discover_telegram_surface_ids", lambda: [])
     monkeypatch.setattr(gw_daemon, "_discover_slack_surface_ids", lambda: ["slack"])
     names = [type(a).__name__ for a in gw_daemon._default_adapters()]
     assert "TelegramAdapter" not in names

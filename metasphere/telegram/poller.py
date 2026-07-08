@@ -177,8 +177,14 @@ def save_offset(offset: int, path: str = DEFAULT_OFFSET_PATH) -> None:
 ALLOWED_UPDATES = ("message", "edited_message", "message_reaction")
 
 
-def get_updates(offset: int = 0, timeout: int = 30) -> List[Update]:
+def get_updates(
+    offset: int = 0, timeout: int = 30, surface_id: Optional[str] = None
+) -> List[Update]:
     """Single getUpdates call. Blocks up to ``timeout`` seconds.
+
+    ``surface_id`` selects which bot token polls (``None`` = legacy
+    default bot). Multi-bot installs MUST pass it so each bot drains its
+    own update queue instead of all pollers hitting the default token.
 
     Invariant: the long-poll ``timeout`` (seconds Telegram holds the
     connection open) MUST stay below ``api.DEFAULT_TIMEOUT`` (the HTTP
@@ -191,6 +197,7 @@ def get_updates(offset: int = 0, timeout: int = 30) -> List[Update]:
     """
     resp = api.call(
         "getUpdates",
+        surface_id=surface_id,
         offset=offset,
         timeout=timeout,
         allowed_updates=json.dumps(list(ALLOWED_UPDATES)),
@@ -201,11 +208,20 @@ def get_updates(offset: int = 0, timeout: int = 30) -> List[Update]:
 def run_poll_iteration(
     timeout: int = 1,
     *,
-    offset_path: str = DEFAULT_OFFSET_PATH,
+    offset_path: Optional[str] = None,
     on_update: Optional[callable] = None,
     on_error: Optional[callable] = None,
+    surface_id: Optional[str] = None,
+    target_agent_id: Optional[str] = None,
 ) -> int:
     """Run one poll iteration: getUpdates → dispatch each → save offset.
+
+    ``surface_id`` / ``target_agent_id`` bind this poll to a specific bot
+    and its agent (multi-bot installs). When set, the default ``on_update``
+    threads both into ``handle_update`` so inbound routes to that agent,
+    and the offset file is isolated per surface so two bots never clobber
+    each other's cursor. ``None`` for both keeps the legacy single-bot
+    behaviour byte-for-byte (surface ``telegram`` → ``@orchestrator``).
 
     Single source of truth for the Telegram poll loop. The gateway
     daemon's outer ``while True`` calls this every tick. ``on_update``
@@ -219,15 +235,32 @@ def run_poll_iteration(
         production per-update flow. Passed as default lazily (imported
         inside the function) to avoid a circular import at module load.
     """
+    # Resolve the offset file. ``None`` (the default) derives it: the bare
+    # "telegram" surface keeps the legacy single path; any additional bot
+    # (surface_id like "telegram-cluster-2") gets its own file so two
+    # pollers never clobber each other's cursor and drop updates. An
+    # explicit ``offset_path`` (tests / bespoke callers) always wins.
+    if offset_path is None:
+        offset_path = DEFAULT_OFFSET_PATH
+        if surface_id and surface_id != "telegram":
+            offset_path = f"{DEFAULT_OFFSET_PATH}-{surface_id}"
+
     if on_update is None:
         # Deferred import: handler itself imports from poller (for the
         # Update type). Importing at module top would create a cycle.
         from . import handler as _handler
-        on_update = _handler.handle_update
+
+        def on_update(u, _sid=surface_id, _tid=target_agent_id):
+            kwargs = {}
+            if _sid is not None:
+                kwargs["surface_id"] = _sid
+            if _tid is not None:
+                kwargs["target_agent_id"] = _tid
+            _handler.handle_update(u, **kwargs)
 
     offset = load_offset(offset_path)
     try:
-        updates = get_updates(offset=offset, timeout=timeout)
+        updates = get_updates(offset=offset, timeout=timeout, surface_id=surface_id)
     except api.TelegramAPIError as e:
         # Transient API failure: log, return 0, let the caller's outer
         # loop back off. Not our job to retry here.

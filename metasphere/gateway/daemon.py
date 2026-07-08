@@ -89,6 +89,61 @@ def _telegram_configured() -> bool:
         return False
 
 
+def _discover_telegram_surface_ids(config_dir: Optional[str] = None) -> List[str]:
+    """Discover Telegram surface ids from token files in the config dir.
+
+    Each ``~/.metasphere/config/telegram*.env`` maps to a surface_id equal
+    to the filename without ``.env``: ``telegram.env`` → ``telegram``
+    (legacy single-bot default), ``telegram-cluster-2.env`` →
+    ``telegram-cluster-2``. Mirrors :func:`_discover_slack_surface_ids` so a
+    new per-agent bot needs only a config file — no code change.
+
+    ``telegram-rewrite.env`` is EXCLUDED: it holds the dev/staging rewrite
+    token (``TELEGRAM_BOT_TOKEN_REWRITE``), not a bot surface. Returns a
+    sorted list; empty when no matching file exists (keeps env-var-only and
+    Slack-only installs on the legacy path). Best-effort — any IO error
+    yields ``[]`` rather than breaking daemon startup.
+    """
+    cfg = (
+        config_dir
+        if config_dir is not None
+        else os.path.expanduser("~/.metasphere/config")
+    )
+    try:
+        matches = glob.glob(os.path.join(cfg, "telegram*.env"))
+    except OSError:
+        return []
+    ids: List[str] = []
+    for path in matches:
+        name = os.path.basename(path)
+        if not name.endswith(".env"):
+            continue
+        sid = name[: -len(".env")]
+        if sid == "telegram-rewrite":
+            continue
+        ids.append(sid)
+    return sorted(ids)
+
+
+def _derive_telegram_target_agent(surface_id: str) -> str:
+    """Map a Telegram ``surface_id`` → ``@<agent>``.
+
+    Mirrors :func:`metasphere.gateway.adapters.slack._derive_target_agent`:
+    strip the ``telegram-`` prefix; the remainder is the agent id
+    (``telegram-cluster-2`` → ``@cluster-2``). The bare legacy default
+    (``telegram``) has no agent body → ``@orchestrator`` (inbound lands in
+    the orchestrator REPL, matching the pre-multi-bot single-bot surface).
+    """
+    body = surface_id
+    if body.startswith("telegram-"):
+        body = body[len("telegram-"):]
+    if body == "telegram" or not body:
+        return "@orchestrator"
+    if not body.startswith("@"):
+        body = "@" + body
+    return body
+
+
 def _default_adapters() -> List[SurfaceAdapter]:
     """Adapters wired by default when ``run_daemon`` is called without an
     explicit list.
@@ -102,7 +157,22 @@ def _default_adapters() -> List[SurfaceAdapter]:
     worker connects — so this is safe even on installs without the dep.
     """
     adapters: List[SurfaceAdapter] = []
-    if _telegram_configured():
+    tele_ids = _discover_telegram_surface_ids()
+    if tele_ids:
+        # One bot per telegram*.env → bound to its derived agent, mirroring
+        # the Slack multi-bot path. A new per-agent bot needs only a config
+        # file (telegram-<agent>.env), no code change.
+        for surface_id in tele_ids:
+            adapters.append(
+                TelegramAdapter(
+                    on_handler_error=_log_telegram_handler_error,
+                    surface_id=surface_id,
+                    target_agent_id=_derive_telegram_target_agent(surface_id),
+                )
+            )
+    elif _telegram_configured():
+        # Env-var / rewrite token with no per-surface file: legacy single
+        # bot bound to @orchestrator. Byte-for-byte the pre-multi-bot path.
         adapters.append(
             TelegramAdapter(on_handler_error=_log_telegram_handler_error)
         )
