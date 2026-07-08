@@ -102,7 +102,9 @@ def _dispatch(
             )
             return 2
         _tg_api.send_with_cc(tg_chat_id, text, surface_id=surface_id)
-        _tg_arch.archive_outgoing(sender_agent, text, tg_chat_id)
+        _tg_arch.archive_outgoing(
+            sender_agent, text, tg_chat_id, surface_id=surface_id
+        )
         print(f"Sent to {tg_chat_id} via {sender_agent} (surface={surface_id})")
         return 0
     if stype == "slack":

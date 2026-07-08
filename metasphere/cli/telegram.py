@@ -257,7 +257,9 @@ def cmd_send(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     api.send_with_cc(chat_id, text, surface_id=_own_telegram_surface_id(agent))
-    archiver.archive_outgoing(agent, text, chat_id)
+    archiver.archive_outgoing(
+        agent, text, chat_id, surface_id=_own_telegram_surface_id(agent)
+    )
     # Suppress the next Stop-hook auto-forward of the assistant text:
     # the user already got this content explicitly. Without this, every
     # turn that calls `metasphere-telegram send` produces a duplicate

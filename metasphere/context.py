@@ -13,6 +13,7 @@ import collections as _collections
 import datetime as _dt
 import hashlib
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -720,8 +721,19 @@ def _render_telegram(paths: Paths, history: int = 3) -> str:
     """
     from .telegram.archiver import telegram_context
 
+    # An agent only renders its OWN bot's conversation. Derive the owned
+    # surface the same way cli/telegram.py::_own_telegram_surface_id does:
+    # @orchestrator keeps the bare "telegram" surface (single-bot installs
+    # stay byte-identical); any other agent maps to "telegram-<agent>", so
+    # an agent that owns no telegram bot matches nothing and renders the
+    # empty state instead of another bot's chat.
+    agent = os.environ.get("METASPHERE_AGENT_ID", "@orchestrator")
+    surface_id = "telegram" if agent == "@orchestrator" else "telegram-" + agent.lstrip("@")
+
     try:
-        body = telegram_context(history=history, base_dir=str(paths.telegram))
+        body = telegram_context(
+            history=history, base_dir=str(paths.telegram), surface_id=surface_id
+        )
     except Exception:
         body = ""
     if not body.strip():

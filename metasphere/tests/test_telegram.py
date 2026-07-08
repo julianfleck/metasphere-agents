@@ -235,6 +235,47 @@ def test_archive_message_appends_jsonl(tmp_path):
     assert json.loads(lines[0])["text"] == "hi"
 
 
+def _msg(mid, text):
+    return {"message_id": mid, "text": text, "from": {"username": "u"}, "chat": {"id": 5}, "date": 0}
+
+
+def test_telegram_context_filters_by_surface(tmp_path):
+    base = str(tmp_path)
+    archiver.archive_message(_msg(1, "clustermsg"), base_dir=base, surface_id="telegram-field-agent")
+    archiver.archive_message(_msg(2, "orchmsg"), base_dir=base, surface_id="telegram")
+    own = archiver.telegram_context(base_dir=base, surface_id="telegram-field-agent")
+    assert "clustermsg" in own and "orchmsg" not in own
+    # The legacy bare "telegram" owner sees only the bare-surface row.
+    legacy = archiver.telegram_context(base_dir=base, surface_id="telegram")
+    assert "orchmsg" in legacy and "clustermsg" not in legacy
+
+
+def test_telegram_context_none_is_unfiltered(tmp_path):
+    base = str(tmp_path)
+    archiver.archive_message(_msg(1, "alphamsg"), base_dir=base, surface_id="telegram-field-agent")
+    archiver.archive_message(_msg(2, "bravomsg"), base_dir=base, surface_id="telegram")
+    body = archiver.telegram_context(base_dir=base)  # surface_id=None → back-compat
+    assert "alphamsg" in body and "bravomsg" in body
+
+
+def test_telegram_context_nonowning_surface_is_empty(tmp_path):
+    base = str(tmp_path)
+    archiver.archive_message(_msg(1, "onlycluster"), base_dir=base, surface_id="telegram-field-agent")
+    # An agent that owns no matching surface renders the empty state.
+    body = archiver.telegram_context(base_dir=base, surface_id="telegram-other")
+    assert "onlycluster" not in body and "No recent messages" in body
+
+
+def test_archive_outgoing_stamps_surface(tmp_path):
+    path = archiver.archive_outgoing(
+        "@field-agent", "reply", 5, base_dir=str(tmp_path), surface_id="telegram-field-agent"
+    )
+    with open(path) as f:
+        rec = json.loads(f.readlines()[-1])
+    assert rec["surface_id"] == "telegram-field-agent"
+    assert rec["outgoing"] is True
+
+
 def test_archive_concurrent_appends_no_corruption(tmp_path):
     """Many threads appending must not interleave bytes within a line."""
     base = str(tmp_path)
