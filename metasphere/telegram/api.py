@@ -55,26 +55,29 @@ def _read_env_file(path: str, key: str) -> Optional[str]:
 def _load_token(surface_id: Optional[str] = None) -> str:
     """Load the bot token.
 
-    Resolution order (env always wins; per-surface env file beats
-    default; rewrite token is the opt-in last-resort):
+    Resolution order:
 
-    1. ``TELEGRAM_BOT_TOKEN`` env var (the canonical bot — what the live
-       orchestrator and human channel use).
-    2. ``~/.metasphere/config/<surface_id>.env`` ``TELEGRAM_BOT_TOKEN``
-       — only consulted when ``surface_id`` is passed AND it isn't
-       the legacy ``"telegram"`` default.
+    1. ``~/.metasphere/config/<surface_id>.env`` ``TELEGRAM_BOT_TOKEN``
+       — only consulted when ``surface_id`` is passed AND it isn't the
+       legacy ``"telegram"`` default. Checked FIRST (ahead of the global
+       env var) so a per-agent bot's own token file is authoritative for
+       that agent even when a process-wide ``TELEGRAM_BOT_TOKEN`` is also
+       set — otherwise every per-agent bot would silently collapse onto
+       whichever token the process inherited, defeating the whole point
+       of a dedicated surface.
+    2. ``TELEGRAM_BOT_TOKEN`` env var (the canonical bot — what the live
+       orchestrator and human channel use; also the fallback for the
+       legacy ``"telegram"``/``None`` surface).
     3. ``~/.metasphere/config/telegram.env`` ``TELEGRAM_BOT_TOKEN``.
     4. ``TELEGRAM_BOT_TOKEN_REWRITE`` env var (explicit opt-in for a
        staging/sandbox bot during dev/testing only).
     5. ``~/.metasphere/config/telegram-rewrite.env``
        ``TELEGRAM_BOT_TOKEN_REWRITE``.
 
-    After cutover the canonical bot MUST win by default so daemons that
-    inherit a clean systemd env never accidentally talk to the dev bot.
+    After cutover the canonical bot MUST win by default (for the legacy
+    surface) so daemons that inherit a clean systemd env never
+    accidentally talk to the dev bot.
     """
-    tok = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if tok:
-        return tok
     if surface_id and surface_id != "telegram":
         tok = _read_env_file(
             os.path.expanduser(f"~/.metasphere/config/{surface_id}.env"),
@@ -82,6 +85,9 @@ def _load_token(surface_id: Optional[str] = None) -> str:
         )
         if tok:
             return tok
+    tok = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if tok:
+        return tok
     tok = _read_env_file(
         os.path.expanduser("~/.metasphere/config/telegram.env"),
         "TELEGRAM_BOT_TOKEN",

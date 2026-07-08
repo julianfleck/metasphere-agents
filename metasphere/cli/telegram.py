@@ -144,6 +144,23 @@ def _parse_send_positionals(positionals: list[str]) -> tuple[Optional[str], Opti
     return (None, positionals[0], None)
 
 
+def _own_telegram_surface_id(agent: str) -> str:
+    """Map the calling agent id to the Telegram surface it should send as.
+
+    Mirrors ``gateway.daemon._derive_telegram_target_agent`` in reverse:
+    ``@orchestrator`` -> the legacy bare ``"telegram"`` surface (byte-
+    identical default for single-bot installs); any other agent ->
+    ``telegram-<agent>`` so it only ever sends through ITS OWN bot token,
+    never falling back to a token that happens to be visible in the
+    process env. On a shared single-install-multi-agent deployment,
+    hardcoding ``"telegram"`` here let one agent's default send silently
+    go out through a *different* agent's bot.
+    """
+    if agent == "@orchestrator":
+        return "telegram"
+    return f"telegram-{agent.lstrip('@')}"
+
+
 def cmd_send(args: argparse.Namespace) -> int:
     from metasphere.cli._body import resolve_body
 
@@ -239,8 +256,10 @@ def cmd_send(args: argparse.Namespace) -> int:
             "CLI; prefer `metasphere message send` for new code.",
             file=sys.stderr,
         )
-    api.send_with_cc(chat_id, text, surface_id="telegram")
-    archiver.archive_outgoing(agent, text, chat_id)
+    api.send_with_cc(chat_id, text, surface_id=_own_telegram_surface_id(agent))
+    archiver.archive_outgoing(
+        agent, text, chat_id, surface_id=_own_telegram_surface_id(agent)
+    )
     # Suppress the next Stop-hook auto-forward of the assistant text:
     # the user already got this content explicitly. Without this, every
     # turn that calls `metasphere-telegram send` produces a duplicate
@@ -292,7 +311,10 @@ def cmd_send_document(args: argparse.Namespace) -> int:
     caption = args.caption
     if agent != "@orchestrator" and caption:
         caption = f"[{agent.lstrip('@')}] {caption}"
-    resp = api.send_with_cc(chat_id, document_path=args.path, caption=caption, filename=args.filename)
+    resp = api.send_with_cc(
+        chat_id, document_path=args.path, caption=caption, filename=args.filename,
+        surface_id=_own_telegram_surface_id(agent),
+    )
     # Same dedupe-marker treatment as text sends — the user already got the
     # file, so the Stop hook should not also forward the assistant text.
     if agent == "@orchestrator":

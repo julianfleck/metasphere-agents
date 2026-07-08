@@ -235,6 +235,47 @@ def test_archive_message_appends_jsonl(tmp_path):
     assert json.loads(lines[0])["text"] == "hi"
 
 
+def _msg(mid, text):
+    return {"message_id": mid, "text": text, "from": {"username": "u"}, "chat": {"id": 5}, "date": 0}
+
+
+def test_telegram_context_filters_by_surface(tmp_path):
+    base = str(tmp_path)
+    archiver.archive_message(_msg(1, "clustermsg"), base_dir=base, surface_id="telegram-field-agent")
+    archiver.archive_message(_msg(2, "orchmsg"), base_dir=base, surface_id="telegram")
+    own = archiver.telegram_context(base_dir=base, surface_id="telegram-field-agent")
+    assert "clustermsg" in own and "orchmsg" not in own
+    # The legacy bare "telegram" owner sees only the bare-surface row.
+    legacy = archiver.telegram_context(base_dir=base, surface_id="telegram")
+    assert "orchmsg" in legacy and "clustermsg" not in legacy
+
+
+def test_telegram_context_none_is_unfiltered(tmp_path):
+    base = str(tmp_path)
+    archiver.archive_message(_msg(1, "alphamsg"), base_dir=base, surface_id="telegram-field-agent")
+    archiver.archive_message(_msg(2, "bravomsg"), base_dir=base, surface_id="telegram")
+    body = archiver.telegram_context(base_dir=base)  # surface_id=None → back-compat
+    assert "alphamsg" in body and "bravomsg" in body
+
+
+def test_telegram_context_nonowning_surface_is_empty(tmp_path):
+    base = str(tmp_path)
+    archiver.archive_message(_msg(1, "onlycluster"), base_dir=base, surface_id="telegram-field-agent")
+    # An agent that owns no matching surface renders the empty state.
+    body = archiver.telegram_context(base_dir=base, surface_id="telegram-other")
+    assert "onlycluster" not in body and "No recent messages" in body
+
+
+def test_archive_outgoing_stamps_surface(tmp_path):
+    path = archiver.archive_outgoing(
+        "@field-agent", "reply", 5, base_dir=str(tmp_path), surface_id="telegram-field-agent"
+    )
+    with open(path) as f:
+        rec = json.loads(f.readlines()[-1])
+    assert rec["surface_id"] == "telegram-field-agent"
+    assert rec["outgoing"] is True
+
+
 def test_archive_concurrent_appends_no_corruption(tmp_path):
     """Many threads appending must not interleave bytes within a line."""
     base = str(tmp_path)
@@ -1330,4 +1371,42 @@ def test_load_token_falls_back_to_default_when_per_surface_missing(
     monkeypatch.setenv('HOME', str(tmp_path))
     tok = api._load_token(surface_id='telegram-unknown')
     assert tok == 'default-token'
+
+
+def test_load_token_per_surface_file_wins_over_global_env_var(
+    tmp_path, monkeypatch,
+):
+    """A per-agent surface's own token file is authoritative even when a
+    process-wide TELEGRAM_BOT_TOKEN is ALSO set (e.g. leaked in via the
+    config loader, or set by systemd) — otherwise every per-agent bot
+    would silently collapse onto whichever token the process inherited,
+    defeating the whole point of a dedicated surface."""
+    monkeypatch.setenv('TELEGRAM_BOT_TOKEN', 'global-env-token')
+    monkeypatch.delenv('TELEGRAM_BOT_TOKEN_REWRITE', raising=False)
+    config_dir = tmp_path / '.metasphere' / 'config'
+    config_dir.mkdir(parents=True)
+    (config_dir / 'telegram-field-agent.env').write_text(
+        'TELEGRAM_BOT_TOKEN=field-agent-own-token\n'
+    )
+    monkeypatch.setenv('HOME', str(tmp_path))
+    tok = api._load_token(surface_id='telegram-field-agent')
+    assert tok == 'field-agent-own-token'
+
+
+def test_load_token_legacy_surface_still_prefers_global_env_var(
+    tmp_path, monkeypatch,
+):
+    """The bare "telegram"/None surface keeps its pre-existing
+    precedence: the global env var wins over telegram.env, byte-
+    identical to single-bot installs before per-surface routing."""
+    monkeypatch.setenv('TELEGRAM_BOT_TOKEN', 'global-env-token')
+    monkeypatch.delenv('TELEGRAM_BOT_TOKEN_REWRITE', raising=False)
+    config_dir = tmp_path / '.metasphere' / 'config'
+    config_dir.mkdir(parents=True)
+    (config_dir / 'telegram.env').write_text(
+        'TELEGRAM_BOT_TOKEN=file-token\n'
+    )
+    monkeypatch.setenv('HOME', str(tmp_path))
+    assert api._load_token(surface_id=None) == 'global-env-token'
+    assert api._load_token(surface_id='telegram') == 'global-env-token'
 

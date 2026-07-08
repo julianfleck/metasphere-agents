@@ -109,3 +109,62 @@ def test_load_env_to_environ_idempotent(tmp_paths, monkeypatch):
     assert n1 >= 1
     assert n2 == 0  # already in os.environ -> setdefault noops
     assert os.environ.get("IDEMPOTENT_KEY") == "v1"
+
+
+def test_load_env_to_environ_excludes_per_surface_telegram_files(tmp_paths, monkeypatch):
+    """A per-agent ``telegram-<agent>.env`` must NOT leak its
+    ``TELEGRAM_BOT_TOKEN`` into the shared process env — otherwise every
+    other agent's default (non-surface-aware) send silently collapses
+    onto that bot, cross-agent."""
+    cfg_dir = tmp_paths.config
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "telegram-field-agent.env").write_text(
+        "TELEGRAM_BOT_TOKEN=field-agent-token\n"
+    )
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+    load_env_to_environ(tmp_paths)
+
+    assert "TELEGRAM_BOT_TOKEN" not in os.environ
+
+
+def test_load_env_to_environ_excludes_per_surface_slack_files(tmp_paths, monkeypatch):
+    """Same exclusion for per-agent Slack bot config files."""
+    cfg_dir = tmp_paths.config
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "slack-field-agent.env").write_text(
+        "SLACK_BOT_TOKEN=field-agent-slack-token\n"
+    )
+    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+
+    load_env_to_environ(tmp_paths)
+
+    assert "SLACK_BOT_TOKEN" not in os.environ
+
+
+def test_load_env_to_environ_still_exports_telegram_rewrite(tmp_paths, monkeypatch):
+    """``telegram-rewrite.env`` is a legacy global fallback, not a
+    per-agent bot surface — it must still be exported process-wide."""
+    cfg_dir = tmp_paths.config
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "telegram-rewrite.env").write_text(
+        "TELEGRAM_BOT_TOKEN_REWRITE=rewrite-token\n"
+    )
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN_REWRITE", raising=False)
+
+    load_env_to_environ(tmp_paths)
+
+    assert os.environ.get("TELEGRAM_BOT_TOKEN_REWRITE") == "rewrite-token"
+
+
+def test_load_env_to_environ_still_exports_bare_telegram_env(tmp_paths, monkeypatch):
+    """The legacy single-bot ``telegram.env`` (no surface suffix) keeps
+    exporting normally — only per-surface files are scoped out."""
+    cfg_dir = tmp_paths.config
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "telegram.env").write_text("TELEGRAM_BOT_TOKEN=legacy-token\n")
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+    load_env_to_environ(tmp_paths)
+
+    assert os.environ.get("TELEGRAM_BOT_TOKEN") == "legacy-token"

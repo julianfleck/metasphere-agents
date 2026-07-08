@@ -164,12 +164,24 @@ def save_latest(message: dict, base_dir: str = DEFAULT_DIR) -> str:
     return path
 
 
-def telegram_context(history: int = 3, base_dir: str = DEFAULT_DIR) -> str:
+def telegram_context(
+    history: int = 3,
+    base_dir: str = DEFAULT_DIR,
+    surface_id: Optional[str] = None,
+) -> str:
     """Return the last *history* telegram messages formatted as context text.
 
     Reads today's (and optionally yesterday's) stream archive JSONL files
     and formats them the same way the bash ``metasphere-telegram-stream
     context --history N`` command does.
+
+    When ``surface_id`` is not ``None``, only records belonging to that
+    surface are kept: a record with a missing/empty ``surface_id`` means
+    the legacy bare ``"telegram"`` surface (single-bot installs and rows
+    written before per-bot stamping), so the match is
+    ``(o.get("surface_id") or "telegram") == surface_id``. The default
+    ``surface_id=None`` preserves the original behavior exactly (no
+    filtering) so existing callers are unchanged.
 
     Returns a section header + formatted messages, or a
     ``(no recent messages)`` fallback.
@@ -201,12 +213,23 @@ def telegram_context(history: int = 3, base_dir: str = DEFAULT_DIR) -> str:
                 continue
         return objs
 
-    # Collect messages: today first, backfill from yesterday if needed
-    today_msgs = _read_jsonl(today_file)
+    def _matches_surface(o: dict) -> bool:
+        # A missing/empty surface_id means the legacy bare "telegram"
+        # surface (pre-stamping rows / single-bot installs).
+        if surface_id is None:
+            return True
+        return (o.get("surface_id") or "telegram") == surface_id
+
+    # Collect messages: today first, backfill from yesterday if needed.
+    # Filter to the requested surface BEFORE the history slice so an agent
+    # only ever sees its own bot's conversation.
+    today_msgs = [o for o in _read_jsonl(today_file) if _matches_surface(o)]
     msgs = today_msgs[-history:]
     if len(msgs) < history:
         need = history - len(msgs)
-        yesterday_msgs = _read_jsonl(yesterday_file)
+        yesterday_msgs = [
+            o for o in _read_jsonl(yesterday_file) if _matches_surface(o)
+        ]
         msgs = yesterday_msgs[-need:] + msgs
 
     if not msgs:
@@ -216,6 +239,11 @@ def telegram_context(history: int = 3, base_dir: str = DEFAULT_DIR) -> str:
             try:
                 with open(latest_path, "r", encoding="utf-8") as f:
                     latest = json.load(f)
+                # latest.json is a single most-recent record; if it belongs
+                # to a different surface it must not leak into this agent's
+                # context, so fall through to the no-messages state.
+                if not _matches_surface(latest):
+                    return "## Telegram: No recent messages\n"
                 frm = latest.get("from") or "unknown"
                 text = latest.get("text") or ""
                 ts = latest.get("timestamp") or ""
@@ -291,9 +319,18 @@ def telegram_context(history: int = 3, base_dir: str = DEFAULT_DIR) -> str:
 
 
 def archive_outgoing(
-    agent: str, text: str, chat_id: int, base_dir: str = DEFAULT_DIR
+    agent: str,
+    text: str,
+    chat_id: int,
+    base_dir: str = DEFAULT_DIR,
+    surface_id: str = "telegram",
 ) -> str:
-    """Record an outgoing message in the same JSONL stream."""
+    """Record an outgoing message in the same JSONL stream.
+
+    ``surface_id`` stamps the record with the bot the reply went out
+    through so it is scoped to the sending agent's conversation. The
+    default ``"telegram"`` keeps single-bot installs identical.
+    """
     payload = {
         "from": {"username": agent.lstrip("@")},
         "text": text,
@@ -301,4 +338,4 @@ def archive_outgoing(
         "date": int(_dt.datetime.now(_dt.timezone.utc).timestamp()),
         "outgoing": True,
     }
-    return archive_message(payload, base_dir=base_dir)
+    return archive_message(payload, base_dir=base_dir, surface_id=surface_id)
