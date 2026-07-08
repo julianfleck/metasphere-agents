@@ -1,35 +1,46 @@
 # Metasphere
 
-You operate inside metasphere — a multi-agent harness on Claude
-Code. You are the orchestrator agent: the persistent root agent of
-this install, the human operator's primary interface. You run in
-a tmux REPL at the metasphere root scope. They reach you over
-Telegram. You handle their requests through delegation: you
-decompose the request, write the contract, brief a child agent,
-and verify their attestation on `!done`. You coordinate; you don't
-implement. All state lives under `~/.metasphere/`.
+This is the shared operating manual for every agent in this
+metasphere install — a multi-agent harness on Claude Code. It
+covers what's common to all of you: how messaging, tasks,
+delegation, projects, and teams work, and the `metasphere` CLI
+that drives them. All state lives under `~/.metasphere/`.
 
-How the user reaches you: the gateway daemon (a systemd user
-service) polls Telegram for their messages and pipes them into
-your REPL. Your turn-end output is relayed back to them via
-Telegram by the per-turn Stop hook (with quiet-tick suppression
-when nothing's worth saying). If they want raw REPL output they
-can `tmux attach -t metasphere-orchestrator`; that's the back
-door, not the default path. Telegram is the user's channel, and
-yours to the user.
+**Your specific role is not in this file.** Who you are, the scope
+you run at, the surface you speak on, and your runtime rules —
+heartbeat etiquette, response style, completion protocol, memory
+hygiene — live in your own identity files under
+`~/.metasphere/agents/$METASPHERE_AGENT_ID/` (SOUL, USER, MISSION,
+AGENTS), read at session start alongside this file. When this
+manual and your identity files both speak to something, your
+identity files win: they are role-specific, this is the baseline.
 
-This file is your system overview: how delegation works, how
-projects and teams compose, what's installed, where things live.
-Your runtime rules — heartbeat etiquette, response style,
-multi-agent discipline, completion protocol, memory hygiene — live
-in `~/.metasphere/agents/$METASPHERE_AGENT_ID/AGENTS.md`, read at
-session start alongside this file.
+## How agents and humans connect
+
+The gateway daemon (a systemd user service) is the bridge between
+outside surfaces (Telegram, Slack) and agent REPLs. It polls each
+configured surface, routes an inbound message to the agent that
+*owns* that surface, and pipes it into that agent's tmux REPL. Each
+agent's turn-end output is relayed back out to its surface by the
+per-turn Stop hook (with quiet-tick suppression when there's
+nothing worth sending). A human can always
+`tmux attach -t metasphere-<agent>` to watch a REPL directly —
+that's the back door, not the default path.
+
+**Surfaces are owned, not shared.** You only speak on the
+surface(s) configured for your agent. If a conversation shows up in
+your context that belongs to another agent's surface, it is not
+yours to answer — leave it. Agent-to-agent coordination never goes
+over a human surface; it uses the message system below.
 
 ## Delegation
 
-State-writing work — code edits, tests, commits, migrations,
-deploys, anything that runs longer than ~30s — goes to a child
-agent, not your turn. Two flavors:
+Coordinating agents (the orchestrator, project leads) push
+state-writing work — code edits, tests, commits, migrations,
+deploys, anything that runs longer than ~30s — to a child agent
+rather than doing it in their own turn. Whether that discipline
+applies to you is set by your role's `AGENTS.md`; an implementing
+agent does the work directly. When you *do* delegate, two flavors:
 
 - **Ephemeral** (`metasphere agent spawn @name /scope/ "task"`):
   one well-scoped task, agent exits on `!done`. Use for mechanical
@@ -59,9 +70,9 @@ with attestation (commit SHAs, test pass counts, file paths, IDs).
 Re-run the Accountability check before forwarding `!done` upstream
 or closing the loop. Don't act as an unthinking router.
 
-Coordination uses the metasphere session and message system — NOT
-Telegram. Telegram is your channel to the user; agents talk to
-each other via `metasphere msg send` (file-based, under
+Coordination uses the metasphere message system — NOT a human
+surface. Telegram and Slack are for talking to humans; agents talk
+to each other via `metasphere msg send` (file-based, under
 `.messages/inbox/` and `.messages/outbox/` per scope). Each agent
 runs in its own tmux session.
 
@@ -264,7 +275,7 @@ metasphere session restart            # Restart orchestrator REPL
 
 ```
 ~/.metasphere/
-├── CLAUDE.md                # This file (your system overview)
+├── CLAUDE.md                # This file (shared operating manual)
 ├── ADDRESSBOOK.yaml         # Named contacts for `telegram send "@<name>"`
 ├── .claude/                 # Claude-Code settings (hooks, permissions)
 ├── agents/                  # One subdir per agent
