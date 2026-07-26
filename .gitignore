@@ -42,3 +42,12 @@ __pycache__/
 metasphere.egg-info/
 *.lock
 /home/
+
+# Junk stray: a 0-byte "-l" file recurs in the repo root from an occasional
+# misparsed `-l` flag in a command run with this cwd. It's always empty junk,
+# but as an untracked file it makes the working tree "dirty", which causes the
+# daily auto-update (`metasphere update`) to fail-safe-refuse the git pull.
+# Ignoring it keeps the tree clean so auto-update proceeds. Only the exact
+# root-level `-l` name — never touch download.* (their git-status visibility
+# is a deliberate leak tripwire).
+/-l
