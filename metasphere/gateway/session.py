@@ -9,6 +9,7 @@ the bare name. Preserved for compatibility.)
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import subprocess
 import time
@@ -83,7 +84,18 @@ def _respawn_cmd(
         # collect it on its session_activity timer.
         return (
             "exec bash -c '"
-            'export METASPHERE_PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$METASPHERE_PROJECT_ROOT")"; '
+            # PREFER an already-exported METASPHERE_PROJECT_ROOT (both managed
+            # launch paths set the correct repo root just before invoking this
+            # command — see create-session in this module and env_export in
+            # metasphere/agents.py). Only fall back to a cwd-keyed git shell-out
+            # when nothing set it (non-managed use). The old form
+            # ``$(git ... || echo "$VAR")`` ran git FIRST on the pane's cwd and
+            # CLOBBERED the correct value with a cwd-derived one — on a tick
+            # whose cwd was $HOME (a git repo) that resolved to the truncated
+            # ``-home-<user>`` project slug, flickering everything keyed on
+            # project_root (memory-folder affordance, scope labels, auto-memory
+            # dir, project capsules). Preferring the env makes it cwd-independent.
+            'export METASPHERE_PROJECT_ROOT="${METASPHERE_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null)}"; '
             # Mark this as a gateway-spawned (non-interactive) session so the
             # PreToolUse hook can deny interactive prompts that would hang the
             # pane (AskUserQuestion / ExitPlanMode — see metasphere/cli/pretool.py).
@@ -101,9 +113,14 @@ def _respawn_cmd(
         'STATE_DIR="$HOME/.metasphere/state"; '
         "mkdir -p \"$STATE_DIR\"; "
         "while true; do "
-        # Refresh METASPHERE_PROJECT_ROOT from git on each restart so
-        # stale env vars from a previous session don't persist.
-        'export METASPHERE_PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$METASPHERE_PROJECT_ROOT")"; '
+        # PREFER an already-exported METASPHERE_PROJECT_ROOT (create-session
+        # exports the correct repo root just before sending this loop; agents.py
+        # env_export does the same for other managed agents). Only git-shell-out
+        # when nothing set it. The old ``$(git ... || echo "$VAR")`` ran git
+        # FIRST on the pane's cwd and clobbered the correct value with a
+        # cwd-derived one — on a tick whose cwd was $HOME it produced the
+        # truncated project slug, flickering everything keyed on project_root.
+        'export METASPHERE_PROJECT_ROOT="${METASPHERE_PROJECT_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null)}"; '
         # Disable the Claude TUI feedback modal for metasphere-spawned
         # agent REPLs. The modal captures input when visible — wakes /
         # scheduled tasks bounce off its button layout instead of
@@ -240,10 +257,13 @@ def start_session(paths: Paths | None = None) -> bool:
         return False
     _tmux("set-option", "-t", SESSION_NAME, "mouse", "on")
     _tmux("set-option", "-t", SESSION_NAME, "history-limit", "100000")
-    # Set METASPHERE_PROJECT_ROOT explicitly so it matches the repo we're in,
-    # regardless of what the parent process had in its env.
+    # Export the resolved repo ROOT explicitly (not scope_str, which is the
+    # pane cwd and may be a scope subdir). The respawn loop now PREFERS this
+    # value over a cwd-keyed git shell-out, so it must be the authoritative
+    # project_root — otherwise everything keyed on project_root inherits the
+    # wrong dir. shlex-quoted so a path with spaces can't split the command.
     _tmux("send-keys", "-t", SESSION_NAME,
-          f"export METASPHERE_PROJECT_ROOT={scope_str}", "Enter")
+          f"export METASPHERE_PROJECT_ROOT={shlex.quote(str(paths.project_root))}", "Enter")
     _tmux("send-keys", "-t", SESSION_NAME, _RESPAWN_CMD, "Enter")
 
     # Write restart marker so watchdog injects a wake-up prompt into the
