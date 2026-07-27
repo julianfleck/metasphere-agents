@@ -742,26 +742,68 @@ def _render_telegram(paths: Paths, history: int = 3) -> str:
     return data.decode("utf-8", errors="ignore").rstrip() + "\n"
 
 
+# Most-recent unread inbound messages to render in full. The section used to
+# dump EVERY unread message with no cap: an agent that dispatches a lot (the
+# orchestrator has ~2,300 unread, almost all its own outbound !task records
+# that never leave UNREAD) rendered a ~340KB wall that the outer delta cap
+# then hard-chopped mid-entry. Cap + newest-first ordering keeps the section
+# bounded and ensures truncation can only ever drop the OLDEST, not the fresh.
+_MESSAGES_RENDER_CAP = 15
+
+
 def _render_messages(paths: Paths) -> str:
     msgs = _msgs.collect_inbox(paths.scope, paths.project_root, view=True)
-    unread = sum(1 for m in msgs if m.status == _msgs.STATUS_UNREAD)
+    unread_msgs = [m for m in msgs if m.status == _msgs.STATUS_UNREAD]
+    unread = len(unread_msgs)
     total = len(msgs)
     if total == 0:
         return "## Messages: No messages in scope\n"
+
+    # Separate the agent's OWN outbound dispatch records from real inbound.
+    # A dispatched !task to a sub-agent lands UNREAD in a visible bucket and
+    # never transitions — it is a send record, not an inbound ask. Rendering
+    # them presents the agent's own dispatches as if they were actionable.
+    # Fail-open: if the agent id can't be resolved, treat none as self so we
+    # degrade to "show recent unread" rather than hiding everything.
+    try:
+        me = resolve_agent_id(paths)
+    except Exception:
+        me = ""
+    inbound = [m for m in unread_msgs if not (me and m.from_ == me)]
+    self_outbound = unread - len(inbound)
+
+    # Newest-first by created (ISO strings sort lexically); id breaks ties for
+    # determinism. A missing/empty created (older schema) sorts to the bottom
+    # and is treated as oldest — fine, such records are effectively the oldest
+    # and stay counted in the header. Cap the render so it can't balloon.
+    inbound.sort(key=lambda m: (m.created, m.id), reverse=True)
+    shown = inbound[:_MESSAGES_RENDER_CAP]
+
     out = [
         f"## Messages ({unread} unread, {total} total)",
         f"## Scope: {rel_path(paths.scope, paths.project_root)}",
         "",
     ]
-    for m in msgs:
-        if m.status != _msgs.STATUS_UNREAD:
-            continue
+    for m in shown:
         icon = _STATUS_ICON.get(m.status, "?")
         reply = f" ↩ reply to {m.reply_to}" if m.reply_to else ""
         body_preview = " ".join(m.body.split())[:60]
         out.append(f"{icon} {m.label} from {m.from_} [{m.id}]{reply}")
         out.append(f"  {m.scope} | {m.created}")
         out.append(f"  {body_preview}")
+        out.append("")
+
+    # Fold-away counts: older inbound past the cap, plus the agent's own
+    # outbound dispatch records (not actionable inbound). Header count stays
+    # accurate over ALL unread; these reconcile unread = shown + older + self.
+    older = len(inbound) - len(shown)
+    tail_bits: list[str] = []
+    if older > 0:
+        tail_bits.append(f"+{older} older unread")
+    if self_outbound > 0:
+        tail_bits.append(f"{self_outbound} own outbound dispatch(es) hidden")
+    if tail_bits:
+        out.append("… " + ", ".join(tail_bits))
         out.append("")
     return "\n".join(out) + "\n"
 
