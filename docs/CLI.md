@@ -346,12 +346,14 @@ Usage: metasphere consolidate <command> [args...]
 
 Commands:
   run [--dry-run] [--since <window>] [--stale-window <minutes>]
-      [--info-archive-after <minutes>]
+      [--info-archive-after <minutes>] [--pinned-drain-ttl-days <days>]
                           Walk every active task under the project
                           root and classify each into ACTIVE / STALE /
                           BLOCKED / UNOWNED / DONE. Issue the matching
                           action (ping, escalate, archive) unless
-                          --dry-run is set.
+                          --dry-run is set. Also drains pinned
+                          !task/!query messages aged past the TTL
+                          (soft-archive; --dry-run to preview the count).
   --register-job          Register the cron job for this consolidator.
   --unregister-job        Remove the cron job.
   --status                Print whether the cron job is registered and
@@ -361,6 +363,8 @@ Defaults:
   --since                 Recent-window for stale detection.
   --stale-window          Minutes a task can sit idle before STALE
                           fires.
+  --pinned-drain-ttl-days Days a pinned !task/!query can sit before the
+                          lifecycle drain soft-archives it (default 14).
 ```
 
 ### `metasphere heartbeat`
