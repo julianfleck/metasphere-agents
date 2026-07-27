@@ -342,6 +342,114 @@ def test_render_memory_fts_empty_prompt_preserves_ambient_query(
     assert seen["query"]  # non-empty (falls back to stem, never blank)
 
 
+# --- Memory FTS: fresh-signal de-noising (2026-07-27) ----------------------
+
+
+def _seed_events(paths: Paths, events: list[tuple[str, str]]) -> None:
+    """Append (type, message) events in order (oldest first)."""
+    from metasphere import events as _events
+
+    for etype, msg in events:
+        _events.log_event(etype, msg, agent="@orchestrator", paths=paths)
+
+
+def test_fresh_activity_signal_excludes_low_entropy_ticks(tmp_paths: Paths):
+    """The fresh signal must skip tick machinery (cron_fire, heartbeat.invoke,
+    agent.heartbeat, message.consolidate) so recall tracks real activity, not
+    the near-constant tick that pinned the same memos every heartbeat."""
+    _seed_events(tmp_paths, [
+        ("message.send", "@orchestrator -> @agent-b: review the audit report"),
+        ("schedule.cron_fire", "task:consolidate"),
+        ("agent.heartbeat", "@orchestrator turn 33820"),
+        ("heartbeat.invoke", "injected heartbeat into metasphere-orchestrator"),
+        ("schedule.cron_fire", "task:consolidate"),
+    ])
+
+    signal = ctx._fresh_activity_signal(tmp_paths)
+
+    # The one substantive event survives...
+    assert "audit report" in signal
+    # ...and none of the tick tokens leak into the signal.
+    assert "consolidate" not in signal
+    assert "heartbeat" not in signal
+    assert "turn 33820" not in signal
+
+
+def test_fresh_activity_signal_failopen_on_no_events(tmp_paths: Paths):
+    """No events (or only ticks) yields ``''`` — never raises, so a degenerate
+    fresh signal can't crash context assembly (fail-open at the call site)."""
+    assert ctx._fresh_activity_signal(tmp_paths) == ""
+    _seed_events(tmp_paths, [
+        ("schedule.cron_fire", "task:consolidate"),
+        ("heartbeat.invoke", "injected heartbeat into metasphere-orchestrator"),
+    ])
+    # Only ticks present -> nothing substantive survives -> empty, no crash.
+    assert ctx._fresh_activity_signal(tmp_paths) == ""
+
+
+def test_heartbeat_query_not_pinned_by_consolidate_tick(
+    tmp_paths: Paths, monkeypatch
+):
+    """Regression for the operator-flagged fixation: across successive
+    heartbeat turns where only tick events fire, the recall query must not be
+    dominated by the "consolidate" tick token (which self-reinforced by
+    matching the consolidation-themed memos). The query should carry the last
+    real activity and never the tick machinery."""
+    seen: list[str] = []
+
+    def _capture(query, limit=10, strategies=None):
+        seen.append(query)
+        return []
+
+    monkeypatch.setattr("metasphere.memory.api.recall", _capture)
+
+    # Real activity, then a burst of ticks ending on the consolidate cron —
+    # so the *newest* event (what the reverted single-latest logic would grab)
+    # is "task:consolidate". This makes the assertion below a true revert guard:
+    # under the old code the query WOULD contain "consolidate".
+    _seed_events(tmp_paths, [
+        ("message.send", "@orchestrator -> @agent-b: ship the config fix"),
+        ("agent.heartbeat", "@orchestrator turn 41001"),
+        ("schedule.cron_fire", "task:consolidate"),
+    ])
+    ctx._render_memory_fts(tmp_paths, "@orchestrator")
+
+    # More ticks land before the next heartbeat, again ending on the tick.
+    _seed_events(tmp_paths, [
+        ("agent.heartbeat", "@orchestrator turn 41002"),
+        ("heartbeat.invoke", "injected heartbeat into metasphere-orchestrator"),
+        ("schedule.cron_fire", "task:consolidate"),
+    ])
+    ctx._render_memory_fts(tmp_paths, "@orchestrator")
+
+    assert len(seen) == 2
+    for q in seen:
+        # The tick token that pinned the memos must never dominate the query.
+        assert "consolidate" not in q
+        # Real recent activity is what the query reflects instead.
+        assert "config fix" in q
+
+
+def test_no_hits_affordance_anchored_to_project_root_not_pwd(
+    tmp_paths: Paths, monkeypatch
+):
+    """The 'No memories matched' affordance must name the agent's real memory
+    folder — derived from project_root, not the process PWD. Regression for the
+    live-observed truncated path '.../-home-u/memory' produced when the
+    REPL's cwd on a heartbeat turn was $HOME rather than the project dir."""
+    # Force the no-hits branch: recall returns nothing.
+    monkeypatch.setattr("metasphere.memory.api.recall", lambda *a, **k: [])
+    # A bogus/truncating PWD must NOT influence the rendered folder.
+    monkeypatch.setenv("PWD", "/home/u")
+
+    out = ctx._render_memory_fts(tmp_paths, "@orchestrator")
+
+    expected = str(ctx._auto_memory_dir_for_path(str(tmp_paths.project_root)))
+    assert expected in out
+    # The PWD-derived truncated slug must never appear.
+    assert "/-home-u/memory" not in out
+
+
 # --- Last-edited files section (2026-04-17) ---------------------------------
 
 
