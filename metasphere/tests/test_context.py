@@ -195,6 +195,90 @@ def test_build_context_empty_state_does_not_crash(tmp_paths: Paths):
     assert "## Memory Context (FTS)" in out
 
 
+# --- Messages section: cap + newest-first + self-outbound (2026-07-27) ------
+
+
+def _seed_msg(inbox: Path, mid: str, frm: str, created: str,
+              label: str = "!task", body: str = "do the thing") -> None:
+    """Write a minimal unread .msg file into an inbox dir. Uses a sacred
+    label (!task) by default so ``view=True`` collection keeps it UNREAD."""
+    inbox.mkdir(parents=True, exist_ok=True)
+    (inbox / f"{mid}.msg").write_text(
+        "---\n"
+        f"id: {mid}\n"
+        f'from: "{frm}"\n'
+        'to: "@me"\n'
+        f'label: "{label}"\n'
+        "status: unread\n"
+        "scope: /\n"
+        f"created: {created}\n"
+        "read_at: \n"
+        "reply_to: \n"
+        "ping_count: 0\n"
+        "---\n"
+        f"{body}\n",
+        encoding="utf-8",
+    )
+
+
+def test_render_messages_capped_newest_first_excludes_self_outbound(
+    tmp_paths: Paths, monkeypatch
+):
+    """Regression for the ~340KB unread dump: the section must be bounded to
+    the most-recent N inbound unread (newest-first so truncation can only drop
+    the oldest), must NOT render the agent's own outbound dispatch records, and
+    must keep an accurate header count with a fold-away tail."""
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@me")
+    inbox = tmp_paths.root / "messages" / "inbox"
+
+    # 20 inbound !task from another agent, ascending created (i=19 newest).
+    for i in range(20):
+        _seed_msg(inbox, f"msg-100000{i:02d}-1", "@other",
+                  f"2026-07-27T10:00:{i:02d}Z", body=f"inbound {i}")
+    # 10 of the agent's OWN outbound dispatches — even NEWER (seconds 30-39),
+    # to prove they're excluded by SENDER, not merely by recency.
+    for j in range(10):
+        _seed_msg(inbox, f"msg-200000{j:02d}-1", "@me",
+                  f"2026-07-27T10:00:{30 + j:02d}Z", body=f"dispatch {j}")
+
+    out = ctx._render_messages(tmp_paths)
+
+    # Bounded: exactly the cap number of inbound entries rendered.
+    assert out.count("from @other") == ctx._MESSAGES_RENDER_CAP
+    # Self-outbound never rendered, despite being the newest messages.
+    assert "from @me" not in out
+    # Newest-first: the newest inbound (i=19) is shown; the oldest (i=0) is
+    # dropped by the cap — truncation kept the fresh, not the stale.
+    assert "msg-10000019-1" in out
+    assert "inbound 0" not in out
+    # Header counts ALL unread (20 inbound + 10 self = 30); does not render 30.
+    assert "30 unread" in out
+    # Fold-away tail reconciles: 20 - 15 = 5 older, 10 own outbound hidden.
+    assert "+5 older unread" in out
+    assert "10 own outbound dispatch(es) hidden" in out
+    # The whole section stays small (no 340KB wall).
+    assert len(out) < 4000
+
+
+def test_render_messages_failopen_when_agent_unresolved(
+    tmp_paths: Paths, monkeypatch
+):
+    """If the agent id can't be resolved, the section degrades to 'show recent
+    unread' (nothing treated as self) rather than hiding everything or raising."""
+    monkeypatch.setattr(
+        "metasphere.context.resolve_agent_id",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    inbox = tmp_paths.root / "messages" / "inbox"
+    for i in range(3):
+        _seed_msg(inbox, f"msg-300000{i}-1", "@other",
+                  f"2026-07-27T09:00:0{i}Z", body=f"m {i}")
+
+    out = ctx._render_messages(tmp_paths)  # must not raise
+    assert "3 unread" in out
+    assert out.count("from @other") == 3
+
+
 # --- Memory FTS: CAM wiring + query variance (2026-04-17) ------------------
 
 
