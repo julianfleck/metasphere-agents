@@ -1295,6 +1295,31 @@ def test_respawn_cmd_with_model_still_disables_feedback():
 
 
 # ---------------------------------------------------------------------------
+# _respawn_cmd — project_root export is cwd-INDEPENDENT (2026-07-27)
+#
+# The old export ran ``git rev-parse --show-toplevel`` on the pane's cwd
+# FIRST and only fell back to the env, so on a tick whose cwd was $HOME (a
+# git repo) it CLOBBERED the correct METASPHERE_PROJECT_ROOT with a truncated
+# ``-home-<user>`` slug — flickering the memory-folder affordance and
+# everything else keyed on project_root. The fix prefers the already-set env.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("agent_class", ["persistent", "ephemeral"])
+def test_respawn_cmd_prefers_env_project_root_over_cwd_git(agent_class):
+    """Both launch classes must PREFER the exported METASPHERE_PROJECT_ROOT and
+    only git-shell-out as a fallback — never let a cwd-keyed git rev-parse
+    clobber the value set by the managed launch path. True revert guard."""
+    cmd = gw_session._respawn_cmd("@orchestrator", agent_class=agent_class)
+    # Env-preferring form present: ${VAR:-<fallback>}.
+    assert 'METASPHERE_PROJECT_ROOT="${METASPHERE_PROJECT_ROOT:-' in cmd
+    # The clobbering form (git FIRST, env only via ``|| echo``) must be gone.
+    assert '|| echo "$METASPHERE_PROJECT_ROOT"' not in cmd
+    # git remains only as the inner fallback, not the primary source.
+    assert "git rev-parse --show-toplevel" in cmd
+
+
+# ---------------------------------------------------------------------------
 # _respawn_cmd — class-aware respawn (2026-05-05 research-monitor zombies)
 #
 # Persistent class (default) keeps the existing infinite respawn loop +

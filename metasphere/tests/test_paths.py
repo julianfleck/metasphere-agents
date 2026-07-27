@@ -89,3 +89,39 @@ def test_project_shared_dir_creates_and_returns_path(tmp_paths):
     got = tmp_paths.project_shared_dir
     assert got == expected
     assert got.is_dir()
+
+
+def test_project_root_honors_env_regardless_of_cwd(tmp_path, monkeypatch):
+    """When METASPHERE_PROJECT_ROOT is set, project_root() returns it and never
+    consults cwd/git. This is the determinism the managed-session launch fix
+    (2026-07-27) relies on: the gateway exports the correct repo root, so the
+    per-turn context hook resolves the same project_root no matter what cwd the
+    pane drifted to (e.g. $HOME on a heartbeat tick)."""
+    P._project_root_cache.clear()
+    real_repo = tmp_path / "the-repo"
+    real_repo.mkdir()
+    monkeypatch.setenv("METASPHERE_PROJECT_ROOT", str(real_repo))
+    # A drifted cwd + a git shell-out that would return a DIFFERENT dir must be
+    # ignored entirely when the env is set.
+    monkeypatch.chdir(tmp_path)
+
+    def _boom(*a, **k):
+        raise AssertionError("git must not be consulted when the env is set")
+
+    monkeypatch.setattr(P.subprocess, "check_output", _boom)
+    assert P.project_root() == real_repo
+
+
+def test_project_root_falls_back_to_git_only_when_env_unset(tmp_path, monkeypatch):
+    """With the env unset, project_root() falls back to the git toplevel of cwd
+    (the non-managed / backstop path). Preserved by the fix — the launch change
+    only removes the git *clobber*, not the fallback."""
+    P._project_root_cache.clear()
+    monkeypatch.delenv("METASPHERE_PROJECT_ROOT", raising=False)
+    monkeypatch.delenv("METASPHERE_REPO_ROOT", raising=False)
+    toplevel = tmp_path / "git-top"
+    toplevel.mkdir()
+    monkeypatch.setattr(
+        P.subprocess, "check_output", lambda *a, **k: str(toplevel) + "\n"
+    )
+    assert P.project_root() == toplevel
