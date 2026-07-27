@@ -976,10 +976,17 @@ def _render_memory_fts(
             pass
     query_parts.append(paths.project_root.name)
 
-    # Fresh signal: most recent event message. This ensures the query
-    # varies turn-to-turn so memory recall shifts with the agent's
-    # recent activity rather than returning the same top-N every tick.
-    fresh = _latest_event_message(paths)
+    # Fresh signal: a small window of recent *substantive* activity, so the
+    # query reflects what is actually happening rather than the tick
+    # machinery. Taking only the single latest event (the pre-2026-07-27
+    # behaviour) collapsed on heartbeat turns: the most-recent event is
+    # almost always a low-entropy internal tick (cron_fire "task:consolidate",
+    # heartbeat.invoke, agent.heartbeat "turn N"), so the query was ~constant
+    # across heartbeats and pinned the same top-N memos every turn — and the
+    # dominant "consolidate" token self-reinforced by matching the
+    # consolidation-themed memos. Filtering ticks and widening to a few
+    # distinct recent messages keeps the signal live and content-bearing.
+    fresh = _fresh_activity_signal(paths)
     if fresh:
         query_parts.append(fresh)
 
@@ -1007,9 +1014,18 @@ def _render_memory_fts(
         # Don't print the scary "No relevant memory found." dead-end (reads as
         # broken). Point the agent at its own memory folder instead — turns a
         # dead-end into a useful affordance (write-here). Proposal Stage C.
-        from .memory.auto import _default_memory_root
+        #
+        # Anchor the folder to this agent's project_root, NOT to the process
+        # PWD (the old _default_memory_root() read os.environ["PWD"], which on
+        # a heartbeat turn is whatever cwd the REPL happens to sit in — e.g.
+        # $HOME — and produced a TRUNCATED slug like ".../-home-u/memory"
+        # instead of the real ".../-home-u-projects-<repo>/memory").
+        # _auto_memory_dir_for_path derives the slug deterministically from the
+        # project path, matching the same root used everywhere else in context
+        # assembly. Fail-open: any failure falls back to the bare message.
+        root = None
         try:
-            root = _default_memory_root()
+            root = _auto_memory_dir_for_path(str(paths.project_root))
         except Exception:
             root = None
         if root is not None:
@@ -1023,19 +1039,60 @@ def _render_memory_fts(
     return "\n".join(out) + "\n"
 
 
-def _latest_event_message(paths: Paths) -> str:
-    """Return the message field of the most recent event, or ''."""
+# Event types that are pure tick machinery, not agent activity. They fire
+# on a fixed schedule regardless of what is happening (the @consolidate cron
+# alone fires every ~5 min), so on heartbeat turns the single most-recent
+# event is almost always one of these. Their messages are also low-entropy
+# ("task:consolidate", "injected heartbeat...", "turn 33820") and actively
+# harmful as a recall signal: the constant "consolidate" token pins the
+# consolidation-themed memos every turn. Excluding them makes the fresh
+# signal reflect real activity (a message.send, a task, a wake reason).
+_LOW_ENTROPY_EVENT_TYPES = frozenset({
+    "schedule.cron_fire",
+    "heartbeat.invoke",
+    "agent.heartbeat",
+    "message.consolidate",
+})
+
+# Matches a formatted tail line: "HH:MM:SSZ [type] @agent: message".
+_TAIL_LINE_RE = re.compile(r"^\S+\s+\[([^\]]+)\]\s+[^:]*:\s?(.*)$")
+
+
+def _fresh_activity_signal(paths: Paths, *, window: int = 40, keep: int = 3) -> str:
+    """Return a short signal built from recent *substantive* events.
+
+    Reads a window of recent events, drops low-entropy tick machinery
+    (:data:`_LOW_ENTROPY_EVENT_TYPES`), and joins the most recent ``keep``
+    distinct surviving messages (newest first). This keeps the memory-recall
+    query live and content-bearing instead of pinned by the near-constant
+    latest-tick message.
+
+    Fail-open: any parsing/IO error returns ``""`` so a bad fresh signal can
+    never crash context assembly — the query still stands on prompt + stem.
+    """
     from . import events as _events
     try:
-        tail = _events.tail_events(1, paths=paths)
+        tail = _events.tail_events(window, paths=paths)
         if not tail or not tail.strip():
             return ""
-        # tail_events returns "HH:MM:SSZ [type] @agent: message"
-        # Extract everything after the first ": " as the message
-        first_line = tail.strip().splitlines()[0]
-        if ": " in first_line:
-            return first_line.split(": ", 1)[1][:80]
-        return first_line[:80]
+        picked: list[str] = []
+        seen: set[str] = set()
+        # Newest first so the freshest substantive activity leads.
+        for line in reversed(tail.strip().splitlines()):
+            m = _TAIL_LINE_RE.match(line.strip())
+            if m is None:
+                continue
+            etype, msg = m.group(1), m.group(2).strip()
+            if etype in _LOW_ENTROPY_EVENT_TYPES:
+                continue
+            msg = msg[:80].strip()
+            if not msg or msg in seen:
+                continue
+            seen.add(msg)
+            picked.append(msg)
+            if len(picked) >= keep:
+                break
+        return " ".join(picked)
     except Exception:
         return ""
 
