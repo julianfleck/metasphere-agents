@@ -93,6 +93,9 @@ MSG_VERDICT_INFO_AUTO_ARCHIVE = "MSG-INFO-AUTO-ARCHIVE"
 #: got stale-pinged forever.
 MSG_VERDICT_DONE = "MSG-DONE"
 MSG_VERDICT_PINNED = "MSG-PINNED"  # !task/!query — pinned until explicitly completed
+#: A pinned !task/!query that has aged past the conservative backstop TTL.
+#: Soft-archived by the lifecycle drain. See :func:`_pinned_drain_verdict`.
+MSG_VERDICT_PINNED_DRAINED = "MSG-PINNED-DRAINED"
 
 MSG_VERDICTS = (
     MSG_VERDICT_ACTIVE,
@@ -102,7 +105,25 @@ MSG_VERDICTS = (
     MSG_VERDICT_INFO_AUTO_ARCHIVE,
     MSG_VERDICT_DONE,
     MSG_VERDICT_PINNED,
+    MSG_VERDICT_PINNED_DRAINED,
 )
+
+#: Lifecycle drain for pinned !task/!query messages. Without it they short-
+#: circuit to PINNED and accumulate forever: a dispatched task never leaves
+#: UNREAD (sacred labels are never auto-read), so every scan/monitor/agent
+#: dispatch piles up (~3,600 accumulated by 2026-07-27, 91% of them >21 days
+#: old). The drain archives only messages that are genuinely resolved or so
+#: old they are definitively abandoned/superseded — never a recent un-acted
+#: task ("when in doubt, keep it"). Archive is SOFT (move to
+#: archive/YYYY-MM-DD/) and reversible; a wrongly-archived task can be restored.
+#:
+#: Note on the shared bucket: a dispatched !task's actionable copy lives in the
+#: TARGET's inbox, which for a globally-scoped agent is the shared global
+#: bucket the sender also reads — so archiving it removes the target's copy
+#: too. That is why the drain is age/resolution-gated, NOT "it's only a sender
+#: copy": the backstop TTL is long enough that anything past it is done or
+#: abandoned for its target as well.
+PINNED_DRAIN_BACKSTOP_TTL_DAYS = 14
 
 # Info messages are auto-archived once they've been read for more than
 # this long. They're just notifications; nothing acts on them.
@@ -1174,12 +1195,43 @@ def apply_verdict(
 # ---------------------------------------------------------------------------
 
 
+def _pinned_drain_verdict(
+    msg: _messages.Message,
+    now: _dt.datetime,
+    ttl_days: int,
+) -> str | None:
+    """Drain verdict for a pinned (!task/!query) message, or ``None`` to keep.
+
+    Returns :data:`MSG_VERDICT_PINNED_DRAINED` ONLY when the message has aged
+    past ``ttl_days`` — a single, conservative, age-based backstop. At two-plus
+    weeks with no explicit close, a dispatched task is done or abandoned for its
+    target too; the fire-and-forget dispatches (scans/monitors) and old inbound
+    that never got a ``msg done`` are exactly this population (91% of the
+    ~3,600 backlog was >21 days old on 2026-07-27).
+
+    Deliberately does NOT drain on ``status == REPLIED``: a reply is often a
+    clarifying question or an interim "on it" on a STILL-OPEN task, so treating
+    any reply as "resolved" would archive genuinely-pending work (the hard
+    "never drop an un-acted task" constraint). Explicit resolution is
+    ``status == COMPLETED``, which is handled earlier in :func:`classify_message`
+    and never reaches here. An unparseable ``created`` returns ``None`` (we
+    can't prove it is old → keep it; when in doubt, keep it).
+    """
+    created = _parse_iso(msg.created)
+    if created is None:
+        return None  # can't prove age → keep (when in doubt, keep it)
+    if (now - created) >= _dt.timedelta(days=ttl_days):
+        return MSG_VERDICT_PINNED_DRAINED
+    return None
+
+
 def classify_message(
     msg: _messages.Message,
     *,
     now: _dt.datetime | None = None,
     stale_window_minutes: int = STALE_WINDOW_MINUTES_DEFAULT,
     info_archive_after_minutes: int | None = None,
+    pinned_drain_ttl_days: int = PINNED_DRAIN_BACKSTOP_TTL_DAYS,
     paths: "Paths | None" = None,
 ) -> str:
     """Return one of the MSG_VERDICT_* constants for ``msg``.
@@ -1236,8 +1288,15 @@ def classify_message(
     if msg.status == _messages.STATUS_COMPLETED:
         return MSG_VERDICT_DONE_PENDING_ARCHIVE
 
-    # Pinned labels: never touched by the consolidator beyond reporting.
+    # Pinned labels: normally never touched by the consolidator beyond
+    # reporting — the sacred-label guarantee that a dispatched task is never
+    # auto-marked read. But that guarantee is why they accumulate forever
+    # (~3,600 unread by 2026-07-27). Drain only the genuinely resolved or
+    # definitively aged-out ones; a recent un-acted task stays PINNED.
     if msg.label in _messages.PINNED_LABELS:
+        drained = _pinned_drain_verdict(msg, now, pinned_drain_ttl_days)
+        if drained is not None:
+            return drained
         return MSG_VERDICT_PINNED
 
     # !done terminal check — must precede the STATUS_UNREAD branch so
@@ -1510,6 +1569,11 @@ def apply_message_verdict(
             result["action"] = "would-archive"
         else:
             result.update(_archive_msg(msg, "done-auto-archive"))
+    elif verdict == MSG_VERDICT_PINNED_DRAINED:
+        if dry_run:
+            result["action"] = "would-archive"
+        else:
+            result.update(_archive_msg(msg, "pinned-drained"))
     elif verdict == MSG_VERDICT_UNREAD_OLD:
         # Threshold: after N escalations with no progress, archive
         # instead of re-escalating forever. Matches STALE behaviour.
@@ -1792,6 +1856,7 @@ def run_pass(
     stale_window_minutes: int = STALE_WINDOW_MINUTES_DEFAULT,
     ping_escalate_threshold: int = PING_ESCALATE_THRESHOLD_DEFAULT,
     abandoned_age_days: int = ABANDONED_AGE_DAYS_DEFAULT,
+    pinned_drain_ttl_days: int = PINNED_DRAIN_BACKSTOP_TTL_DAYS,
     dry_run: bool = False,
     paths: Paths | None = None,
     sender: Callable[..., object] | None = None,
@@ -1853,7 +1918,8 @@ def run_pass(
     msgs_found = _messages.scan_inbox_messages()
     for mm in msgs_found:
         mverdict = classify_message(
-            mm, now=now, stale_window_minutes=stale_window_minutes, paths=paths
+            mm, now=now, stale_window_minutes=stale_window_minutes,
+            pinned_drain_ttl_days=pinned_drain_ttl_days, paths=paths,
         )
         mresult = apply_message_verdict(
             mm, mverdict, paths,

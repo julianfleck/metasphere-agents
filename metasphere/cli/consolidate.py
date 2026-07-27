@@ -24,12 +24,14 @@ Usage: metasphere consolidate <command> [args...]
 
 Commands:
   run [--dry-run] [--since <window>] [--stale-window <minutes>]
-      [--info-archive-after <minutes>]
+      [--info-archive-after <minutes>] [--pinned-drain-ttl-days <days>]
                           Walk every active task under the project
                           root and classify each into ACTIVE / STALE /
                           BLOCKED / UNOWNED / DONE. Issue the matching
                           action (ping, escalate, archive) unless
-                          --dry-run is set.
+                          --dry-run is set. Also drains pinned
+                          !task/!query messages aged past the TTL
+                          (soft-archive; --dry-run to preview the count).
   --register-job          Register the cron job for this consolidator.
   --unregister-job        Remove the cron job.
   --status                Print whether the cron job is registered and
@@ -39,6 +41,8 @@ Defaults:
   --since                 Recent-window for stale detection.
   --stale-window          Minutes a task can sit idle before STALE
                           fires.
+  --pinned-drain-ttl-days Days a pinned !task/!query can sit before the
+                          lifecycle drain soft-archives it (default 14).
 """
 
 
@@ -86,6 +90,7 @@ def _cmd_run(argv: list[str]) -> int:
     since = _con.DEFAULT_SINCE
     stale_window = _con.STALE_WINDOW_MINUTES_DEFAULT
     info_archive_after: int | None = None
+    pinned_drain_ttl_days = _con.PINNED_DRAIN_BACKSTOP_TTL_DAYS
     i = 0
     try:
         while i < len(argv):
@@ -119,6 +124,16 @@ def _cmd_run(argv: list[str]) -> int:
                 info_archive_after = _parse_int_flag(
                     "--info-archive-after", a.split("=", 1)[1]
                 )
+            elif a == "--pinned-drain-ttl-days":
+                pinned_drain_ttl_days = _parse_int_flag(
+                    "--pinned-drain-ttl-days",
+                    _take_value("--pinned-drain-ttl-days", argv, i),
+                )
+                i += 1
+            elif a.startswith("--pinned-drain-ttl-days="):
+                pinned_drain_ttl_days = _parse_int_flag(
+                    "--pinned-drain-ttl-days", a.split("=", 1)[1]
+                )
             else:
                 print(f"unknown arg: {a}", file=sys.stderr)
                 return 2
@@ -139,6 +154,7 @@ def _cmd_run(argv: list[str]) -> int:
             project_root=paths.project_root,
             since=since,
             stale_window_minutes=stale_window,
+            pinned_drain_ttl_days=pinned_drain_ttl_days,
             dry_run=dry_run,
             paths=paths,
         )
@@ -173,6 +189,17 @@ def _cmd_run(argv: list[str]) -> int:
             if r.get("target"):
                 line += f"  → {r['target']}"
             print(line)
+        # Explicit drained count — no silent mass-mutation on the backfill.
+        drained = sum(
+            1 for r in report.message_results
+            if r["verdict"] == _con.MSG_VERDICT_PINNED_DRAINED
+        )
+        if drained:
+            verb = "would archive" if dry_run else "archived"
+            print(
+                f"pinned drain: {verb} {drained} aged !task/!query "
+                f"(ttl={pinned_drain_ttl_days}d)"
+            )
         mcounts = report.message_counts()
         if mcounts:
             msummary = ", ".join(f"{k}={v}" for k, v in sorted(mcounts.items()))

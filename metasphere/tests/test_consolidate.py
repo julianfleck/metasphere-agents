@@ -966,6 +966,121 @@ def test_msg_classify_pinned_query(repo, tmp_paths):
     assert _con.classify_message(m_) == _con.MSG_VERDICT_PINNED
 
 
+# --- Pinned-message lifecycle drain (2026-07-27) -----------------------------
+# !task/!query short-circuit to PINNED and never auto-archive (sacred labels
+# are never auto-read), so dispatched tasks pile up forever (~3,600 unread by
+# 2026-07-27). The drain archives only the genuinely resolved or definitively
+# aged-out ones; a recent un-acted task must always survive.
+
+
+def test_msg_classify_pinned_recent_stays_pinned(repo, tmp_paths):
+    """HARD GUARD: a recent un-acted !task must never drain, right up to the
+    14-day boundary (tested at 13 days)."""
+    m_ = _send_msg(tmp_paths, "!task")
+    m_ = _age_msg(m_, created_min_ago=13 * 24 * 60)
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_PINNED
+
+
+def test_msg_classify_pinned_aged_drains(repo, tmp_paths):
+    """A !task/!query aged past the 14-day backstop drains (abandoned/
+    superseded — done or dropped for its target too)."""
+    for label in ("!task", "!query"):
+        m_ = _send_msg(tmp_paths, label)
+        m_ = _age_msg(m_, created_min_ago=15 * 24 * 60)
+        assert _con.classify_message(m_) == _con.MSG_VERDICT_PINNED_DRAINED
+
+
+def test_msg_classify_pinned_replied_recent_stays_pinned(repo, tmp_paths):
+    """HARD GUARD: a reply is NOT treated as resolution. A recent !task that got
+    a reply (often a clarifying question / interim 'on it') is still OPEN and
+    must stay pinned — only age (or explicit COMPLETED) drains it. Guards the
+    clarify-reply drop the 15-min REPLIED arm would have caused."""
+    m_ = _send_msg(tmp_paths, "!task")
+    _msgs.update_status(m_.path, "status", _msgs.STATUS_REPLIED)
+    m_ = _age_msg(m_, created_min_ago=60)  # replied + past stale window, < 14d
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_PINNED
+
+
+def test_msg_classify_pinned_ttl_is_tunable(repo, tmp_paths):
+    """The backstop TTL is an operator parameter: a 10-day-old !task stays
+    pinned at the default (14) but drains under a tighter --pinned-drain-ttl."""
+    m_ = _send_msg(tmp_paths, "!task")
+    m_ = _age_msg(m_, created_min_ago=10 * 24 * 60)
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_PINNED
+    assert (
+        _con.classify_message(m_, pinned_drain_ttl_days=7)
+        == _con.MSG_VERDICT_PINNED_DRAINED
+    )
+
+
+def test_msg_classify_pinned_unparseable_created_kept(repo, tmp_paths):
+    """An unparseable created can't prove age → keep it (when in doubt, keep)."""
+    m_ = _send_msg(tmp_paths, "!task")
+    text = m_.path.read_text().replace(
+        f"created: {m_.created}", "created: not-a-real-date"
+    )
+    m_.path.write_text(text)
+    m_ = _msgs.read_message(m_.path)
+    assert _con.classify_message(m_) == _con.MSG_VERDICT_PINNED
+
+
+def test_pinned_drain_archives_softly_dry_run_is_noop(repo, tmp_paths):
+    """The drain is soft + reversible: dry-run leaves the file in inbox; live
+    moves it into .messages/archive/YYYY-MM-DD/ and removes it from inbox."""
+    m_ = _send_msg(tmp_paths, "!task")
+    m_ = _age_msg(m_, created_min_ago=20 * 24 * 60)
+    msgs_dir = m_.path.parent.parent  # inbox/ -> .messages/
+    inbox_path = m_.path
+
+    # dry-run: no mutation.
+    r = _con.apply_message_verdict(
+        m_, _con.MSG_VERDICT_PINNED_DRAINED, tmp_paths, dry_run=True
+    )
+    assert r["action"] == "would-archive"
+    assert inbox_path.is_file()
+
+    # live: archived (moved out of inbox, into a dated archive dir).
+    r = _con.apply_message_verdict(
+        m_, _con.MSG_VERDICT_PINNED_DRAINED, tmp_paths, dry_run=False
+    )
+    assert r["action"] == "archived"
+    assert not inbox_path.exists()
+    archived = list(msgs_dir.glob("archive/*/*.msg"))
+    assert archived, "message should be soft-archived under .messages/archive/"
+
+    # Idempotent / fail-safe: re-applying to the now-moved message does not
+    # raise and does not resurrect or duplicate it.
+    r2 = _con.apply_message_verdict(
+        m_, _con.MSG_VERDICT_PINNED_DRAINED, tmp_paths, dry_run=False
+    )
+    assert not inbox_path.exists()
+    assert len(list(msgs_dir.glob("archive/*/*.msg"))) == 1
+
+
+def test_run_pass_drains_only_aged_pinned_end_to_end(repo, tmp_paths):
+    """End-to-end through run_pass: seed aged + recent pinned + a completed one;
+    a dry-run reports would-archive for ONLY the aged pinned (the recent
+    un-acted task is untouched), and a live pass archives exactly those."""
+    aged = _send_msg(tmp_paths, "!task", body="aged dispatch")
+    aged = _age_msg(aged, created_min_ago=30 * 24 * 60)
+    recent = _send_msg(tmp_paths, "!task", body="recent un-acted")  # fresh
+    aged_id, recent_id = aged.id, recent.id
+
+    # Dry-run: aged would archive, recent stays pinned (no action).
+    report = _con.run_pass(paths=tmp_paths, dry_run=True)
+    by_id = {r["msg_id"]: r for r in report.message_results}
+    assert by_id[aged_id]["verdict"] == _con.MSG_VERDICT_PINNED_DRAINED
+    assert by_id[aged_id]["action"] == "would-archive"
+    assert by_id[recent_id]["verdict"] == _con.MSG_VERDICT_PINNED
+    assert by_id[recent_id]["action"] == "noop"
+    assert aged.path.is_file()  # dry-run mutated nothing
+
+    # Live: aged archived out of inbox, recent still present.
+    _con.run_pass(paths=tmp_paths, dry_run=False)
+    assert not aged.path.exists()
+    assert recent.path.is_file()
+
+
 def test_msg_classify_unread_fresh_is_active(repo, tmp_paths):
     m_ = _send_msg(tmp_paths, "!info")
     assert _con.classify_message(m_) == _con.MSG_VERDICT_ACTIVE
