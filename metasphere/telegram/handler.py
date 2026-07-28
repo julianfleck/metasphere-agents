@@ -387,7 +387,25 @@ def handle_update(
         target_session = _resolve_session(target_agent_id)
     except Exception:
         target_session = inject.DEFAULT_SESSION
+    # QUEUE the inbound message behind any in-flight turn instead of
+    # interrupting it. escape_prefix=True (the old default) fired an Escape to
+    # kill the running turn before pasting; when that Escape landed mid-tool-
+    # call / mid-stream it wedged the session ("Request interrupted by user" →
+    # "Something went wrong / use /new"). escape_prefix=False lets Claude Code's
+    # built-in user-turn queue hold the message and process it in order after
+    # the current turn finishes — the same safe path every auto-injector
+    # (heartbeat/wake/posthook) already uses.
+    #
+    # defer_if_busy stays False: telegram-user inbound must ALWAYS land, even
+    # when the REPL input box shows typed content (that is precisely what the
+    # user is replacing). Setting it True silently dropped user messages
+    # whenever the pane had typed content — the 2026-04-16 PR #23 regression
+    # guarded by test_handle_update_telegram_inject_does_not_defer. So only the
+    # interrupt behaviour changes here, not the delivery guarantee.
+    #
+    # Trade-off: telegram no longer interrupts a running turn; a deliberate
+    # mid-turn stop would need an explicit /stop command (follow-up).
     tmux_submit(
         f"@{u.from_username or 'user'}", payload,
-        session=target_session, defer_if_busy=False,
+        session=target_session, defer_if_busy=False, escape_prefix=False,
     )

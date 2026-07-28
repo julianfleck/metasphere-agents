@@ -115,6 +115,34 @@ def test_submit_typing_sequence_unchanged_after_prefix(monkeypatch):
     assert any(c[-1] == "C-m" for c in sendkeys)
 
 
+def _buffer_name(calls, verb):
+    for c in calls:
+        if verb in c and "-b" in c:
+            return c[c.index("-b") + 1]
+    return None
+
+
+def test_submit_uses_unique_buffer_name_per_call(monkeypatch):
+    """Each submit uses a UNIQUE paste-buffer name (not the shared
+    ``_metasphere_submit``) so a concurrent inject — e.g. a cron heartbeat
+    process racing the daemon's telegram inject — can't clobber the buffer
+    between load and paste. load-buffer and paste-buffer agree within a call;
+    successive calls get distinct names."""
+    calls1 = _capture_calls(monkeypatch)
+    T.submit_to_tmux("sess", "one", escape_prefix=False)
+    load1 = _buffer_name(calls1, "load-buffer")
+    paste1 = _buffer_name(calls1, "paste-buffer")
+    assert load1 is not None and load1.startswith("_metasphere_submit_"), (
+        f"expected a unique _metasphere_submit_* buffer, got {load1!r}"
+    )
+    assert load1 == paste1, "load and paste must target the same buffer per call"
+
+    calls2 = _capture_calls(monkeypatch)
+    T.submit_to_tmux("sess", "two", escape_prefix=False)
+    load2 = _buffer_name(calls2, "load-buffer")
+    assert load2 != load1, "each submit must use a fresh buffer name"
+
+
 def test_submit_uses_c_m_not_enter_keysym(monkeypatch):
     """Submit must use ``C-m`` (ASCII 0x0D) not the ``Enter`` keysym.
 

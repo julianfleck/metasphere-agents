@@ -25,6 +25,7 @@ Never raises — returns False on failure.
 
 from __future__ import annotations
 
+import itertools
 import os
 import shutil
 import subprocess
@@ -59,6 +60,16 @@ def _confirmed_submit_disabled() -> bool:
 # and stay silent until a successful submit clears the flag — so the
 # next deferred heartbeat after the user stops typing logs again.
 _deferring_sessions: set[str] = set()
+
+# Monotonic counter for unique tmux paste-buffer names. Every submit used to
+# share the buffer ``_metasphere_submit``; a heartbeat inject (cron-spawned
+# process) and a telegram inject (gateway daemon) firing concurrently would
+# then ``load-buffer`` over each other, so one paste pulled the other's content
+# (garbled/partial submit or a stuck placeholder). A per-call name — pid keyed
+# so cross-process injects can't collide, counter keyed for same-process
+# safety — makes each paste self-contained. ``paste-buffer -d`` still deletes
+# the buffer after use, so these don't accumulate.
+_buffer_counter = itertools.count()
 
 
 #: Returned by tmux discovery when a pytest run must not reach the host
@@ -405,8 +416,12 @@ def submit_to_tmux(
         # 2026-04-20 repro: 79-line wake via send-keys -l → buffered
         # for >15s (C-m eaten); 60-line via load-buffer + paste-buffer →
         # committed in <8s on single C-m. Root-cause fix.
+        # Unique per-call buffer name so a concurrent inject (e.g. a cron
+        # heartbeat process racing the daemon's telegram inject) can't clobber
+        # this paste's content between load and paste. ``-d`` deletes it after.
+        buf = f"_metasphere_submit_{os.getpid()}_{next(_buffer_counter)}"
         subprocess.run(
-            [tmux, "load-buffer", "-b", "_metasphere_submit", "-"],
+            [tmux, "load-buffer", "-b", buf, "-"],
             input=message,
             text=True,
             stdout=subprocess.DEVNULL,
@@ -414,8 +429,20 @@ def submit_to_tmux(
             check=False,
         )
         subprocess.run(
-            [tmux, "paste-buffer", "-b", "_metasphere_submit",
+            [tmux, "paste-buffer", "-b", buf,
              "-d", "-t", session],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        # ``paste-buffer -d`` deletes the buffer on success. If the paste
+        # failed (e.g. the session vanished in the race window after the
+        # _has_session check), the named buffer would leak — and unlike the
+        # old fixed name (bounded to 1, overwritten next call), per-call names
+        # would accumulate. Best-effort delete closes that; a no-op / harmless
+        # error when -d already removed it.
+        subprocess.run(
+            [tmux, "delete-buffer", "-b", buf],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
