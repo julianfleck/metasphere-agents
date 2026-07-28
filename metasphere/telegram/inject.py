@@ -82,11 +82,16 @@ def submit_to_tmux(
     missing. Never raises — injection is best-effort.
 
     *defer_if_busy* is forwarded to :func:`metasphere.tmux.submit_to_tmux`;
-    user-inbound telegram leaves it False (always fire), restart-wake
-    passes True (defer on human typing). *escape_prefix* defaults True
-    for user-inbound telegram (clobber any running tool — "only
-    user-inbound interrupts", operator 2026-04-16); restart-wake passes
-    False so it doesn't cut a mid-tool-call on the newly-respawned pane.
+    user-inbound telegram leaves it False (always fire, never silently drop a
+    user message), restart-wake passes True (defer on human typing).
+
+    *escape_prefix* still defaults True at this layer, but the user-inbound
+    telegram handler (``metasphere/telegram/handler.py``) now passes False:
+    escape_prefix=True fires an Escape that INTERRUPTS the in-flight turn, and
+    landing mid-tool-call it wedged the session ("Something went wrong / use
+    /new", 2026-07-28). escape_prefix=False queues the message behind the
+    running turn via Claude Code's user-turn queue instead. restart-wake also
+    passes False so it doesn't cut a mid-tool-call on the newly-respawned pane.
     """
     # Usernames / ids are attacker-controlled — sanitise to [\w]+ so they
     # can't smuggle slash-command-like prefixes into the REPL when rendered.
