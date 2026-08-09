@@ -115,7 +115,21 @@ def count_user_messages(transcript_path: Path | str | None) -> int:
        inflates the Stop-time count by +1 and pushes the delta to ≥2.
        Filtering them here keeps the gate stable.
 
-    Counting (2), (3), or (4) inflates the Stop-time count above the
+    5. Auto-inserted non-prompt sentinels that are not harness nudges
+       but still land mid-turn:
+
+         * Background/workflow completion notices
+           (``<task-notification> ...``), injected via the same
+           defer-if-busy tmux path as the (4) nudges.
+         * Claude Code's own interrupt sentinel
+           (``[Request interrupted by ...]``), inserted whenever a turn
+           is interrupted — e.g. an inbound Telegram message that
+           Escapes the live turn instead of queuing. A single mid-turn
+           interrupt can add *two* records (the sentinel plus the real
+           follow-up), and the sentinel itself carries no context, so
+           counting it pushes the delta to ≥2.
+
+    Counting (2)–(5) inflates the Stop-time count above the
     UserPromptSubmit-time count, tripping the breadcrumb
     ``count-mismatch`` gate. (2) was first observed on tool-using
     turns; (3) was the cause of the recurring suppressions seen on
@@ -123,7 +137,11 @@ def count_user_messages(transcript_path: Path | str | None) -> int:
     silently dropped from Telegram; (4) was observed for the heartbeat
     sentinel on 2026-05-18 (count-mismatch on an operator reply). The
     wake-up and agent-wake sentinels share the exact same
-    inject shape, so they are filtered preemptively.
+    inject shape, so they are filtered preemptively. (5) accounts for
+    the residual @orchestrator suppressions during high-activity
+    windows (task fan-out and rapid interrupt-driven Telegram replies),
+    where the real prompt is on disk but an interrupt or task-notification
+    sentinel raced into the same window.
 
     Returns 0 when the transcript is missing, empty, unreadable, or has
     no user messages — the posthook treats 0 as "no transcript info"
@@ -160,9 +178,15 @@ def count_user_messages(transcript_path: Path | str | None) -> int:
                 for item in content
             ):
                 continue
-            # Skip auto-injected harness nudges that share heartbeat's
-            # inject shape (defer_if_busy + escape_prefix=False) and so
-            # share the same mid-turn race risk.
+            # Skip auto-inserted non-prompt records that can land in the
+            # transcript mid-turn and so inflate the Stop-time count:
+            #   * Harness nudges sharing heartbeat's inject shape
+            #     (defer_if_busy + escape_prefix=False) — heartbeats,
+            #     post-restart wakes, agent-to-agent wakes, and
+            #     background/workflow ``<task-notification>`` completions.
+            #   * Claude Code's own ``[Request interrupted by ...]``
+            #     sentinel — not a context-bearing prompt (the real
+            #     follow-up fires its own UserPromptSubmit).
             text = ""
             if isinstance(content, str):
                 text = content
@@ -176,6 +200,8 @@ def count_user_messages(transcript_path: Path | str | None) -> int:
                 stripped.startswith("# HEARTBEAT ")
                 or stripped.startswith("[session restarted]")
                 or stripped.startswith("[wake] ")
+                or stripped.startswith("<task-notification>")
+                or stripped.startswith("[Request interrupted by")
             ):
                 continue
         n += 1
