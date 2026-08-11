@@ -9,6 +9,17 @@ Belt-and-suspenders: after submitting, captures the pane and checks for
 a stuck ``[Pasted text #`` placeholder. If found, retries Enter up to
 3 times.
 
+Confirmed-submit: the single submit ``C-m`` can be *eaten* when it fires
+while Claude Code's Ink/React TUI is still settling the bracketed-paste
+``\\e[201~`` end-marker — the paste content then lands **inline** in the
+input box with NO ``[Pasted text #`` placeholder. The gateway watchdog
+only force-submits *marker-prefixed* payloads (``[wake]``/``[task]``/…),
+so an unmarked **human** message stranded this way is never recovered
+(this is why operator-authored Telegram-relayed messages stick). The
+post-submit poll below re-fires ``C-m`` when byte-stable inline content
+proves the submit was eaten — reliable submission at the source, no
+marker needed.
+
 Never raises — returns False on failure.
 """
 
@@ -19,6 +30,25 @@ import shutil
 import subprocess
 import sys
 import time
+
+
+#: Confirmed-submit tuning. After the submit ``C-m``, the post-submit poll
+#: watches the input box. If inline content (NOT a ``[Pasted text #``
+#: placeholder) sits **byte-identical** across this many consecutive polls,
+#: the submit was eaten (an *accepted* submit clears an inline box within a
+#: render frame or two) — so we re-fire ``C-m``. The window must sit safely
+#: past normal render lag; ~4 polls ≈ 2s+ of a frozen box is unambiguous.
+_SUBMIT_CONFIRM_TICKS = 4
+#: Max confirmed-submit ``C-m`` re-fires before giving up to the watchdog.
+_SUBMIT_CONFIRM_RETRIES = 3
+
+
+def _confirmed_submit_disabled() -> bool:
+    """Fail-open kill-switch for the confirmed-submit retry (core-loop
+    behavioral change). Set ``METASPHERE_SUBMIT_RETRY_DISABLED=1`` to revert
+    to patient-poll-only submission without editing this live-loaded module.
+    Any truthy value disables it."""
+    return bool(os.environ.get("METASPHERE_SUBMIT_RETRY_DISABLED"))
 
 
 # Sessions for which we already logged a "defer: input has typing"
@@ -431,18 +461,75 @@ def submit_to_tmux(
         # Poll for clean input box, up to 12s. Fast path returns in
         # <1s on the common case; patient on slow TUI processing
         # (large payloads can take 5-8s from paste → commit → render
-        # clean). No retry C-m firing — single submit, just wait.
+        # clean).
+        #
+        # Confirmed-submit: if the submit C-m was EATEN (fired while the
+        # TUI was still settling the bracketed-paste end-marker), the
+        # payload sits INLINE in the box with no ``[Pasted text #``
+        # placeholder — the exact stranded-human-message state the
+        # marker-keyed watchdog can't recover. We detect it by inline
+        # content sitting BYTE-IDENTICAL across ``_SUBMIT_CONFIRM_TICKS``
+        # polls: an *accepted* inline submit clears the box within a
+        # render frame or two, so a frozen inline box past ~2s means the
+        # Enter was dropped, not that the TUI is still rendering. Re-fire
+        # C-m, bounded.
+        #
+        # Scoped to INLINE content only. A ``[Pasted text #`` placeholder
+        # (large payload) keeps the patient-poll-only path + watchdog
+        # backstop, so we don't re-introduce the 2026-04-20 stacking
+        # regression (retry C-m mid-commit on a large payload). The
+        # kill-switch (_confirmed_submit_disabled) also gates it off
+        # entirely — fail-open to today's behavior.
+        retry_on = not _confirmed_submit_disabled()
+        prev_inline: str | None = None
+        stable = 0
+        retries_left = _SUBMIT_CONFIRM_RETRIES
         for _ in range(24):
             time.sleep(0.5)
             if (not _has_pending_paste(tmux, session)
                     and not _input_line_has_typing(tmux, session)):
                 _deferring_sessions.discard(session)
                 return True
+            if not retry_on:
+                continue
+            # Dirty. Only INLINE content (no placeholder) is a
+            # confirmed-submit candidate; read it to test byte-stability.
+            inline = input_box_content(session)
+            if inline is None or "[Pasted text #" in inline:
+                # Placeholder path, or a transient empty read — leave to
+                # the patient poll / watchdog; reset the stability window.
+                prev_inline = None
+                stable = 0
+                continue
+            if inline == prev_inline:
+                stable += 1
+            else:
+                prev_inline = inline
+                stable = 0
+            if stable >= _SUBMIT_CONFIRM_TICKS and retries_left > 0:
+                # Eaten submit — re-fire C-m (raw 0x0D; the Enter keysym
+                # is unreliable in Claude Code's TUI). Bare C-m never
+                # interrupts a running tool, so this is safe regardless
+                # of escape_prefix.
+                print(
+                    f"[tmux.submit] confirmed-submit re-fire C-m in {session} "
+                    f"(inline content stalled, submit eaten)",
+                    file=sys.stderr,
+                )
+                subprocess.run(
+                    [tmux, "send-keys", "-t", session, "C-m"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                retries_left -= 1
+                stable = 0
+                prev_inline = None
 
-        # 12s elapsed and the input is still dirty. Don't fire a recovery
-        # C-m here — that's what created the stacking bug. Leave the
-        # buffered content for submit_watchdog to handle on its next
-        # daemon tick, OR for the next intentional caller to overwrite.
+        # 12s elapsed and the input is still dirty. Don't fire a further
+        # recovery C-m here — leave the buffered content for
+        # submit_watchdog to handle on its next daemon tick, OR for the
+        # next intentional caller to overwrite.
         return False
 
     except Exception:
