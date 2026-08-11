@@ -762,6 +762,119 @@ def test_submit_returns_false_if_enter_never_lands(monkeypatch):
     assert T.submit_to_tmux("sess", "STUCK") is False
 
 
+# --- Confirmed-submit: re-fire the eaten Enter (2026-08-11) -----------------
+#
+# Root cause of the operator's "my messages get stuck in the input, never
+# submitted": the submit C-m fires while the TUI is still settling the
+# bracketed-paste end-marker and gets EATEN. The payload lands INLINE
+# (no ``[Pasted text #`` placeholder), so the marker-keyed watchdog —
+# which only force-submits ``[wake]``/``[task]``/… payloads — never
+# recovers an unmarked human message. Fix: when inline content sits
+# byte-stable past a settle window, the submit was eaten → re-fire C-m.
+
+
+def test_submit_confirmed_retry_recovers_eaten_enter_for_unmarked_human_msg(monkeypatch):
+    """The repro: an UNMARKED human message (operator Telegram relay) whose
+    submit C-m is eaten sits inline in the box. The confirmed-submit poll
+    must re-fire C-m and land the message — no harness marker required,
+    which is exactly the class the watchdog refuses to touch."""
+    human = "hey can you look at the deploy when you get a sec"  # NO marker
+    state = {"c_m": 0}
+
+    def fake_run(argv, **kw):
+        if "has-session" in argv:
+            return _fake_cp(returncode=0)
+        if "send-keys" in argv and "C-m" in argv:
+            state["c_m"] += 1
+            return _fake_cp(returncode=0)
+        if "capture-pane" in argv:
+            # C-m #1 = pre-flush, #2 = submit (EATEN — box stays dirty with
+            # the inline human text, no placeholder). Only the confirmed
+            # re-fire (#3) actually submits and clears the box.
+            content = ["❯ " + human] if state["c_m"] < 3 else ["❯ "]
+            return _fake_cp(stdout=_pane(content))
+        return _fake_cp(returncode=0)
+
+    calls: list[list[str]] = []
+
+    def recording(argv, **kw):
+        calls.append(list(argv))
+        return fake_run(argv, **kw)
+
+    monkeypatch.setattr("subprocess.run", recording)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+
+    # Default escape_prefix=True — the real user-inbound telegram path.
+    assert T.submit_to_tmux("sess", human) is True
+
+    c_m_calls = [c for c in calls if "send-keys" in c and "C-m" in c]
+    # pre-flush + eaten submit + at least one confirmed re-fire.
+    assert len(c_m_calls) >= 3, (
+        f"expected a confirmed-submit re-fire after the eaten Enter, "
+        f"got {len(c_m_calls)} C-m calls: {c_m_calls}"
+    )
+
+
+def test_submit_confirmed_retry_skips_placeholder_large_payload(monkeypatch):
+    """A ``[Pasted text #`` placeholder (large payload mid-commit) must NOT
+    draw a confirmed re-fire C-m — that would reintroduce the 2026-04-20
+    stacking regression. Only inline content is a candidate; a stuck
+    placeholder is left to submit_watchdog. Exactly 2 C-m (pre-flush +
+    submit), and the function returns False (dirty at timeout)."""
+    def fake_run(argv, **kw):
+        if "has-session" in argv:
+            return _fake_cp(returncode=0)
+        if "capture-pane" in argv:
+            return _fake_cp(stdout=_pane(["❯ [Pasted text #7 +90 lines]"]))
+        return _fake_cp(returncode=0)
+
+    calls: list[list[str]] = []
+
+    def recording(argv, **kw):
+        calls.append(list(argv))
+        return fake_run(argv, **kw)
+
+    monkeypatch.setattr("subprocess.run", recording)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+
+    assert T.submit_to_tmux("sess", "m", escape_prefix=False) is False
+    c_m_calls = [c for c in calls if "send-keys" in c and "C-m" in c]
+    assert len(c_m_calls) == 2, (
+        f"placeholder must not draw a confirmed re-fire (pre-flush + submit "
+        f"only), got {len(c_m_calls)}: {c_m_calls}"
+    )
+
+
+def test_submit_confirmed_retry_kill_switch_disables_refire(monkeypatch):
+    """The fail-open kill-switch (METASPHERE_SUBMIT_RETRY_DISABLED) reverts
+    to patient-poll-only: a stuck inline message draws NO re-fire — exactly
+    2 C-m — and returns False. Lets an operator disable the new behavior
+    without editing the live-loaded module."""
+    monkeypatch.setenv("METASPHERE_SUBMIT_RETRY_DISABLED", "1")
+
+    def fake_run(argv, **kw):
+        if "has-session" in argv:
+            return _fake_cp(returncode=0)
+        if "capture-pane" in argv:
+            return _fake_cp(stdout=_pane(["❯ STUCK inline no marker"]))
+        return _fake_cp(returncode=0)
+
+    calls: list[list[str]] = []
+
+    def recording(argv, **kw):
+        calls.append(list(argv))
+        return fake_run(argv, **kw)
+
+    monkeypatch.setattr("subprocess.run", recording)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+
+    assert T.submit_to_tmux("sess", "m", escape_prefix=False) is False
+    c_m_calls = [c for c in calls if "send-keys" in c and "C-m" in c]
+    assert len(c_m_calls) == 2, (
+        f"kill-switch must suppress the confirmed re-fire (pre-flush + "
+        f"submit only), got {len(c_m_calls)}: {c_m_calls}"
+    )
+
 
 
 def test_find_tmux_refuses_real_server_under_pytest(monkeypatch):
