@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.metasphere.schedule</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>@@METASPHERE_VENV_BIN@@</string>
+        <string>schedule</string>
+        <string>daemon</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>METASPHERE_DIR</key>
+        <string>@@METASPHERE_DIR@@</string>
+        <key>METASPHERE_PROJECT_ROOT</key>
+        <string>@@METASPHERE_PROJECT_ROOT@@</string>
+        <key>METASPHERE_REPO_ROOT</key>
+        <string>@@METASPHERE_PROJECT_ROOT@@</string>
+        <key>METASPHERE_AGENT_RUNTIME</key>
+        <string>@@METASPHERE_AGENT_RUNTIME@@</string>
+        <key>PATH</key>
+        <string>@@METASPHERE_PATH@@</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>@@METASPHERE_PROJECT_ROOT@@</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>@@METASPHERE_DIR@@/logs/schedule.log</string>
+    <key>StandardErrorPath</key>
+    <string>@@METASPHERE_DIR@@/logs/schedule.log</string>
+</dict>
+</plist>

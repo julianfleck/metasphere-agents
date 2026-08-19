@@ -143,3 +143,65 @@ def test_list_rejects_unknown_args(capsys, argv, extra):
     assert rc == 2
     assert "schedule list" in err
     assert extra in err
+
+
+# ---------- generic scheduled agent wakes ----------
+
+
+def test_add_dispatches_to_upsert(capsys):
+    from metasphere.schedule import Job
+
+    with patch("metasphere.schedule.upsert_agent_job") as upsert:
+        upsert.return_value = Job(
+            id="daily-check",
+            agent_id="orchestrator",
+            cron_expr="0 9 * * *",
+            tz="America/Los_Angeles",
+            enabled=True,
+        )
+        rc = cli.main([
+            "add", "daily-check",
+            "--agent", "@orchestrator",
+            "--cron", "0 9 * * *",
+            "--tz", "America/Los_Angeles",
+            "--message", "Run the daily check",
+        ])
+
+    assert rc == 0
+    assert "scheduled: daily-check -> @orchestrator" in capsys.readouterr().out
+    assert upsert.call_args.kwargs["message"] == "Run the daily check"
+
+
+def test_add_reports_validation_error(capsys):
+    with patch(
+        "metasphere.schedule.upsert_agent_job",
+        side_effect=ValueError("invalid cron expression: nope"),
+    ):
+        rc = cli.main([
+            "add", "bad",
+            "--agent", "@orchestrator",
+            "--cron", "nope",
+            "--message", "payload",
+        ])
+    assert rc == 2
+    assert "invalid cron expression" in capsys.readouterr().err
+
+
+def test_remove_and_fire_commands(capsys):
+    from metasphere.schedule import FireResult
+
+    with patch("metasphere.schedule.remove_job", return_value=True) as remove:
+        assert cli.main(["remove", "daily-check"]) == 0
+    remove.assert_called_once()
+
+    result = FireResult(
+        job_id="daily-check",
+        name="daily-check",
+        target_agent="@orchestrator",
+        fired=True,
+        dispatched=True,
+    )
+    with patch("metasphere.schedule.fire_job", return_value=result) as fire:
+        assert cli.main(["fire", "daily-check"]) == 0
+    fire.assert_called_once()
+    assert "[fire] @orchestrator: daily-check -- ok" in capsys.readouterr().out

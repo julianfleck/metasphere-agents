@@ -4,6 +4,7 @@
 # settings.local.json with the absolute hook paths for this venv.
 # scheduled_tasks.json + scheduled_tasks.lock are similarly local.
 /.claude/
+/.codex/
 
 # Runtime state — fractal messages and tasks accumulate at any scope depth
 **/.messages/inbox/

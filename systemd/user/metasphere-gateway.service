@@ -9,6 +9,7 @@ Type=simple
 Environment=METASPHERE_DIR=@@METASPHERE_DIR@@
 Environment=METASPHERE_PROJECT_ROOT=@@METASPHERE_PROJECT_ROOT@@
 Environment=METASPHERE_REPO_ROOT=@@METASPHERE_PROJECT_ROOT@@
+Environment=METASPHERE_AGENT_RUNTIME=@@METASPHERE_AGENT_RUNTIME@@
 Environment=PATH=@@METASPHERE_DIR@@/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=@@METASPHERE_VENV_BIN@@ gateway daemon
 Restart=always

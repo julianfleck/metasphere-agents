@@ -29,7 +29,7 @@ Subcommands:
   telegram              Send Telegram messages, upload documents, or run getMe.
   slack                 Send Slack messages via a configured Slack surface.
   hooks                 Per-turn Claude Code hook entrypoints (posthook|context|pretool|git).
-  schedule              Cron-style job scheduler: list, run, enable, disable, daemon.
+  schedule              Cron-style scheduler: add, remove, list, fire, enable, disable, daemon.
   consolidate           Sweep active tasks: classify, ping, escalate, archive.
   heartbeat             Per-tick heartbeat: one-shot or long-running daemon.
   events                Tail the event stream and prune/compress old event logs.
@@ -40,7 +40,7 @@ Subcommands:
   liveness              Show which agents are generating / idle / stale right now (tmux pane freshness).
   project               Create, list, and manage projects + their member agents.
   gateway               Gateway daemon control + Telegram injection helpers.
-  daemon                Start/stop/restart/status the three metasphere systemd services.
+  daemon                Start/stop/restart/status the three metasphere services.
   logs                  Tail gateway / heartbeat / schedule / reaper / posthook / update / events logs.
   config                Bootstrap Telegram bot token + chat id (interactive or flag-driven).
   restart               Restart all daemons + alive agent tmux sessions (or one agent).
@@ -316,7 +316,7 @@ Each sub-event has its own --help.
 
 ### `metasphere schedule`
 
-Cron-style job scheduler: list, run, enable, disable, daemon.
+Cron-style scheduler: add, remove, list, fire, enable, disable, daemon.
 
 ```
 Usage: metasphere schedule [<command>] [args...]
@@ -324,6 +324,10 @@ Usage: metasphere schedule [<command>] [args...]
 Commands:
   (no args)                  Default = list.
   list [project]             List all configured cron jobs.
+  add <id> --agent <@agent> --cron <expr> --message <text>
+                             Create or update an agent wake job.
+  remove <id>                Remove a job by id or name.
+  fire <id>                  Dispatch one job immediately for testing.
   run                        Fire one tick: dispatch every job whose
                              schedule matches now.
   daemon [<interval>]        Long-running scheduler loop. Default
@@ -334,7 +338,7 @@ Commands:
   wire-exit-self [--dry-run] Append the canonical exit-self payload to
                              every job that lacks one.
 
-Job definitions live in `~/.metasphere/cron/<id>.yaml`.
+Job definitions live in `~/.metasphere/schedule/jobs.json`.
 ```
 
 ### `metasphere consolidate`
@@ -592,13 +596,13 @@ Commands:
   ensure                 Start the orchestrator session if it is not
                          already alive.
   status                 Print orchestrator session liveness + idle.
-  restart                Restart Claude inside the orchestrator
+  restart                Restart the agent REPL inside the orchestrator
                          session (preserves the tmux pane).
 ```
 
 ### `metasphere daemon`
 
-Start/stop/restart/status the three metasphere systemd services.
+Start/stop/restart/status the three metasphere services.
 
 ```
 Usage: metasphere daemon <action> [<service>]
@@ -680,8 +684,8 @@ Restart all daemons + alive agent tmux sessions (or one agent).
 Usage: metasphere restart [<agent-name>]
 
 Without args:
-  Restart the three systemd user services (gateway, heartbeat,
-  schedule), then kill + respawn every alive persistent agent's tmux
+  Restart the three platform services (gateway, heartbeat, schedule),
+  then kill + respawn every alive persistent agent's tmux
   session — including @orchestrator. If invoked from inside the
   orchestrator pane, that restart kills the caller; a warning is
   printed first and the orchestrator is restarted last so earlier

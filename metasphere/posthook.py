@@ -9,7 +9,7 @@ Two responsibilities:
    ``updated_at``, and log a heartbeat event every 10 turns.
 
 The hook **must never raise**. Any exception is logged and swallowed; the
-top-level entry point always returns ``0`` so claude-code's Stop pipeline
+top-level entry point always returns ``0`` so the host REPL's Stop pipeline
 keeps working even if metasphere is broken.
 """
 
@@ -34,7 +34,7 @@ from .paths import Paths, resolve
 # ---------- payload + transcript parsing ----------
 
 def read_stop_hook_payload(stdin_bytes: bytes) -> dict:
-    """Parse the JSON Stop-hook payload from claude-code.
+    """Parse a Claude Code or Codex JSON Stop-hook payload.
 
     Empty / invalid input returns ``{}`` rather than raising — the hook
     is occasionally invoked manually with no stdin.
@@ -45,6 +45,30 @@ def read_stop_hook_payload(stdin_bytes: bytes) -> dict:
         return json.loads(stdin_bytes.decode("utf-8", errors="replace"))
     except json.JSONDecodeError:
         return {}
+
+
+def stop_hook_provider(payload: dict) -> str:
+    """Return the provider whose Stop payload shape was received."""
+    if "last_assistant_message" in payload:
+        return "codex"
+    return "claude"
+
+
+def extract_stop_assistant_text(payload: dict) -> str | None:
+    """Extract assistant text from a provider-neutral Stop payload.
+
+    Codex includes the completed turn directly as
+    ``last_assistant_message``. Claude Code provides a JSONL transcript,
+    which needs the existing turn-aware parser.
+    """
+    if stop_hook_provider(payload) == "codex":
+        text = payload.get("last_assistant_message")
+        return text if isinstance(text, str) else None
+
+    transcript = payload.get("transcript_path")
+    if not isinstance(transcript, str) or not transcript:
+        return None
+    return extract_last_assistant_text(Path(transcript))
 
 
 def extract_last_assistant_text(transcript_path: Path) -> str | None:
@@ -338,6 +362,7 @@ _IDLE_PATTERN = _re.compile(
     r"|idle"
     r"|nothing to report"
     r"|nothing new"
+    r"|no new (?:work|messages?|tasks?|updates?|activity)"
     r")\b"
     r")",
     _re.IGNORECASE,
@@ -696,55 +721,47 @@ def run_posthook(stdin_bytes: bytes, paths: Paths | None = None) -> int:
 
         if not already_active and agent == "@orchestrator":
             transcript = payload.get("transcript_path")
-            if transcript:
-                text = extract_last_assistant_text(Path(transcript))
-                if not should_skip_silent_tick(text):
-                    explicit_fresh = _explicit_send_marker_fresh(paths)
-                    # Fail-closed gate: the UserPromptSubmit context hook
-                    # writes a per-turn success breadcrumb. If it's
-                    # missing or marked failed, the turn was generated
-                    # against a degraded context and we must not forward
-                    # the assistant text via the auto-forward path.
-                    # Explicit `metasphere-telegram send` calls during
-                    # the turn are independent (the marker is set by the
-                    # CLI, not the context hook) and remain unaffected.
-                    session_id = str(payload.get("session_id") or "")
+            text = extract_stop_assistant_text(payload)
+            if not should_skip_silent_tick(text):
+                explicit_fresh = _explicit_send_marker_fresh(paths)
+                session_id = str(payload.get("session_id") or "")
+                provider = stop_hook_provider(payload)
+
+                # Claude Code's UserPromptSubmit hook writes a per-turn
+                # success breadcrumb. Keep its existing fail-closed gate
+                # unchanged. Codex supplies the completed reply directly
+                # in its Stop payload and has no matching context-hook
+                # breadcrumb in this adapter.
+                if provider == "claude":
                     ok, reason = _bc.evaluate(
                         paths,
                         session_id=session_id,
                         transcript_path=transcript,
                     )
-                    if not ok:
-                        _log_suppression(
-                            paths,
-                            session_id=session_id,
-                            reason=reason,
-                            agent=agent,
-                        )
-                        _notify_orchestrator_of_suppression(
-                            paths,
-                            session_id=session_id,
-                            reason=reason,
-                            agent=agent,
-                        )
-                    elif not explicit_fresh:
-                        # Happy path: breadcrumb confirms context-hook
-                        # success and no explicit send already covered
-                        # this turn's reply.
-                        route_to_telegram(text or "", paths)
-                    # Ack the user's triggering message whenever the user
-                    # got *something* user-visible this turn — that's the
-                    # auto-forward (when not suppressed) OR an explicit
-                    # send (when the marker is fresh). On a fail-closed
-                    # tick with no explicit send, the user did NOT get
-                    # the assistant text, so don't ack — the !info to
-                    # @orchestrator + the unacked 👀 reaction together
-                    # signal the degraded turn.
-                    if ok or explicit_fresh:
-                        try:
-                            consume_pending_ack(paths)
-                        except Exception:  # noqa: BLE001
-                            pass
+                else:
+                    ok, reason = True, ""
+
+                if not ok:
+                    _log_suppression(
+                        paths,
+                        session_id=session_id,
+                        reason=reason,
+                        agent=agent,
+                    )
+                    _notify_orchestrator_of_suppression(
+                        paths,
+                        session_id=session_id,
+                        reason=reason,
+                        agent=agent,
+                    )
+                elif not explicit_fresh:
+                    route_to_telegram(text or "", paths)
+
+                if ok or explicit_fresh:
+                    try:
+                        consume_pending_ack(paths)
+                    except Exception:  # noqa: BLE001
+                        pass
 
         track_turn_completion(agent, paths)
 

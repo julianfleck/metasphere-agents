@@ -613,3 +613,103 @@ def test_wire_exit_self_preserves_existing_funding_sink_stanza(tmp_paths):
     # are preserved.
     assert sink_idx < cleanup_idx
     assert SENTINEL in saved
+
+
+# ---------- generic scheduled agent wakes ----------
+
+
+def test_dispatch_wakes_orchestrator_without_mission_file(tmp_paths):
+    with mock.patch(
+        "metasphere.gateway.session.start_session", return_value=True
+    ) as start, mock.patch(
+        "metasphere.schedule._agents._submit_via_tmux", return_value=True
+    ) as submit:
+        ok = _sched.dispatch_to_agent(
+            "@orchestrator", "scheduled wake", paths=tmp_paths
+        )
+
+    assert ok is True
+    start.assert_called_once_with(tmp_paths)
+    submit.assert_called_once_with(
+        "metasphere-orchestrator", "[task] scheduled wake"
+    )
+
+
+def test_upsert_agent_job_creates_and_preserves_fire_history(tmp_paths):
+    created = _sched.upsert_agent_job(
+        "daily-check",
+        agent="@orchestrator",
+        cron_expr="0 9 * * *",
+        message="first payload",
+        tz="America/Los_Angeles",
+        paths=tmp_paths,
+    )
+    created.last_fired_at = 12345
+    _sched.save_jobs([created], tmp_paths, _input_count=1)
+
+    updated = _sched.upsert_agent_job(
+        "daily-check",
+        agent="orchestrator",
+        cron_expr="30 9 * * *",
+        message="updated payload",
+        tz="America/Los_Angeles",
+        paths=tmp_paths,
+    )
+
+    assert updated.agent_id == "orchestrator"
+    assert updated.payload_message == "updated payload"
+    assert updated.last_fired_at == 12345
+    assert len(_sched.load_jobs(tmp_paths)) == 1
+
+
+def test_upsert_agent_job_rejects_invalid_cron_and_timezone(tmp_paths):
+    with pytest.raises(ValueError, match="invalid cron expression"):
+        _sched.upsert_agent_job(
+            "bad-cron",
+            agent="@orchestrator",
+            cron_expr="not cron",
+            message="payload",
+            paths=tmp_paths,
+        )
+    with pytest.raises(ValueError, match="invalid timezone"):
+        _sched.upsert_agent_job(
+            "bad-zone",
+            agent="@orchestrator",
+            cron_expr="0 9 * * *",
+            message="payload",
+            tz="Mars/Olympus",
+            paths=tmp_paths,
+        )
+
+
+def test_remove_job_can_remove_final_registry_entry(tmp_paths):
+    _sched.upsert_agent_job(
+        "one-shot",
+        agent="@orchestrator",
+        cron_expr="0 9 * * *",
+        message="payload",
+        paths=tmp_paths,
+    )
+    assert _sched.remove_job("one-shot", tmp_paths) is True
+    assert _sched.load_jobs(tmp_paths) == []
+
+
+def test_fire_job_dispatches_without_changing_last_fired(tmp_paths):
+    job = _sched.upsert_agent_job(
+        "manual-check",
+        agent="@orchestrator",
+        cron_expr="0 9 * * *",
+        message="payload",
+        paths=tmp_paths,
+    )
+    with mock.patch("metasphere.schedule.dispatch_to_agent", return_value=True) as dispatch:
+        result = _sched.fire_job(job.id, tmp_paths)
+    assert result is not None and result.dispatched is True
+    dispatch.assert_called_once_with(
+        "@orchestrator",
+        "payload",
+        paths=tmp_paths,
+        job_name="manual-check",
+        model="",
+    )
+    assert _sched.load_jobs(tmp_paths)[0].last_fired_at == 0

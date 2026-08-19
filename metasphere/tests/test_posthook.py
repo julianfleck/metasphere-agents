@@ -47,6 +47,16 @@ def test_read_stop_hook_payload_empty_returns_empty_dict():
     assert posthook.read_stop_hook_payload(b"not json") == {}
 
 
+def test_extract_stop_assistant_text_from_codex_payload():
+    payload = {
+        "hook_event_name": "Stop",
+        "last_assistant_message": "Codex reply",
+        "transcript_path": "/unused/codex/rollout.jsonl",
+    }
+    assert posthook.stop_hook_provider(payload) == "codex"
+    assert posthook.extract_stop_assistant_text(payload) == "Codex reply"
+
+
 # ---------- extract_last_assistant_text ----------
 
 def _write_jsonl(path: Path, records: list[dict]) -> None:
@@ -254,6 +264,8 @@ def test_should_skip_silent_tick_prefix_variants():
     assert skip("Silent tick. Idle, waiting on the operator's morning activity.") is True
     assert skip("Idle, waiting on the operator's morning activity.") is True
     assert skip("Nothing new to report — standing by.") is True
+    assert skip("No new work detected.") is True
+    assert skip("No new messages or active tasks. Standing by.") is True
     # Case-insensitive.
     assert skip("SILENT TICK AT 05:07Z") is True
     assert skip("silent tick at 05:07Z") is True
@@ -577,6 +589,27 @@ def test_run_posthook_respects_stop_hook_active(tmp_paths: Paths, monkeypatch):
     with mock.patch("metasphere.telegram.api.send_message") as m:
         posthook.run_posthook(payload, tmp_paths)
     m.assert_not_called()
+
+
+def test_run_posthook_routes_codex_payload_without_claude_breadcrumb(
+    tmp_paths: Paths, monkeypatch
+):
+    _write_chat_id(tmp_paths)
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    payload = json.dumps(
+        {
+            "session_id": "codex-session",
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+            "last_assistant_message": "reply from codex",
+        }
+    ).encode("utf-8")
+    with mock.patch("metasphere.telegram.api.send_message") as send:
+        send.return_value = [{"ok": True}]
+        rc = posthook.run_posthook(payload, tmp_paths)
+    assert rc == 0
+    send.assert_called_once()
+    assert not (tmp_paths.logs / "posthook-suppressions.log").exists()
 
 
 # ---------- auto_close_finished_task ----------
