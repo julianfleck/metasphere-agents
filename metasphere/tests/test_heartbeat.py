@@ -70,6 +70,9 @@ def test_check_urgent_tasks_counts_correctly(tmp_paths: Paths):
 def test_build_agent_context_prepends_header(tmp_paths: Paths):
     out = hb.build_agent_context("@orchestrator", tmp_paths)
     assert out.startswith("# HEARTBEAT")
+    assert "reply with exactly `[idle]` and no other text" in out
+    assert "Do not describe an empty queue" in out
+    assert "Do not repeat a warning or status" in out
     # Sections from build_context still present.
     assert "Metasphere Delta" in out
     assert "Messages" in out
@@ -129,6 +132,29 @@ def test_invoke_agent_heartbeat_falls_back_to_oneshot(tmp_paths: Paths):
     assert cmd[0] == "claude"
     assert "-p" in cmd
     assert "--allowedTools" in cmd
+
+
+def test_invoke_agent_heartbeat_codex_fallback_is_sandboxed(
+    tmp_paths: Paths, monkeypatch
+):
+    _agent(tmp_paths, "@orchestrator", "active")
+    monkeypatch.setenv("METASPHERE_AGENT_RUNTIME", "codex")
+
+    with mock.patch.object(hb, "session_alive", return_value=False), mock.patch.object(
+        hb.subprocess, "run"
+    ) as run:
+        ok = hb.invoke_agent_heartbeat("@orchestrator", tmp_paths)
+
+    assert ok is True
+    cmd = run.call_args.args[0]
+    assert cmd[0] == "codex"
+    assert "exec" in cmd
+    assert cmd.index("--ask-for-approval") < cmd.index("exec")
+    assert cmd[-1] == "-"
+    assert "--sandbox" in cmd
+    assert "workspace-write" in cmd
+    assert "--dangerously-bypass-hook-trust" not in cmd
+    assert run.call_args.kwargs["input"].startswith("# HEARTBEAT")
 
 
 def test_invoke_agent_heartbeat_passes_defer_if_busy_true(tmp_paths: Paths):

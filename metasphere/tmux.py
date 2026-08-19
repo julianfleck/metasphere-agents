@@ -26,6 +26,7 @@ Never raises — returns False on failure.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -59,6 +60,8 @@ def _confirmed_submit_disabled() -> bool:
 # and stay silent until a successful submit clears the flag — so the
 # next deferred heartbeat after the user stops typing logs again.
 _deferring_sessions: set[str] = set()
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
 #: Returned by tmux discovery when a pytest run must not reach the host
@@ -130,6 +133,18 @@ def _is_box_border(stripped: str) -> bool:
     return border_chars >= 10 and border_chars >= len(stripped) * 0.8
 
 
+def _codex_prompt_content(styled_pane: str) -> str | None:
+    for raw in reversed(styled_pane.splitlines()[-10:]):
+        plain = _ANSI_RE.sub("", raw).strip()
+        if not plain.startswith("›"):
+            continue
+        content = plain[1:].strip()
+        if not content or "\x1b[2m" in raw:
+            return None
+        return content
+    return None
+
+
 def _input_line_has_typing(tmux: str, session: str) -> bool:
     """Inspect the pane and return True if the input box shows
     user-typed content (mid-typing human, or mid-inject residue).
@@ -159,14 +174,21 @@ def _input_line_has_typing(tmux: str, session: str) -> bool:
     interleave than to silently drop every heartbeat on tmux quirks.
     """
     try:
+        codex_runtime = os.environ.get("METASPHERE_AGENT_RUNTIME", "").lower() == "codex"
+        argv = [tmux, "capture-pane", "-p"]
+        if codex_runtime:
+            argv.append("-e")
+        argv.extend(["-t", session])
         r = subprocess.run(
-            [tmux, "capture-pane", "-p", "-t", session],
+            argv,
             capture_output=True,
             text=True,
             check=False,
         )
         if r.returncode != 0:
             return False
+        if codex_runtime:
+            return _codex_prompt_content(r.stdout) is not None
         inner_lines = _input_box_inner_lines(r.stdout.splitlines())
         if inner_lines is None:
             return False  # no input box found — fail open
@@ -237,14 +259,21 @@ def input_box_content(session: str) -> str | None:
         tmux = _find_tmux()
         if not tmux:
             return None
+        codex_runtime = os.environ.get("METASPHERE_AGENT_RUNTIME", "").lower() == "codex"
+        argv = [tmux, "capture-pane", "-p"]
+        if codex_runtime:
+            argv.append("-e")
+        argv.extend(["-t", session])
         r = subprocess.run(
-            [tmux, "capture-pane", "-p", "-t", session],
+            argv,
             capture_output=True,
             text=True,
             check=False,
         )
         if r.returncode != 0:
             return None
+        if codex_runtime:
+            return _codex_prompt_content(r.stdout)
         inner_lines = _input_box_inner_lines(r.stdout.splitlines())
         if inner_lines is None:
             return None

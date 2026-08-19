@@ -19,6 +19,14 @@ from metasphere.cli.failsafe import (
 from metasphere.cli.accounts import CRED_FILENAME
 
 
+@pytest.fixture(autouse=True)
+def _linux_credential_store(monkeypatch):
+    """Credential-rotation tests exercise the non-Keychain code path."""
+    import metasphere.cli.failsafe as fs
+
+    monkeypatch.setattr(fs.sys, "platform", "linux")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

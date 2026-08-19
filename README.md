@@ -1,6 +1,6 @@
 # Metasphere Agents
 
-A hackable autonomous agent harness built around Claude Code. Your agent runs 24/7, you talk to it from Telegram — it thinks, works, spawns helpers, and reports back. You can interrupt it mid-thought, redirect it, or just watch it work.
+A hackable autonomous agent harness built around an interactive coding-agent REPL. Claude Code is the default runtime; experimental Codex CLI support is available through `METASPHERE_AGENT_RUNTIME=codex`. Your agent runs 24/7, you talk to it from Telegram — it thinks, works, spawns helpers, and reports back.
 
 If you already use Claude Code and like its ecosystem — skills, hooks, MCP servers, IDE integrations — but want your agents to run persistently, be reachable from your phone, and operate with more structure than Claude Code's remote agents offer, this is the missing layer. You get Claude Code's reliability and tool ecosystem with a controllable harness around it: task management, multi-agent coordination, scheduled automation, and transparent state you can inspect and modify.
 
@@ -26,6 +26,14 @@ Install [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and authen
 ```bash
 npm install -g @anthropic-ai/claude-code
 claude login
+```
+
+For the experimental Codex runtime, install and authenticate Codex CLI instead,
+then select it when installing:
+
+```bash
+codex login
+METASPHERE_AGENT_RUNTIME=codex ./install.sh
 ```
 
 You also need `tmux`, `Python 3.11+`, and `jq`:
@@ -83,7 +91,7 @@ Your agent is now live. Message it on Telegram.
 
 ## Architecture
 
-The harness runs three independent systemd services plus an orchestrator REPL running inside a tmux session. User-visible state lives at `~/.metasphere/`; per-project data lives at `~/.metasphere/projects/<name>/`.
+The harness runs three independent user services—systemd on Linux and launchd on macOS—plus an orchestrator REPL inside a tmux session. User-visible state lives at `~/.metasphere/`; per-project data lives at `~/.metasphere/projects/<name>/`.
 
 ### Routing
 
@@ -92,7 +100,7 @@ flowchart LR
     U((User)) -- message --> TG[Telegram Bot API]
     TG -- getUpdates --> GW[gateway daemon\n telegram.poller.run_poll_iteration]
     GW -- parse+download attachments --> ATT[~/.metasphere/attachments/]
-    GW -- inject --> TMUX[tmux: metasphere-orchestrator\n claude REPL]
+    GW -- inject --> TMUX[tmux: metasphere-orchestrator\n agent REPL]
     TMUX -- Stop-hook --> POST[posthook]
     POST -- send --> TG
     HB[heartbeat daemon] -- wake tick --> TMUX
@@ -228,17 +236,20 @@ When a session restarts, the watchdog automatically injects a continuation promp
 
 ## Scheduling
 
-Cron jobs are YAML files at `~/.metasphere/cron/<id>.yaml`. The schedule daemon ticks once a minute and dispatches every job whose cron expression matches.
+Cron jobs live in `~/.metasphere/schedule/jobs.json`. The schedule daemon ticks once a minute and dispatches every job whose cron expression matches.
 
 ```bash
 metasphere schedule list           # Show scheduled jobs (default with no args)
+metasphere schedule add daily-check --agent @orchestrator --cron "0 9 * * *" --tz America/Los_Angeles --message "Run the daily check"
+metasphere schedule fire daily-check # Dispatch one job immediately
+metasphere schedule remove daily-check
 metasphere schedule run            # Fire one tick now: dispatch matching jobs
 metasphere schedule enable <id>    # Re-enable a disabled job
 metasphere schedule disable <id>   # Disable a job (kept in registry, won't fire)
 metasphere schedule wire-exit-self # Append canonical exit-self tail to every job
 ```
 
-To add a job, create a YAML file at `~/.metasphere/cron/<id>.yaml` with the cron expression and the dispatch payload — the daemon picks it up on its next tick.
+`schedule add` is idempotent by job id, so rerunning it updates the existing job while preserving its fire history.
 
 ## Memory
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Metasphere Agents - Multi-agent orchestration for Claude Code
+# Metasphere Agents - persistent multi-agent orchestration
 # One-line installer: curl -fsSL https://raw.githubusercontent.com/julianfleck/metasphere-agents/main/install.sh | bash
 #
 # Options:
@@ -14,11 +14,13 @@
 # Environment variables (for non-interactive):
 #   TELEGRAM_BOT_TOKEN    - Telegram bot token
 #   METASPHERE_DIR        - Installation directory (default: ~/.metasphere)
+#   METASPHERE_AGENT_RUNTIME - Agent REPL: claude (default) or codex
 #
 set -e
 
 REPO="julianfleck/metasphere-agents"
 METASPHERE_DIR="${METASPHERE_DIR:-$HOME/.metasphere}"
+AGENT_RUNTIME="${METASPHERE_AGENT_RUNTIME:-claude}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo ".")"
 INTERACTIVE=true
 VERBOSE=false
@@ -128,7 +130,7 @@ seed_or_drift_check() {
 
 echo "Metasphere Agents"
 echo "================="
-echo "Multi-agent orchestration for Claude Code"
+echo "Multi-agent orchestration for $AGENT_RUNTIME"
 echo
 
 # =============================================================================
@@ -190,8 +192,12 @@ check_dependencies() {
     fi
     ok "python3 + python3-venv"
 
-    # Claude Code CLI
-    if command -v claude &>/dev/null; then
+    # Agent runtime CLI. Keep provider probes local and non-mutating: Codex
+    # exposes an auth-status command, while Claude requires a short headless
+    # request to distinguish an installed-but-logged-out CLI.
+    case "$AGENT_RUNTIME" in
+    claude)
+      if command -v claude &>/dev/null; then
         local claude_version=$(claude --version 2>/dev/null | head -1 || echo "unknown")
         ok "claude CLI ($claude_version)"
 
@@ -212,7 +218,7 @@ check_dependencies() {
         else
             ok "Claude Code responding"
         fi
-    else
+      else
         warn "claude CLI not found"
         echo "    Install from: https://claude.ai/code"
         echo "    Metasphere requires Claude Code for agent execution"
@@ -221,7 +227,38 @@ check_dependencies() {
             echo
             [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
         fi
-    fi
+      fi
+      ;;
+    codex)
+      if command -v codex &>/dev/null; then
+        local codex_version
+        codex_version=$(codex --version 2>/dev/null | head -1 || echo "unknown")
+        ok "codex CLI ($codex_version)"
+        if codex login status &>/dev/null; then
+            ok "Codex authenticated"
+        else
+            warn "Codex may not be authenticated"
+            echo "    Run: codex login"
+            if $INTERACTIVE; then
+                read -p "Continue anyway? [y/N] " -n 1 -r
+                echo
+                [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
+            fi
+        fi
+      else
+        warn "codex CLI not found"
+        echo "    Install Codex CLI, then run: codex login"
+        if $INTERACTIVE; then
+            read -p "Continue without Codex? [y/N] " -n 1 -r
+            echo
+            [[ ! $REPLY =~ ^[Yy]$ ]] && exit 1
+        fi
+      fi
+      ;;
+    *)
+      err "Unsupported METASPHERE_AGENT_RUNTIME '$AGENT_RUNTIME' (expected claude or codex)"
+      ;;
+    esac
 
     # CAM (Collective Agent Memory)
     if command -v cam &>/dev/null; then
@@ -923,59 +960,79 @@ setup_daemon() {
 
 setup_daemon_macos() {
     local plist_dir="$HOME/Library/LaunchAgents"
-    local plist_file="$plist_dir/com.metasphere.plist"
-    local old_plist="$plist_dir/com.metasphere.gateway.plist"
+    local template_dir="$SCRIPT_DIR/launchd/user"
+    local venv_bin="$METASPHERE_DIR/venv/bin/metasphere"
+    local runtime="$AGENT_RUNTIME"
+    local service_path="$METASPHERE_DIR/venv/bin:$METASPHERE_DIR/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin"
 
-    mkdir -p "$plist_dir"
+    mkdir -p "$plist_dir" "$METASPHERE_DIR/logs"
 
-    # Remove old plist if exists
-    [[ -f "$old_plist" ]] && launchctl unload "$old_plist" 2>/dev/null && rm "$old_plist"
+    local obsolete="$plist_dir/com.metasphere.plist"
+    if [[ -f "$obsolete" ]]; then
+        launchctl bootout "gui/$(id -u)/com.metasphere" 2>/dev/null || true
+        rm -f "$obsolete"
+        ok "Removed obsolete com.metasphere launchd job"
+    fi
 
-    cat > "$plist_file" << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.metasphere</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$METASPHERE_DIR/bin/metasphere</string>
-        <string>run</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>$METASPHERE_DIR/logs/metasphere.log</string>
-    <key>StandardErrorPath</key>
-    <string>$METASPHERE_DIR/logs/metasphere.error.log</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>METASPHERE_DIR</key>
-        <string>$METASPHERE_DIR</string>
-        <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin:$METASPHERE_DIR/bin</string>
-    </dict>
-</dict>
-</plist>
-EOF
-
-    ok "Created launchd plist"
-
-    if $INTERACTIVE; then
-        read -p "Start metasphere daemon now? [Y/n] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-            launchctl unload "$plist_file" 2>/dev/null || true
-            launchctl load "$plist_file"
-            ok "Daemon started"
+    local rendered_any=false
+    local daemon
+    for daemon in gateway heartbeat schedule; do
+        local tmpl="$template_dir/com.metasphere.$daemon.plist"
+        local out="$plist_dir/com.metasphere.$daemon.plist"
+        if [[ ! -f "$tmpl" ]]; then
+            warn "Missing template $tmpl — skipping $daemon"
+            continue
         fi
-    else
-        launchctl unload "$plist_file" 2>/dev/null || true
-        launchctl load "$plist_file"
-        ok "Daemon started"
+        local tmp
+        tmp=$(mktemp)
+        sed \
+            -e "s|@@METASPHERE_DIR@@|$METASPHERE_DIR|g" \
+            -e "s|@@METASPHERE_PROJECT_ROOT@@|$SCRIPT_DIR|g" \
+            -e "s|@@METASPHERE_VENV_BIN@@|$venv_bin|g" \
+            -e "s|@@METASPHERE_AGENT_RUNTIME@@|$runtime|g" \
+            -e "s|@@METASPHERE_PATH@@|$service_path|g" \
+            "$tmpl" > "$tmp"
+        if ! plutil -lint "$tmp" >/dev/null; then
+            rm -f "$tmp"
+            warn "Invalid launchd template for $daemon — skipping"
+            continue
+        fi
+        if [[ ! -f "$out" ]] || ! cmp -s "$tmp" "$out"; then
+            mv "$tmp" "$out"
+            chmod 644 "$out"
+            rendered_any=true
+            ok "Rendered com.metasphere.$daemon.plist"
+        else
+            rm -f "$tmp"
+        fi
+    done
+
+    local start_now=true
+    if $INTERACTIVE; then
+        read -p "Start metasphere daemons now? [Y/n] " -n 1 -r
+        echo
+        [[ $REPLY =~ ^[Nn]$ ]] && start_now=false
+    fi
+
+    if $start_now; then
+        local restart_pending=()
+        for daemon in gateway heartbeat schedule; do
+            local label="com.metasphere.$daemon"
+            local target="gui/$(id -u)/$label"
+            local plist="$plist_dir/$label.plist"
+            [[ -f "$plist" ]] || continue
+            if launchctl print "$target" &>/dev/null; then
+                $rendered_any && restart_pending+=("$label")
+            else
+                launchctl bootstrap "gui/$(id -u)" "$plist"
+            fi
+        done
+        ok "Daemons loaded (gateway, heartbeat, schedule)"
+        if (( ${#restart_pending[@]} > 0 )); then
+            warn "Updated launchd jobs remain on their previous definitions:"
+            printf '    - %s\n' "${restart_pending[@]}"
+            echo "    Restart when ready: metasphere daemon restart"
+        fi
     fi
 }
 
@@ -1037,7 +1094,8 @@ setup_daemon_linux() {
     fi
 
     # Render the three split daemon units from repo templates. Markers
-    # (@@METASPHERE_DIR@@, @@METASPHERE_PROJECT_ROOT@@, @@METASPHERE_VENV_BIN@@)
+    # (@@METASPHERE_DIR@@, @@METASPHERE_PROJECT_ROOT@@,
+    # @@METASPHERE_VENV_BIN@@, @@METASPHERE_AGENT_RUNTIME@@)
     # get install-time-substituted with operator-detected absolute
     # paths. Re-rendering on every install is intentional: it overwrites
     # any hand-written drift (e.g. the manual gateway/heartbeat/schedule
@@ -1058,6 +1116,7 @@ setup_daemon_linux() {
             -e "s|@@METASPHERE_DIR@@|$METASPHERE_DIR|g" \
             -e "s|@@METASPHERE_PROJECT_ROOT@@|$SCRIPT_DIR|g" \
             -e "s|@@METASPHERE_VENV_BIN@@|$venv_bin|g" \
+            -e "s|@@METASPHERE_AGENT_RUNTIME@@|$AGENT_RUNTIME|g" \
             "$tmpl" > "$tmp"
         # Idempotent write: only overwrite if content changed, so a
         # second install.sh run is a no-op and `systemctl restart`
@@ -1240,6 +1299,61 @@ seed_claude_permissions() {
     done
 }
 
+seed_codex_hooks() {
+    info "Seeding Codex hooks..."
+
+    local posthook_path="$METASPHERE_DIR/venv/bin/metasphere hooks posthook"
+    local target
+    for target in "$SCRIPT_DIR/.codex" "$METASPHERE_DIR/.codex"; do
+        local target_file="$target/hooks.json"
+        mkdir -p "$target"
+
+        if [[ ! -f "$target_file" ]]; then
+            jq -n --arg post "$posthook_path" '{
+                hooks: {
+                    Stop: [{
+                        hooks: [{
+                            type: "command",
+                            command: $post,
+                            statusMessage: "Forwarding response to Telegram"
+                        }]
+                    }]
+                }
+            }' > "$target_file" \
+                && ok "Created $target_file (Stop hook)" \
+                || warn "Failed to create $target_file"
+            continue
+        fi
+
+        local tmp
+        tmp=$(mktemp)
+        if jq --arg post "$posthook_path" '
+            .hooks = (.hooks // {}) |
+            .hooks.Stop = [{
+                hooks: [{
+                    type: "command",
+                    command: $post,
+                    statusMessage: "Forwarding response to Telegram"
+                }]
+            }]
+        ' "$target_file" > "$tmp" 2>/dev/null; then
+            mv "$tmp" "$target_file" && ok "Updated $target_file (Stop hook)" \
+                || { warn "Failed to update $target_file"; rm -f "$tmp"; }
+        else
+            rm -f "$tmp"
+            warn "Could not parse $target_file - leaving unchanged"
+        fi
+    done
+}
+
+seed_runtime_integration() {
+    case "$AGENT_RUNTIME" in
+        claude) seed_claude_permissions ;;
+        codex) seed_codex_hooks ;;
+        *) warn "Unsupported agent runtime '$AGENT_RUNTIME' - hooks not installed" ;;
+    esac
+}
+
 # =============================================================================
 # Final setup
 # =============================================================================
@@ -1373,7 +1487,7 @@ main() {
     migrate_cam_data      # Reuse existing ~/.cam to skip re-index
     setup_telegram
     setup_orchestrator
-    seed_claude_permissions
+    seed_runtime_integration
     install_skills        # Skills + slash commands to ~/.claude/
     setup_daemon
     register_auto_update_job

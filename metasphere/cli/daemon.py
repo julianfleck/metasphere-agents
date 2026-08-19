@@ -1,17 +1,14 @@
-"""``metasphere daemon`` — systemd wrapper for the harness services.
+"""``metasphere daemon`` — service-manager wrapper for harness daemons.
 
-Front-end for ``systemctl`` calls against the three long-running
-metasphere services (gateway, heartbeat, schedule). Each subcommand
-maps onto the corresponding ``systemctl <action> metasphere-<svc>``
-invocation; this module owns the unit-name conventions and resolves
-``--user`` vs system scope from the active install. Failures are
-reported back as the underlying ``systemctl`` exit code so callers can
-distinguish "service not installed" from "service crashed".
+Front-end for the three long-running metasphere services (gateway,
+heartbeat, schedule). Linux uses ``systemctl --user``; macOS uses
+``launchctl`` in the current GUI domain. This module owns both naming
+conventions and returns the underlying service-manager exit code.
 """
 
 from __future__ import annotations
 
-DESCRIPTION = "Start/stop/restart/status the three metasphere systemd services."
+DESCRIPTION = "Start/stop/restart/status the three metasphere services."
 
 USAGE = """\
 Usage: metasphere daemon <action> [<service>]
@@ -33,8 +30,10 @@ boot-dependency order (gateway, heartbeat, schedule).
 
 
 import argparse
+import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import Callable, List, Optional
 
 
@@ -49,6 +48,22 @@ ACTIONS = ("start", "stop", "restart", "status")
 
 def _service_unit(short: str) -> str:
     return f"metasphere-{short}.service"
+
+
+def _is_macos() -> bool:
+    return sys.platform == "darwin"
+
+
+def _launchd_label(short: str) -> str:
+    return f"com.metasphere.{short}"
+
+
+def _launchd_target(short: str) -> str:
+    return f"gui/{os.getuid()}/{_launchd_label(short)}"
+
+
+def _launchd_plist(short: str) -> str:
+    return str(Path.home() / "Library" / "LaunchAgents" / f"{_launchd_label(short)}.plist")
 
 
 def _run(argv: List[str], *, runner: Optional[Callable] = None) -> "subprocess.CompletedProcess":
@@ -69,6 +84,51 @@ def _systemctl(action: str, service: str, *,
         runner=runner,
     )
     return cp.returncode, (cp.stdout or ""), (cp.stderr or "")
+
+
+def _launchctl(action: str, service: str, *,
+               runner: Optional[Callable] = None) -> tuple[int, str, str]:
+    target = _launchd_target(service)
+    if action == "status":
+        argv = ["launchctl", "print", target]
+    elif action == "stop":
+        argv = ["launchctl", "bootout", target]
+    elif action == "restart":
+        # ``kickstart -k`` restarts the process but retains launchd's old
+        # in-memory plist. Re-bootstrap so installer-rendered environment
+        # and command changes actually become active.
+        probe = _run(["launchctl", "print", target], runner=runner)
+        if probe.returncode == 0:
+            stopped = _run(["launchctl", "bootout", target], runner=runner)
+            if stopped.returncode != 0:
+                return (
+                    stopped.returncode,
+                    (stopped.stdout or ""),
+                    (stopped.stderr or ""),
+                )
+        argv = [
+            "launchctl",
+            "bootstrap",
+            f"gui/{os.getuid()}",
+            _launchd_plist(service),
+        ]
+    elif action == "start":
+        probe = _run(["launchctl", "print", target], runner=runner)
+        if probe.returncode == 0:
+            argv = ["launchctl", "kickstart", target]
+        else:
+            argv = ["launchctl", "bootstrap", f"gui/{os.getuid()}", _launchd_plist(service)]
+    else:
+        raise ValueError(f"unsupported launchctl action: {action}")
+    cp = _run(argv, runner=runner)
+    return cp.returncode, (cp.stdout or ""), (cp.stderr or "")
+
+
+def _service_call(action: str, service: str, *,
+                  runner: Optional[Callable] = None) -> tuple[int, str, str]:
+    if _is_macos():
+        return _launchctl(action, service, runner=runner)
+    return _systemctl(action, service, runner=runner)
 
 
 def _format_status_line(service: str, rc: int, stdout: str, stderr: str) -> str:
@@ -92,12 +152,30 @@ def _format_status_line(service: str, rc: int, stdout: str, stderr: str) -> str:
     return f"{service:10s}  {active_line or 'unknown'}"
 
 
+def _format_launchd_status_line(service: str, rc: int, stdout: str, stderr: str) -> str:
+    if rc != 0:
+        return f"{service:10s}  not loaded"
+    state = "unknown"
+    pid = ""
+    for raw in stdout.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("state ="):
+            state = stripped.partition("=")[2].strip()
+        elif stripped.startswith("pid ="):
+            pid = stripped.partition("=")[2].strip()
+    suffix = f" (pid {pid})" if pid else ""
+    return f"{service:10s}  {state}{suffix}"
+
+
 def cmd_status(args: argparse.Namespace,
                *, runner: Optional[Callable] = None) -> int:
     targets = [args.service] if args.service else list(SERVICES)
     worst_rc = 0
     for svc in targets:
-        rc, out, err = _systemctl("status", svc, runner=runner)
+        rc, out, err = _service_call("status", svc, runner=runner)
+        if _is_macos():
+            print(_format_launchd_status_line(svc, rc, out, err))
+            continue
         print(_format_status_line(svc, rc, out, err))
         # systemctl status returns 3 for "inactive"; that's not a CLI
         # failure from our perspective, just a reportable state.
@@ -111,7 +189,7 @@ def cmd_lifecycle(args: argparse.Namespace,
     targets = [args.service] if args.service else list(SERVICES)
     worst_rc = 0
     for svc in targets:
-        rc, out, err = _systemctl(args.action, svc, runner=runner)
+        rc, out, err = _service_call(args.action, svc, runner=runner)
         if rc == 0:
             print(f"{svc:10s}  {args.action} ok")
         else:
@@ -124,7 +202,7 @@ def cmd_lifecycle(args: argparse.Namespace,
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="metasphere daemon",
-        description="Control the three metasphere systemd services "
+        description="Control the three metasphere services "
         f"({', '.join(SERVICES)}).",
     )
     p.add_argument("action", choices=ACTIONS,

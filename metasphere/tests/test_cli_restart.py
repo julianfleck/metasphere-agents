@@ -14,6 +14,11 @@ import pytest
 from metasphere.cli import restart as R
 
 
+@pytest.fixture(autouse=True)
+def _systemd_platform(monkeypatch):
+    monkeypatch.setattr(R, "_is_macos", lambda: False)
+
+
 def test_help_short_flag_returns_zero(capsys):
     rc = R.main(["-h"])
     out, _ = capsys.readouterr()
@@ -290,3 +295,20 @@ def test_systemctl_missing_returns_one(monkeypatch):
     monkeypatch.setattr(R.shutil, "which", lambda x: None if x == "systemctl" else "/usr/bin/" + x)
     assert R._systemctl("restart", "anything") == 1
     assert R._restart_daemon("metasphere-gateway") is False
+
+
+def test_launchd_restart_and_health(monkeypatch):
+    monkeypatch.setattr(R, "_is_macos", lambda: True)
+    calls: list[tuple[str, str]] = []
+
+    def fake_launchctl(action, service):
+        calls.append((action, service))
+        if action == "status":
+            return 0, "state = running\npid = 42\n", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(R._daemon_cli, "_launchctl", fake_launchctl)
+    assert R._restart_daemon("metasphere-gateway") is True
+    assert all(R.daemon_health().values())
+    assert ("restart", "gateway") in calls
+    assert ("status", "heartbeat") in calls

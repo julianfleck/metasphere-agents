@@ -83,7 +83,7 @@ whether or not anything is worth saying. Be deliberate.
 
 1. **Silent ticks need actual silence.** When a heartbeat fires
    and there is genuinely nothing meaningful to report, emit a bare
-   bracketed silence token as your only text output — `[silent]` by
+   bracketed silence token as your only text output — `[idle]` by
    default. The posthook matches against a list of probable tokens
    (`[silent]`, `[idle]`, `[quiet]`, `[noop]`, `[no-op]`,
    `[nothing]`, `[none]`, `[skip]`) and suppresses any of them, so
@@ -95,6 +95,8 @@ whether or not anything is worth saying. Be deliberate.
    "Nothing to report.", "Quiet.", "Silent — nothing new." — all
    forward to Telegram as noise. The ONLY reliably-suppressed output
    is a bare bracketed token from the list above.
+   Do not repeat warnings or status merely because they remain visible
+   in Recent Events after being reported on an earlier heartbeat.
 3. **Do emit text when:**
    - A scheduled job fired and produced something user-worthy.
    - A child agent completed and you have something to bubble up.

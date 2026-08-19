@@ -1,7 +1,7 @@
 """``metasphere schedule`` — cron-style job scheduler CLI.
 
-Front-end to ``metasphere.schedule``: list configured jobs, run one
-ad-hoc, enable/disable, or run the scheduler loop itself as a
+Front-end to ``metasphere.schedule``: add/remove/list configured jobs,
+fire one ad-hoc, enable/disable, or run the scheduler loop itself as a
 daemon. Jobs are stored as on-disk records (not crontab entries) so
 the harness owns its own schedule semantics — cadence, scope, and
 dispatch target are written through this module, not edited
@@ -10,7 +10,7 @@ by hand under ``~/.metasphere/schedule/``.
 
 from __future__ import annotations
 
-DESCRIPTION = "Cron-style job scheduler: list, run, enable, disable, daemon."
+DESCRIPTION = "Cron-style scheduler: add, remove, list, fire, enable, disable, daemon."
 
 USAGE = """\
 Usage: metasphere schedule [<command>] [args...]
@@ -18,6 +18,10 @@ Usage: metasphere schedule [<command>] [args...]
 Commands:
   (no args)                  Default = list.
   list [project]             List all configured cron jobs.
+  add <id> --agent <@agent> --cron <expr> --message <text>
+                             Create or update an agent wake job.
+  remove <id>                Remove a job by id or name.
+  fire <id>                  Dispatch one job immediately for testing.
   run                        Fire one tick: dispatch every job whose
                              schedule matches now.
   daemon [<interval>]        Long-running scheduler loop. Default
@@ -28,10 +32,11 @@ Commands:
   wire-exit-self [--dry-run] Append the canonical exit-self payload to
                              every job that lacks one.
 
-Job definitions live in `~/.metasphere/cron/<id>.yaml`.
+Job definitions live in `~/.metasphere/schedule/jobs.json`.
 """
 
 
+import argparse
 import datetime as _dt
 import sys
 import time
@@ -83,6 +88,69 @@ def _cmd_run() -> int:
         status = "ok" if r.dispatched else f"FAIL ({r.error})"
         print(f"[fire] {r.target_agent}: {r.name} -- {status}")
     return 0
+
+
+def _cmd_add(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="metasphere schedule add",
+        description="Create or update a scheduled agent wake.",
+    )
+    parser.add_argument("id")
+    parser.add_argument("--agent", required=True)
+    parser.add_argument("--cron", required=True, dest="cron_expr")
+    parser.add_argument("--message", required=True)
+    parser.add_argument("--tz", "--timezone", default="UTC", dest="tz")
+    parser.add_argument("--name", default="")
+    parser.add_argument("--model", default="")
+    parser.add_argument("--disabled", action="store_true")
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return int(exc.code or 0)
+    try:
+        job = _sched.upsert_agent_job(
+            args.id,
+            agent=args.agent,
+            cron_expr=args.cron_expr,
+            message=args.message,
+            tz=args.tz,
+            name=args.name,
+            model=args.model,
+            enabled=not args.disabled,
+            paths=_paths.resolve(),
+        )
+    except ValueError as exc:
+        print(f"schedule add: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"scheduled: {job.id} -> @{job.agent_id} "
+        f"({job.cron_expr}, {job.tz}, enabled={job.enabled})"
+    )
+    return 0
+
+
+def _cmd_remove(job_ref: str) -> int:
+    if not job_ref:
+        print("usage: schedule remove <job-id>", file=sys.stderr)
+        return 2
+    if not _sched.remove_job(job_ref, _paths.resolve()):
+        print(f"job not found: {job_ref}", file=sys.stderr)
+        return 1
+    print(f"removed: {job_ref}")
+    return 0
+
+
+def _cmd_fire(job_ref: str) -> int:
+    if not job_ref:
+        print("usage: schedule fire <job-id>", file=sys.stderr)
+        return 2
+    result = _sched.fire_job(job_ref, _paths.resolve())
+    if result is None:
+        print(f"job not found: {job_ref}", file=sys.stderr)
+        return 1
+    status = "ok" if result.dispatched else f"FAIL ({result.error})"
+    print(f"[fire] {result.target_agent}: {result.name} -- {status}")
+    return 0 if result.dispatched else 1
 
 
 def _cmd_daemon(argv: list[str]) -> int:
@@ -177,6 +245,12 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
         return _cmd_list(project_filter=project_arg)
+    if cmd == "add":
+        return _cmd_add(rest)
+    if cmd in ("remove", "rm", "delete"):
+        return _cmd_remove(rest[0] if rest else "")
+    if cmd in ("fire", "run-now"):
+        return _cmd_fire(rest[0] if rest else "")
     if cmd in ("run", "check"):
         return _cmd_run()
     if cmd == "daemon":

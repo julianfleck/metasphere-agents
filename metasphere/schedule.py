@@ -266,6 +266,18 @@ def _wake_target(
     swallow the task (issue #106).
     """
     try:
+        if target_agent == "@orchestrator":
+            from .gateway.session import SESSION_NAME, start_session
+
+            if not start_session(paths):
+                return False
+            if first_task is None:
+                return True
+            banner = _agents._prepare_wake_banner(
+                target_agent, first_task, paths
+            )
+            return _agents._submit_via_tmux(SESSION_NAME, banner)
+
         _, delivered = _agents.wake_persistent(
             target_agent, first_task=first_task, paths=paths,
             model=model,
@@ -360,7 +372,9 @@ def dispatch_command(
 
     paths = paths or resolve()
     target = _extract_messages_send_target(payload)
-    if target is not None and _find_mission(target, paths) is not None:
+    if target is not None and (
+        target == "@orchestrator" or _find_mission(target, paths) is not None
+    ):
         _wake_target(target, first_task=None, paths=paths)
 
     try:
@@ -406,12 +420,14 @@ def dispatch_to_agent(
     we drop a ``!task`` message into its inbox via
     :func:`metasphere.messages.send_message`.
 
-    If ``model`` is set, it's passed through to the claude invocation
-    so the agent runs on a specific Anthropic model.
+    If ``model`` is set, it is passed through to the configured runtime.
     """
     paths = paths or resolve()
 
-    if _find_mission(target_agent, paths) is not None:
+    if (
+        target_agent == "@orchestrator"
+        or _find_mission(target_agent, paths) is not None
+    ):
         if _wake_target(target_agent, first_task=payload, paths=paths, model=model):
             return True
         # Fall through to inbox-only delivery if wake itself failed.
@@ -524,3 +540,123 @@ def set_enabled(job_ref: str, enabled: bool, paths: Paths | None = None) -> bool
         target.enabled = enabled
         save_jobs(jobs, paths, _input_count=input_count)
     return True
+
+
+def _validate_cron(expr: str, tz: str) -> None:
+    """Raise ``ValueError`` when a cron expression or timezone is invalid."""
+    from zoneinfo import ZoneInfo
+
+    try:
+        zone = ZoneInfo(tz)
+    except Exception as exc:
+        raise ValueError(f"invalid timezone: {tz}") from exc
+    try:
+        croniter(expr, _dt.datetime.now(tz=zone)).get_next(_dt.datetime)
+    except Exception as exc:
+        raise ValueError(f"invalid cron expression: {expr}") from exc
+
+
+def upsert_agent_job(
+    job_id: str,
+    *,
+    agent: str,
+    cron_expr: str,
+    message: str,
+    tz: str = "UTC",
+    name: str = "",
+    model: str = "",
+    enabled: bool = True,
+    paths: Paths | None = None,
+) -> Job:
+    """Create or update a cron job that wakes an agent with ``message``."""
+    paths = paths or resolve()
+    job_id = job_id.strip()
+    if not job_id or any(ch.isspace() for ch in job_id):
+        raise ValueError("job id must be non-empty and contain no whitespace")
+    agent_id = agent.strip().lstrip("@")
+    if not agent_id:
+        raise ValueError("agent must be non-empty")
+    if not message.strip():
+        raise ValueError("message must be non-empty")
+    _validate_cron(cron_expr, tz)
+
+    with with_locked_jobs(paths) as jobs:
+        input_count = len(jobs)
+        job = next((candidate for candidate in jobs if candidate.id == job_id), None)
+        if job is None:
+            job = Job(id=job_id, imported_at=int(time.time()))
+            jobs.append(job)
+        job.source = "metasphere-cli"
+        job.source_id = job_id
+        job.agent_id = agent_id
+        job.name = name.strip() or job_id
+        job.enabled = enabled
+        job.kind = "cron"
+        job.cron_expr = cron_expr
+        job.tz = tz
+        job.payload_kind = "agentTurn"
+        job.payload_message = message
+        job.model = model
+        job.session_target = "persistent"
+        job.wake_mode = "scheduled"
+        save_jobs(jobs, paths, _input_count=input_count)
+    return job
+
+
+def remove_job(job_ref: str, paths: Paths | None = None) -> bool:
+    """Remove a job by id or name."""
+    paths = paths or resolve()
+    with with_locked_jobs(paths) as jobs:
+        input_count = len(jobs)
+        target = next((job for job in jobs if job.id == job_ref), None)
+        if target is None:
+            target = next((job for job in jobs if job.name == job_ref), None)
+        if target is None:
+            return False
+        jobs.remove(target)
+        _write_jobs_unlocked(
+            paths.schedule_jobs,
+            jobs,
+            input_count=0 if not jobs else input_count,
+        )
+    return True
+
+
+def fire_job(job_ref: str, paths: Paths | None = None) -> FireResult | None:
+    """Dispatch one configured job immediately without shifting its cron."""
+    paths = paths or resolve()
+    jobs = load_jobs(paths)
+    job = next((candidate for candidate in jobs if candidate.id == job_ref), None)
+    if job is None:
+        job = next((candidate for candidate in jobs if candidate.name == job_ref), None)
+    if job is None:
+        return None
+    target = resolve_target_agent(job)
+    try:
+        log_event(
+            "schedule.manual_fire",
+            job.name or job.id,
+            agent=target,
+            meta={"job_id": job.id},
+            paths=paths,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("log_event failed: %s", exc)
+    if job.payload_kind == "command":
+        dispatched = dispatch_command(job.payload_message, paths=paths)
+    else:
+        dispatched = dispatch_to_agent(
+            target,
+            job.payload_message,
+            paths=paths,
+            job_name=job.name,
+            model=job.model,
+        )
+    return FireResult(
+        job_id=job.id,
+        name=job.name,
+        target_agent=target,
+        fired=True,
+        dispatched=dispatched,
+        error="" if dispatched else "dispatch failed",
+    )

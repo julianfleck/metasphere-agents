@@ -349,6 +349,29 @@ def test_input_line_has_typing_false_when_no_borders_visible(monkeypatch):
     assert T._input_line_has_typing("/usr/bin/tmux", "sess") is False
 
 
+def test_codex_placeholder_is_not_typing(monkeypatch):
+    pane = "\x1b[1m›\x1b[0m \x1b[2mRun /review on my current changes\x1b[0m\n"
+
+    def fake_run(argv, **kw):
+        assert "-e" in argv
+        return _fake_cp(stdout=pane)
+
+    monkeypatch.setenv("METASPHERE_AGENT_RUNTIME", "codex")
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert T._input_line_has_typing("/usr/bin/tmux", "sess") is False
+
+
+def test_codex_prompt_detects_real_typing(monkeypatch):
+    pane = "\x1b[1m›\x1b[0m telegram reply in progress\n"
+
+    def fake_run(argv, **kw):
+        return _fake_cp(stdout=pane)
+
+    monkeypatch.setenv("METASPHERE_AGENT_RUNTIME", "codex")
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert T._input_line_has_typing("/usr/bin/tmux", "sess") is True
+
+
 def test_input_line_has_typing_fails_open_on_error(monkeypatch):
     """Fail open on capture-pane errors — better to occasionally
     interleave than drop every heartbeat on tmux quirks."""
@@ -375,6 +398,18 @@ def test_input_box_content_returns_typed_text(monkeypatch):
     monkeypatch.setattr("subprocess.run", fake_run)
     monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
     assert T.input_box_content("sess") == "[wake] new task from @orchestrator"
+
+
+def test_codex_input_box_content_ignores_placeholder(monkeypatch):
+    pane = "\x1b[1m›\x1b[0m \x1b[2mRun /review on my current changes\x1b[0m\n"
+
+    def fake_run(argv, **kw):
+        return _fake_cp(stdout=pane)
+
+    monkeypatch.setenv("METASPHERE_AGENT_RUNTIME", "codex")
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+    assert T.input_box_content("sess") is None
 
 
 def test_input_box_content_joins_wrapped_lines(monkeypatch):
