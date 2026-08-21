@@ -104,6 +104,8 @@ flowchart LR
 
 Every inbound Telegram message goes through **one** handler — `metasphere.telegram.handler.handle_update` — whether it came from the production gateway or (historically) a CLI poller. Photos, documents, audio, video, stickers, and any other media payload are downloaded to `~/.metasphere/attachments/<message_id>/` and their paths injected alongside the caption.
 
+The `consolidate` pass also drains aged pinned `!task`/`!query` messages. Those labels are never auto-marked read, so without a backstop they accumulate indefinitely; once such a message ages past a conservative TTL it is soft-archived (reversibly, under `.messages/archive/`) instead of being kept forever. Draining is age-gated and dry-run-first.
+
 ### Per-project state
 
 ```
