@@ -3,7 +3,7 @@
 Two distinct surfaces in one shim. ``install``/``uninstall`` write thin
 ``.git/hooks/<event>`` shell scripts that re-exec ``metasphere hooks
 <event>``; the per-event handler in ``metasphere.git_hooks`` is where
-the actual policy lives (audit-docs nudges, trace capture, etc.).
+the actual policy lives (commit-message checks, trace capture, etc.).
 Designed so a repo's hook chain can be regenerated from source without
 hand-editing ``.git/hooks/``.
 """
