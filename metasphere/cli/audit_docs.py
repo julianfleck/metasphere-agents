@@ -515,6 +515,7 @@ def _open_correction_pr(repo: Path, project_name: str, stanza: str,
     """
     worktree: Optional[Path] = None
     tmp_parent: Optional[str] = None
+    branch: Optional[str] = None
     try:
         # 1. Preconditions.
         if shutil.which("gh") is None:
@@ -556,17 +557,18 @@ def _open_correction_pr(repo: Path, project_name: str, stanza: str,
         if getattr(rev, "returncode", 1) != 0:
             base = "HEAD"
 
-        # 4. Worktree add + branch.
+        # 4. Worktree add + branch, ATOMICALLY. `git worktree add -b <branch>`
+        #    creates the branch and checks it out in the worktree in one step —
+        #    NOT a separate `checkout -b`, which would register the branch in
+        #    the shared parent ref store and survive `worktree remove`, leaving
+        #    a half-open branch in the live checkout (wedges same-day retries).
+        #    The branch is torn down in the `finally` regardless.
         tmp_parent = tempfile.mkdtemp(prefix="audit-pr-")
         worktree = Path(tmp_parent) / "wt"
-        add = runner(["git", "-C", str(repo), "worktree", "add", "--detach",
+        add = runner(["git", "-C", str(repo), "worktree", "add", "-b", branch,
                       str(worktree), base],
                      check=False, text=True, capture_output=True)
         if getattr(add, "returncode", 1) != 0:
-            return None
-        co = runner(["git", "-C", str(worktree), "checkout", "-b", branch],
-                    check=False, text=True, capture_output=True)
-        if getattr(co, "returncode", 1) != 0:
             return None
 
         # 5. Apply the stanza to the worktree's CHANGELOG.md.
@@ -630,6 +632,21 @@ def _open_correction_pr(repo: Path, project_name: str, stanza: str,
             try:
                 runner(["git", "-C", str(repo), "worktree", "remove", "--force",
                         str(worktree)],
+                       check=False, text=True, capture_output=True)
+            except Exception:  # noqa: BLE001
+                pass
+        # 11. Tear down the local branch. Worktrees share the parent repo's
+        #     ref store, so the branch outlives `worktree remove` and would
+        #     linger in the LIVE checkout — tripping the no-half-open-branch
+        #     rule AND wedging same-day retries (the next `worktree add -b`
+        #     fails on the pre-existing branch). Safe on BOTH paths: on
+        #     success the branch is already pushed to origin (the PR tracks
+        #     the remote), on failure nothing was published. Guarded, never
+        #     raises. Runs after `worktree remove` so the branch isn't
+        #     checked-out-elsewhere when we delete it.
+        if branch is not None and worktree is not None:
+            try:
+                runner(["git", "-C", str(repo), "branch", "-D", branch],
                        check=False, text=True, capture_output=True)
             except Exception:  # noqa: BLE001
                 pass

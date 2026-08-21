@@ -706,10 +706,9 @@ class _FakeRunner:
         if "rev-parse" in argv:
             return self._cp(rc=0 if self.base_ok else 1)
         if "worktree" in argv and "add" in argv:
-            wt = argv[argv.index("--detach") + 1]
+            # `git worktree add -b <branch> <wt> <base>` — wt is 2 after -b.
+            wt = argv[argv.index("-b") + 2]
             Path(wt).mkdir(parents=True, exist_ok=True)
-            return self._cp()
-        if "checkout" in argv:
             return self._cp()
         if "diff" in argv:
             wt = Path(argv[2])
@@ -748,8 +747,15 @@ def test_open_correction_pr_happy_path(tmp_path, monkeypatch):
     assert url == "https://github.com/acme/metasphere-agents/pull/42"
     today = __import__("datetime").date.today().isoformat()
     branch = f"docs/audit-metasphere-agents-{today}"
-    # Branch created with the dated name.
-    assert any("checkout" in c and branch in c for c in runner.calls)
+    # Branch created ATOMICALLY via `git worktree add -b <branch>` (not a
+    # separate `checkout -b`, which would leak the branch into the parent
+    # ref store).
+    assert any("worktree" in c and "add" in c and "-b" in c and branch in c
+               for c in runner.calls)
+    assert not any("checkout" in c for c in runner.calls)
+    # The local branch is torn down in the finally (worktree remove + -D).
+    assert any(c[:2] == ["git", "-C"] and "branch" in c and "-D" in c
+               and branch in c for c in runner.calls)
     # `gh pr create` was called exactly once, --base main + --head branch.
     creates = [c for c in runner.calls if c[:3] == ["gh", "pr", "create"]]
     assert len(creates) == 1
@@ -930,3 +936,127 @@ def test_notify_orchestrator_includes_pr_url():
     )
     assert sent and "Correction PR:" in sent[0]["body"]
     assert "pull/9" in sent[0]["body"]
+
+
+# --- correction-PR: no leftover local branch (critic AMBER regression) -----
+
+
+class _RealGitStubGh:
+    """Runs REAL ``git`` (so the shared-ref-store branch behaviour is
+    exercised for real) but stubs only ``gh`` so the test needs no gh
+    binary or network. Push either succeeds (working bare origin) or
+    fails (bogus origin) against real git — that's the whole point.
+    """
+
+    def __init__(self, *, existing_pr_url=""):
+        self.calls = []
+        self.existing_pr_url = existing_pr_url
+
+    def __call__(self, argv, **kw):
+        argv = list(argv)
+        self.calls.append(argv)
+        if argv and argv[0] == "gh":
+            from types import SimpleNamespace
+            if argv[:3] == ["gh", "pr", "list"]:
+                return SimpleNamespace(stdout=self.existing_pr_url,
+                                       stderr="", returncode=0)
+            if argv[:3] == ["gh", "pr", "create"]:
+                return SimpleNamespace(
+                    stdout="https://github.com/acme/metasphere-agents/pull/99",
+                    stderr="", returncode=0)
+            # gh auth status and anything else → success.
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        return subprocess.run(argv, **kw)  # real git
+
+
+def _local_branches(repo: Path) -> list[str]:
+    out = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--format=%(refname:short)"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+
+def test_open_pr_real_push_failure_leaves_no_local_branch(tmp_path, monkeypatch):
+    """Critic AMBER regression: drive a REAL push failure (bogus origin)
+    and assert the audit fail-opens (None), the worktree is gone, AND no
+    ``docs/audit-*`` branch is left behind in the source repo's shared
+    ref store — the leftover that used to wedge same-day retries."""
+    _seed_gh(monkeypatch)
+    repo = _make_repo(tmp_path / "metasphere-agents")
+    # Bogus origin → real `git push` fails deterministically.
+    _git(repo, "remote", "add", "origin", "file:///nonexistent/repo.git")
+    before = set(_local_branches(repo))
+
+    runner = _RealGitStubGh()
+    url = A._open_correction_pr(
+        repo, "metasphere-agents", _STANZA, ["f flag"],
+        tmp_path / "report.md", runner=runner,
+    )
+    today = __import__("datetime").date.today().isoformat()
+    branch = f"docs/audit-metasphere-agents-{today}"
+
+    assert url is None  # fail-open on the push error, no raise
+    # No leftover audit branch in the LIVE ref store.
+    assert branch not in _local_branches(repo)
+    assert set(_local_branches(repo)) == before
+    # Worktree registration is gone too.
+    wt_list = subprocess.run(
+        ["git", "-C", str(repo), "worktree", "list"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert "audit-pr-" not in wt_list
+
+
+def test_open_pr_real_push_failure_same_day_retry_not_wedged(tmp_path,
+                                                             monkeypatch):
+    """The wedge the critic called out: after a failed run, a SECOND
+    same-day run must still be able to create the branch (i.e. reach the
+    push again), not fail-open at `worktree add -b` on a pre-existing
+    branch. Both runs fail-open cleanly and neither leaves a branch."""
+    _seed_gh(monkeypatch)
+    repo = _make_repo(tmp_path / "metasphere-agents")
+    _git(repo, "remote", "add", "origin", "file:///nonexistent/repo.git")
+
+    r1 = _RealGitStubGh()
+    assert A._open_correction_pr(repo, "metasphere-agents", _STANZA,
+                                 ["f"], tmp_path / "r.md", runner=r1) is None
+    r2 = _RealGitStubGh()
+    assert A._open_correction_pr(repo, "metasphere-agents", _STANZA,
+                                 ["f"], tmp_path / "r.md", runner=r2) is None
+    # Second run got PAST branch creation to the push (proving no wedge).
+    assert any("push" in c for c in r2.calls)
+    today = __import__("datetime").date.today().isoformat()
+    branch = f"docs/audit-metasphere-agents-{today}"
+    assert branch not in _local_branches(repo)
+
+
+def test_open_pr_real_happy_path_leaves_no_local_branch(tmp_path, monkeypatch):
+    """Happy path against a REAL working bare origin: push + (stubbed) PR
+    succeed, and the local audit branch is still cleaned up afterwards —
+    the PR tracks the remote branch, nothing lingers locally."""
+    _seed_gh(monkeypatch)
+    repo = _make_repo(tmp_path / "metasphere-agents")
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(bare)], check=True)
+    _git(repo, "remote", "add", "origin", str(bare))
+    before = set(_local_branches(repo))
+
+    runner = _RealGitStubGh()
+    url = A._open_correction_pr(
+        repo, "metasphere-agents", _STANZA, ["f flag"],
+        tmp_path / "report.md", runner=runner,
+    )
+    today = __import__("datetime").date.today().isoformat()
+    branch = f"docs/audit-metasphere-agents-{today}"
+
+    assert url == "https://github.com/acme/metasphere-agents/pull/99"
+    # Local branch cleaned up despite success…
+    assert branch not in _local_branches(repo)
+    assert set(_local_branches(repo)) == before
+    # …but the branch WAS published to the remote (PR references it).
+    remote_refs = subprocess.run(
+        ["git", "-C", str(repo), "ls-remote", "--heads", "origin"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert branch in remote_refs
