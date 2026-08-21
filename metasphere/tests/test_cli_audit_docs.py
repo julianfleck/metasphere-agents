@@ -588,3 +588,345 @@ def test_cli_since_flag_passed_through(tmp_path, tmp_paths, capsys):
     assert outs, "report not written"
     content = outs[0].read_text()
     assert "older commit" in content
+
+
+# --- correction-PR: _apply_changelog_stanza -------------------------------
+
+_STANZA = "## 2026-08-21 — audit draft (proj)\n\n- `abc1234` feat: thing\n"
+
+
+def test_apply_changelog_stanza_creates_when_absent(tmp_path):
+    cl = tmp_path / "CHANGELOG.md"
+    A._apply_changelog_stanza(cl, _STANZA)
+    text = cl.read_text()
+    assert text.startswith("# Changelog\n\n")
+    assert "## 2026-08-21 — audit draft (proj)" in text
+
+
+def test_apply_changelog_stanza_prepends_before_first_heading(tmp_path):
+    cl = tmp_path / "CHANGELOG.md"
+    cl.write_text(
+        "# Changelog\n\nSome preamble.\n\n"
+        "## 2026-08-10 — older\n\n- `old1234` fix: prior\n"
+    )
+    A._apply_changelog_stanza(cl, _STANZA)
+    text = cl.read_text()
+    # Preamble preserved above the insertion.
+    assert text.index("Some preamble.") < text.index("## 2026-08-21")
+    # New entry lands BEFORE the older one (newest-first).
+    assert text.index("## 2026-08-21") < text.index("## 2026-08-10")
+    # And the audit's own newest-date reader now sees the new entry.
+    assert A._changelog_newest_date(cl) == "2026-08-21"
+
+
+def test_apply_changelog_stanza_preserves_title_only_preamble(tmp_path):
+    #: A `# Changelog` title with no dated entries yet must survive and
+    #: the stanza append after it (no `## ` heading to prepend before).
+    cl = tmp_path / "CHANGELOG.md"
+    cl.write_text("# Changelog\n")
+    A._apply_changelog_stanza(cl, _STANZA)
+    text = cl.read_text()
+    assert text.startswith("# Changelog\n")
+    assert "## 2026-08-21 — audit draft (proj)" in text
+
+
+def test_apply_changelog_stanza_appends_when_no_heading(tmp_path):
+    cl = tmp_path / "CHANGELOG.md"
+    cl.write_text("# Changelog\n\nJust a preamble, no dated entries.\n")
+    A._apply_changelog_stanza(cl, _STANZA)
+    text = cl.read_text()
+    assert text.index("Just a preamble") < text.index("## 2026-08-21")
+
+
+# --- correction-PR: _hygiene_scan -----------------------------------------
+
+
+def test_hygiene_scan_clean_text_returns_empty():
+    assert A._hygiene_scan("## 2026-08-21 — draft\n\n- `abc1234` feat: x\n") == []
+
+
+def test_hygiene_scan_flags_credentials_and_handles():
+    text = (
+        "normal line\n"
+        "token ghp_ABCDEFGHIJKLMNOP here\n"
+        "ping @orchestrator to review\n"
+        "server 10.0.0.1 mentioned\n"
+        "ssh key ~/.ssh/id_ed25519\n"
+    )
+    offenders = A._hygiene_scan(text)
+    # 4 offending lines (credential, handle, IPv4, ssh path); the plain
+    # line is clean.
+    assert len(offenders) == 4
+    assert "normal line" not in offenders
+
+
+# --- correction-PR: fake gh/git runner ------------------------------------
+
+
+class _FakeRunner:
+    """Captures argv and returns canned CompletedProcess-likes so the PR
+    path can be exercised without a real ``gh``/``git``.
+    """
+
+    def __init__(self, *, existing_pr_url="",
+                 origin="git@github.com:acme/metasphere-agents.git",
+                 base_ok=True, fail_on=None, raise_on=None,
+                 diff_extra=""):
+        self.calls = []
+        self.existing_pr_url = existing_pr_url
+        self.origin = origin
+        self.base_ok = base_ok
+        self.fail_on = set(fail_on or ())
+        self.raise_on = set(raise_on or ())
+        self.diff_extra = diff_extra
+        self.pr_body = None
+
+    def _cp(self, stdout="", rc=0):
+        from types import SimpleNamespace
+        return SimpleNamespace(stdout=stdout, stderr="", returncode=rc)
+
+    def __call__(self, argv, **kw):
+        argv = list(argv)
+        self.calls.append(argv)
+        joined = " ".join(argv)
+        for tok in self.raise_on:
+            if tok in joined:
+                raise subprocess.SubprocessError(f"boom:{tok}")
+        for tok in self.fail_on:
+            if tok in joined:
+                return self._cp(rc=1)
+        if argv[:3] == ["gh", "auth", "status"]:
+            return self._cp()
+        if "remote" in argv and "get-url" in argv:
+            return self._cp(self.origin)
+        if argv[:3] == ["gh", "pr", "list"]:
+            return self._cp(self.existing_pr_url)
+        if "fetch" in argv:
+            return self._cp()
+        if "rev-parse" in argv:
+            return self._cp(rc=0 if self.base_ok else 1)
+        if "worktree" in argv and "add" in argv:
+            wt = argv[argv.index("--detach") + 1]
+            Path(wt).mkdir(parents=True, exist_ok=True)
+            return self._cp()
+        if "checkout" in argv:
+            return self._cp()
+        if "diff" in argv:
+            wt = Path(argv[2])
+            cl = wt / "CHANGELOG.md"
+            content = cl.read_text() if cl.is_file() else ""
+            # Emulate a `+`-prefixed added-lines diff plus any seeded extra.
+            diff = "\n".join("+" + ln for ln in content.splitlines())
+            return self._cp(diff + self.diff_extra)
+        if "commit" in argv:
+            return self._cp()
+        if "push" in argv:
+            return self._cp()
+        if argv[:3] == ["gh", "pr", "create"]:
+            bf = argv[argv.index("--body-file") + 1]
+            self.pr_body = Path(bf).read_text()
+            return self._cp("https://github.com/acme/metasphere-agents/pull/42")
+        return self._cp()
+
+
+def _seed_gh(monkeypatch, present=True):
+    monkeypatch.setattr(
+        A.shutil, "which",
+        lambda name: "/usr/bin/gh" if (present and name == "gh") else None,
+    )
+
+
+def test_open_correction_pr_happy_path(tmp_path, monkeypatch):
+    _seed_gh(monkeypatch)
+    repo = _make_repo(tmp_path / "metasphere-agents")
+    runner = _FakeRunner()
+    flags = ["abc1234 feat(cli): add subcommand (cli, subcommand)"]
+    url = A._open_correction_pr(
+        repo, "metasphere-agents", _STANZA, flags,
+        tmp_path / "report.md", runner=runner,
+    )
+    assert url == "https://github.com/acme/metasphere-agents/pull/42"
+    today = __import__("datetime").date.today().isoformat()
+    branch = f"docs/audit-metasphere-agents-{today}"
+    # Branch created with the dated name.
+    assert any("checkout" in c and branch in c for c in runner.calls)
+    # `gh pr create` was called exactly once, --base main + --head branch.
+    creates = [c for c in runner.calls if c[:3] == ["gh", "pr", "create"]]
+    assert len(creates) == 1
+    assert "--base" in creates[0] and "main" in creates[0]
+    assert branch in creates[0]
+    # ONLY CHANGELOG.md was staged. `git add` puts "add" at index 3
+    # (distinct from `git worktree add`, where it sits at index 4).
+    adds = [c for c in runner.calls
+            if c[:2] == ["git", "-C"] and len(c) > 3 and c[3] == "add"]
+    assert adds and all(c[4:] == ["CHANGELOG.md"] for c in adds)
+    # PR body carries the checklist + the flag SHA.
+    assert "- [ ] abc1234 feat(cli): add subcommand" in runner.pr_body
+    assert "## README staleness checklist" in runner.pr_body
+    # Worktree cleaned up.
+    assert any("worktree" in c and "remove" in c for c in runner.calls)
+
+
+def test_open_correction_pr_idempotent_skip(tmp_path, monkeypatch):
+    _seed_gh(monkeypatch)
+    repo = _make_repo(tmp_path / "metasphere-agents")
+    existing = "https://github.com/acme/metasphere-agents/pull/7"
+    runner = _FakeRunner(existing_pr_url=existing)
+    url = A._open_correction_pr(
+        repo, "metasphere-agents", _STANZA, ["f flag"],
+        tmp_path / "report.md", runner=runner,
+    )
+    assert url == existing
+    # No second PR created.
+    assert not any(c[:3] == ["gh", "pr", "create"] for c in runner.calls)
+
+
+def test_open_correction_pr_fail_open_gh_missing(tmp_path, monkeypatch):
+    _seed_gh(monkeypatch, present=False)
+    repo = _make_repo(tmp_path / "metasphere-agents")
+    runner = _FakeRunner()
+    url = A._open_correction_pr(
+        repo, "metasphere-agents", _STANZA, ["f flag"],
+        tmp_path / "report.md", runner=runner,
+    )
+    assert url is None
+    # Never got as far as listing/creating.
+    assert runner.calls == []
+
+
+def test_open_correction_pr_fail_open_on_push_error(tmp_path, monkeypatch):
+    _seed_gh(monkeypatch)
+    repo = _make_repo(tmp_path / "metasphere-agents")
+    runner = _FakeRunner(raise_on={"push"})
+    url = A._open_correction_pr(
+        repo, "metasphere-agents", _STANZA, ["f flag"],
+        tmp_path / "report.md", runner=runner,
+    )
+    assert url is None
+    # No PR created after the push blew up.
+    assert not any(c[:3] == ["gh", "pr", "create"] for c in runner.calls)
+    # Worktree still cleaned up despite the failure.
+    assert any("worktree" in c and "remove" in c for c in runner.calls)
+
+
+def test_open_correction_pr_hygiene_abort(tmp_path, monkeypatch, capsys):
+    _seed_gh(monkeypatch)
+    repo = _make_repo(tmp_path / "metasphere-agents")
+    # Seed the stanza with a credential-shaped token — it lands in the
+    # CHANGELOG, the fake `git diff` echoes it, and hygiene must abort.
+    dirty_stanza = _STANZA + "\n- leaked ghp_ABCDEFGHIJKLMNOP token\n"
+    runner = _FakeRunner()
+    url = A._open_correction_pr(
+        repo, "metasphere-agents", dirty_stanza, ["f flag"],
+        tmp_path / "report.md", runner=runner,
+    )
+    assert url is None
+    assert not any(c[:3] == ["gh", "pr", "create"] for c in runner.calls)
+    # Loud abort, but the raw token is NOT echoed (counts/indices only).
+    err = capsys.readouterr().err
+    assert "HYGIENE ABORT" in err
+    assert "ghp_ABCDEFGHIJKLMNOP" not in err
+
+
+# --- correction-PR: wiring into _run_audit --------------------------------
+
+
+def test_run_audit_gate_skips_non_enabled_project(tmp_path, tmp_paths,
+                                                   monkeypatch):
+    """A project NOT in _PR_ENABLED_PROJECTS never invokes the PR path,
+    even with staleness flags."""
+    repo = _make_repo(tmp_path / "proj-gate")
+    (repo / "CHANGELOG.md").write_text("## 2020-01-01 — ancient\n")
+    (repo / "cli.py").write_text("x = 1\n")
+    _git(repo, "add", "cli.py")
+    _git(repo, "commit", "-q", "-m", "feat(cli): add new subcommand")
+    _register(tmp_paths, "proj-gate", repo)
+
+    called = []
+    monkeypatch.setattr(A, "_open_correction_pr",
+                        lambda *a, **k: called.append(a) or "URL")
+    rc, _ = A._run_audit("proj-gate", paths=tmp_paths,
+                         output_dir=tmp_path / "audits", notify=False)
+    assert rc == 1
+    assert called == []  # gate held — never invoked
+    assert not A._pr_enabled("proj-gate")
+
+
+def test_run_audit_no_pr_flag_skips_pr(tmp_path, tmp_paths, monkeypatch):
+    """`--no-pr` (open_pr=False) suppresses the PR even for an enabled
+    project with staleness flags."""
+    repo = _make_repo(tmp_path / "metasphere-agents")
+    (repo / "CHANGELOG.md").write_text("## 2020-01-01 — ancient\n")
+    (repo / "cli.py").write_text("x = 1\n")
+    _git(repo, "add", "cli.py")
+    _git(repo, "commit", "-q", "-m", "feat(cli): add new subcommand")
+    _register(tmp_paths, "metasphere-agents", repo)
+
+    called = []
+    monkeypatch.setattr(A, "_open_correction_pr",
+                        lambda *a, **k: called.append(a) or "URL")
+    rc, _ = A._run_audit("metasphere-agents", paths=tmp_paths,
+                         output_dir=tmp_path / "audits", notify=False,
+                         open_pr=False)
+    assert rc == 1
+    assert called == []  # open_pr=False held
+
+
+def test_run_audit_enabled_project_opens_pr_and_notifies(tmp_path, tmp_paths,
+                                                         monkeypatch):
+    """Enabled project + staleness → PR path invoked and the notify body
+    carries the PR URL."""
+    repo = _make_repo(tmp_path / "metasphere-agents")
+    (repo / "CHANGELOG.md").write_text("## 2020-01-01 — ancient\n")
+    (repo / "cli.py").write_text("x = 1\n")
+    _git(repo, "add", "cli.py")
+    _git(repo, "commit", "-q", "-m", "feat(cli): add new subcommand")
+    _register(tmp_paths, "metasphere-agents", repo)
+
+    monkeypatch.setattr(
+        A, "_open_correction_pr",
+        lambda *a, **k: "https://github.com/acme/metasphere-agents/pull/9")
+    captured = []
+    monkeypatch.setattr(
+        A, "_notify_orchestrator",
+        lambda pn, rp, sc, *, pr_url=None, sender=None: captured.append(pr_url))
+    rc, _ = A._run_audit("metasphere-agents", paths=tmp_paths,
+                         output_dir=tmp_path / "audits", notify=True)
+    assert rc == 1
+    assert captured == ["https://github.com/acme/metasphere-agents/pull/9"]
+
+
+def test_run_audit_pr_failure_is_fail_open(tmp_path, tmp_paths, monkeypatch):
+    """If _open_correction_pr raises, the audit still returns (1, path)
+    and fires a flag-only notify (pr_url=None)."""
+    repo = _make_repo(tmp_path / "metasphere-agents")
+    (repo / "CHANGELOG.md").write_text("## 2020-01-01 — ancient\n")
+    (repo / "cli.py").write_text("x = 1\n")
+    _git(repo, "add", "cli.py")
+    _git(repo, "commit", "-q", "-m", "feat(cli): add new subcommand")
+    _register(tmp_paths, "metasphere-agents", repo)
+
+    def _boom(*a, **k):
+        raise RuntimeError("gh exploded")
+
+    monkeypatch.setattr(A, "_open_correction_pr", _boom)
+    captured = []
+    monkeypatch.setattr(
+        A, "_notify_orchestrator",
+        lambda pn, rp, sc, *, pr_url=None, sender=None: captured.append(pr_url))
+    rc, path = A._run_audit("metasphere-agents", paths=tmp_paths,
+                            output_dir=tmp_path / "audits", notify=True)
+    assert rc == 1
+    assert path.is_file()
+    assert captured == [None]  # flag-only notify fired despite PR crash
+
+
+def test_notify_orchestrator_includes_pr_url():
+    sent = []
+    A._notify_orchestrator(
+        "metasphere-agents", Path("/tmp/r.md"), 3,
+        pr_url="https://github.com/acme/metasphere-agents/pull/9",
+        sender=lambda **kw: sent.append(kw),
+    )
+    assert sent and "Correction PR:" in sent[0]["body"]
+    assert "pull/9" in sent[0]["body"]

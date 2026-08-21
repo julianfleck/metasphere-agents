@@ -22,10 +22,21 @@ Options:
   --project <name>   Registered project name to audit (required).
   --output <dir>     Report directory (default: ~/.metasphere/audits/).
   --no-notify        Skip the !info message to @orchestrator.
+  --no-pr            Skip opening a correction PR even for a PR-enabled
+                     project. Escape hatch for operators / cron paths
+                     that must not shell out to `gh`.
   --since <window>   Override the CHANGELOG-derived window. Accepts a
                      bare YYYY-MM-DD (interpreted as 00:00:00 UTC, so
                      same-day commits are included) or any string git
                      --since understands.
+
+When a project is on the PR-enabled allowlist and the audit raises
+staleness flags, a correction PR is opened against that repo: the
+auto-drafted CHANGELOG stanza is applied to CHANGELOG.md and the
+README-staleness flags become an unchecked human checklist in the PR
+body. This is PROPOSE-only — nothing auto-merges, no force-push. Any
+failure (gh missing, no auth, API error) falls back to the flag-only
+!info. A second run the same day finds the open PR and skips.
 
 Auto-generated `chore: bump version X.Y.Z → A.B.C` commits from the
 bump-minor workflow are filtered out before classification — they
@@ -56,8 +67,10 @@ import datetime as _dt
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -338,7 +351,8 @@ def _render_changelog_draft(project_name: str, since: str,
 
 
 def _render_report(project_name: str, since: str,
-                    records: List[dict], stale: List[str]) -> str:
+                    records: List[dict], stale: List[str],
+                    stanza: Optional[str] = None) -> str:
     parts: List[str] = [
         f"# Doc audit — {project_name}",
         "",
@@ -366,12 +380,266 @@ def _render_report(project_name: str, since: str,
         parts.append("")
     parts.append("## CHANGELOG draft")
     parts.append("")
-    parts.append(_render_changelog_draft(project_name, since, records))
+    parts.append(stanza if stanza is not None
+                 else _render_changelog_draft(project_name, since, records))
     return "\n".join(parts) + "\n"
+
+
+#: Projects whose audits open a correction PR. Everything else stays flag-only.
+#: EXPANSION FLIP: add a registered project name to this frozenset. That is the
+#: entire change needed to enable PR-opening for another repo — no rewrite.
+#: Read from an in-diff constant (never env) so the allowlist is auditable in the
+#: commit and can't be widened by a stray environment variable.
+_PR_ENABLED_PROJECTS = frozenset({"metasphere-agents"})
+
+
+def _pr_enabled(project_name: str) -> bool:
+    return project_name in _PR_ENABLED_PROJECTS
+
+
+def _apply_changelog_stanza(changelog: Path, stanza: str) -> None:
+    """Insert ``stanza`` into ``CHANGELOG.md``, preserving newest-first order.
+
+    * Absent → create ``"# Changelog\\n\\n" + stanza + "\\n"``.
+    * Present with a ``## `` heading → insert ``stanza`` (+ a blank line)
+      immediately before the FIRST ``## `` heading, so the new entry becomes
+      the newest and ``_changelog_newest_date`` (which reads the first ``## ``)
+      picks it up. Any leading ``# Changelog`` title / preamble / ``---`` is
+      preserved above the insertion point.
+    * Present with NO ``## `` heading → append the stanza after existing content.
+
+    Only ever writes ``CHANGELOG.md``.
+    """
+    stanza = stanza.rstrip("\n")
+    if not changelog.is_file():
+        changelog.write_text("# Changelog\n\n" + stanza + "\n", encoding="utf-8")
+        return
+    text = changelog.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    insert_at = None
+    for i, line in enumerate(lines):
+        if line.startswith("## "):
+            insert_at = i
+            break
+    if insert_at is None:
+        # No dated entry yet — append after the existing preamble.
+        body = text.rstrip("\n")
+        changelog.write_text(body + "\n\n" + stanza + "\n", encoding="utf-8")
+        return
+    new_lines = lines[:insert_at] + stanza.splitlines() + ["", ""] + lines[insert_at:]
+    changelog.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
+#: Credential-shaped and identity-shaped patterns that must never ship in a
+#: public-repo PR body or commit. PATTERN-BASED ONLY — no name/handle lists live
+#: in the public repo (standing rule: no identity-guards in the public repo).
+_HYGIENE_PATTERNS = (
+    re.compile(r"ghp_[A-Za-z0-9]{10,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{10,}"),
+    re.compile(r"\bsk_[A-Za-z0-9]{8,}"),
+    re.compile(r"\bsk-[A-Za-z0-9]{8,}"),
+    re.compile(r"\bAKIA[0-9A-Z]{12,}"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b"),          # raw IPv4
+    re.compile(r"(?<!\w)@[a-z0-9][a-z0-9-]{2,}"),        # agent/operator handles
+    re.compile(r"\b[a-z0-9_-]+@[a-z0-9.-]+:"),           # ssh user@host:
+    re.compile(r"\.ssh/"),                               # ssh key path refs
+)
+
+
+def _hygiene_scan(text: str) -> list[str]:
+    """Return the offending lines (verbatim) of ``text`` that match any
+    credential/identity pattern. Empty list = clean.
+
+    Callers must NOT echo the returned lines into any message — report only
+    counts + line indices. The raw lines are returned so the local audit log
+    can capture them for the operator, not for transmission.
+    """
+    offenders: list[str] = []
+    for line in text.splitlines():
+        if any(p.search(line) for p in _HYGIENE_PATTERNS):
+            offenders.append(line)
+    return offenders
+
+
+def _repo_slug(repo: Path, *, runner) -> Optional[str]:
+    """Derive ``owner/name`` from the repo's ``origin`` remote URL."""
+    try:
+        r = runner(["git", "-C", str(repo), "remote", "get-url", "origin"],
+                   check=False, text=True, capture_output=True)
+    except Exception:  # noqa: BLE001
+        return None
+    url = (getattr(r, "stdout", "") or "").strip()
+    m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?$", url)
+    return m.group(1) if m else None
+
+
+def _compose_pr_body(project_name: str, date: str, stale_flags: List[str],
+                     report_path: Path) -> str:
+    """Human checklist PR body — README-staleness flags as unchecked boxes."""
+    lines = [
+        f"Automated doc-audit correction for {project_name} ({date}).",
+        "",
+        "CHANGELOG.md updated with the auto-drafted stanza below — review and "
+        "tighten wording.",
+        "",
+        "## README staleness checklist",
+        "Each item is a commit that touched a CLI/schema/architecture surface. "
+        "Confirm the README still matches, or edit it, then tick the box. These "
+        "edits are NOT auto-applied.",
+        "",
+    ]
+    for flag in stale_flags:
+        lines.append(f"- [ ] {flag}")
+    lines += [
+        "",
+        f"Audit report: {report_path}",
+        "",
+        "_Proposed by the nightly doc-audit. Nothing auto-merges._",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _open_correction_pr(repo: Path, project_name: str, stanza: str,
+                        stale_flags: List[str], report_path: Path, *,
+                        runner=subprocess.run) -> Optional[str]:
+    """Open a doc-audit correction PR for ``project_name`` and return its URL.
+
+    Returns the new PR URL on success, an already-open audit PR's URL on
+    idempotent skip, or ``None`` on ANY fail-open path (gh missing / no auth /
+    not a repo / hygiene abort / subprocess error). Never raises — the whole
+    body is wrapped so a broken PR path can never crash the audit.
+
+    ``runner`` is injectable (defaults to ``subprocess.run``) so tests can
+    supply a fake ``gh``/``git`` — same pattern as ``_notify_orchestrator``.
+    """
+    worktree: Optional[Path] = None
+    tmp_parent: Optional[str] = None
+    try:
+        # 1. Preconditions.
+        if shutil.which("gh") is None:
+            return None
+        try:
+            auth = runner(["gh", "auth", "status"],
+                          check=False, text=True, capture_output=True)
+        except Exception:  # noqa: BLE001
+            return None
+        if getattr(auth, "returncode", 1) != 0:
+            return None
+        if not (repo / ".git").is_dir():
+            return None
+        slug = _repo_slug(repo, runner=runner)
+        if not slug:
+            return None
+
+        date = _dt.date.today().isoformat()
+        branch = f"docs/audit-{project_name}-{date}"
+
+        # 2. Idempotency FIRST — any OPEN audit PR for this project → skip.
+        pr_list = runner(
+            ["gh", "pr", "list", "--repo", slug, "--state", "open",
+             "--search", f"head:docs/audit-{project_name}-",
+             "--json", "url", "--jq", ".[0].url"],
+            check=False, text=True, capture_output=True,
+        )
+        existing = (getattr(pr_list, "stdout", "") or "").strip()
+        if existing:
+            return existing  # SKIP: do not open a second PR.
+
+        # 3. Base = origin/main, fall back to HEAD.
+        runner(["git", "-C", str(repo), "fetch", "origin"],
+               check=False, text=True, capture_output=True)  # best-effort
+        base = "origin/main"
+        rev = runner(["git", "-C", str(repo), "rev-parse", "--verify",
+                      "--quiet", base],
+                     check=False, text=True, capture_output=True)
+        if getattr(rev, "returncode", 1) != 0:
+            base = "HEAD"
+
+        # 4. Worktree add + branch.
+        tmp_parent = tempfile.mkdtemp(prefix="audit-pr-")
+        worktree = Path(tmp_parent) / "wt"
+        add = runner(["git", "-C", str(repo), "worktree", "add", "--detach",
+                      str(worktree), base],
+                     check=False, text=True, capture_output=True)
+        if getattr(add, "returncode", 1) != 0:
+            return None
+        co = runner(["git", "-C", str(worktree), "checkout", "-b", branch],
+                    check=False, text=True, capture_output=True)
+        if getattr(co, "returncode", 1) != 0:
+            return None
+
+        # 5. Apply the stanza to the worktree's CHANGELOG.md.
+        _apply_changelog_stanza(worktree / "CHANGELOG.md", stanza)
+
+        # 6. Hygiene gate — scan the real diff + the composed body.
+        body = _compose_pr_body(project_name, date, stale_flags, report_path)
+        diff = runner(["git", "-C", str(worktree), "diff", "--", "CHANGELOG.md"],
+                      check=False, text=True, capture_output=True)
+        diff_text = getattr(diff, "stdout", "") or ""
+        offenders = _hygiene_scan(diff_text) + _hygiene_scan(body)
+        if offenders:
+            # Never echo the raw offending lines — counts + indices only.
+            print(f"audit-docs: HYGIENE ABORT — {len(offenders)} offending "
+                  f"line(s) in the CHANGELOG diff/PR body for {project_name}; "
+                  f"PR not opened (fail-open to flag-only).", file=sys.stderr)
+            return None
+
+        # 7. Stage ONLY CHANGELOG.md and commit.
+        runner(["git", "-C", str(worktree), "add", "CHANGELOG.md"],
+               check=False, text=True, capture_output=True)
+        commit = runner(["git", "-C", str(worktree), "commit", "-m",
+                         f"docs(changelog): audit draft {date} — {project_name}"],
+                        check=False, text=True, capture_output=True)
+        if getattr(commit, "returncode", 1) != 0:
+            return None
+
+        # 8. Push (NO --force).
+        push = runner(["git", "-C", str(worktree), "push", "-u", "origin", branch],
+                      check=False, text=True, capture_output=True)
+        if getattr(push, "returncode", 1) != 0:
+            return None
+
+        # 9. Open the PR via a temp body file.
+        with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False,
+                                          encoding="utf-8") as bf:
+            bf.write(body)
+            body_file = bf.name
+        try:
+            created = runner(
+                ["gh", "pr", "create", "--repo", slug, "--base", "main",
+                 "--head", branch,
+                 "--title", f"docs: audit draft {date} ({project_name})",
+                 "--body-file", body_file],
+                check=False, text=True, capture_output=True,
+            )
+        finally:
+            try:
+                os.unlink(body_file)
+            except OSError:
+                pass
+        if getattr(created, "returncode", 1) != 0:
+            return None
+        url = (getattr(created, "stdout", "") or "").strip().splitlines()
+        return url[-1].strip() if url else None
+    except Exception:  # noqa: BLE001 — fail-open, never crash the audit.
+        return None
+    finally:
+        # 10. Cleanup worktree even on error.
+        if worktree is not None:
+            try:
+                runner(["git", "-C", str(repo), "worktree", "remove", "--force",
+                        str(worktree)],
+                       check=False, text=True, capture_output=True)
+            except Exception:  # noqa: BLE001
+                pass
+        if tmp_parent is not None:
+            shutil.rmtree(tmp_parent, ignore_errors=True)
 
 
 def _notify_orchestrator(project_name: str, report_path: Path,
                           stale_count: int, *,
+                          pr_url: Optional[str] = None,
                           sender=None) -> None:
     """Send an ``!info`` to ``@orchestrator`` so a human sees the report.
 
@@ -382,10 +650,16 @@ def _notify_orchestrator(project_name: str, report_path: Path,
     except Exception:  # noqa: BLE001
         return
     sender = sender or _send
-    body = (
-        f"doc audit: {project_name} — {stale_count} README-staleness flag(s). "
-        f"Report: {report_path}"
-    )
+    if pr_url:
+        body = (
+            f"doc audit: {project_name} — {stale_count} flag(s). "
+            f"Correction PR: {pr_url}"
+        )
+    else:
+        body = (
+            f"doc audit: {project_name} — {stale_count} README-staleness flag(s). "
+            f"Report: {report_path}"
+        )
     try:
         sender(
             target="@orchestrator",
@@ -401,6 +675,7 @@ def _notify_orchestrator(project_name: str, report_path: Path,
 def _run_audit(project_name: str, *, paths: Paths,
                 output_dir: Optional[Path] = None,
                 notify: bool = True,
+                open_pr: bool = True,
                 since_override: Optional[str] = None) -> tuple[int, Path]:
     """Execute an audit for one project.
 
@@ -439,15 +714,25 @@ def _run_audit(project_name: str, *, paths: Paths,
     records = [r for r in records if not _is_auto_version_bump(r["subject"])]
     records = [r for r in records if not _is_changelog_self_update(r["subject"])]
     stale = _staleness_flags(records)
-    report = _render_report(project_name, since, records, stale)
+    # Compute the CHANGELOG stanza ONCE and reuse it for both the report body
+    # and the correction PR, so the two can never drift.
+    changelog_stanza = _render_changelog_draft(project_name, since, records)
+    report = _render_report(project_name, since, records, stale, changelog_stanza)
 
     out_dir = (output_dir or REPORTS_ROOT) / _dt.date.today().isoformat()
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{project_name}.md"
     out_path.write_text(report, encoding="utf-8")
 
+    pr_url = None
+    if stale and open_pr and _pr_enabled(project_name):
+        try:
+            pr_url = _open_correction_pr(repo, project_name, changelog_stanza,
+                                         stale, out_path)
+        except Exception:  # noqa: BLE001 — fail-open, never crash the audit.
+            pr_url = None
     if notify and stale:
-        _notify_orchestrator(project_name, out_path, len(stale))
+        _notify_orchestrator(project_name, out_path, len(stale), pr_url=pr_url)
 
     return (1 if stale else 0), out_path
 
@@ -571,6 +856,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help=f"Report dir (default: {REPORTS_ROOT}).")
     parser.add_argument("--no-notify", action="store_true",
                         help="Skip the !info message to @orchestrator.")
+    parser.add_argument("--no-pr", action="store_true",
+                        help="Skip opening a correction PR even when the "
+                        "project is on the PR-enabled allowlist.")
     parser.add_argument(
         "--since", default=None,
         help="Override the CHANGELOG-derived window. Accepts a bare "
@@ -610,6 +898,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         args.project, paths=paths,
         output_dir=args.output,
         notify=not args.no_notify,
+        open_pr=not args.no_pr,
         since_override=args.since,
     )
     if path != Path():

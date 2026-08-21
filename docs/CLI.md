@@ -776,10 +776,21 @@ Options:
   --project <name>   Registered project name to audit (required).
   --output <dir>     Report directory (default: ~/.metasphere/audits/).
   --no-notify        Skip the !info message to @orchestrator.
+  --no-pr            Skip opening a correction PR even for a PR-enabled
+                     project. Escape hatch for operators / cron paths
+                     that must not shell out to `gh`.
   --since <window>   Override the CHANGELOG-derived window. Accepts a
                      bare YYYY-MM-DD (interpreted as 00:00:00 UTC, so
                      same-day commits are included) or any string git
                      --since understands.
+
+When a project is on the PR-enabled allowlist and the audit raises
+staleness flags, a correction PR is opened against that repo: the
+auto-drafted CHANGELOG stanza is applied to CHANGELOG.md and the
+README-staleness flags become an unchecked human checklist in the PR
+body. This is PROPOSE-only — nothing auto-merges, no force-push. Any
+failure (gh missing, no auth, API error) falls back to the flag-only
+!info. A second run the same day finds the open PR and skips.
 
 Auto-generated `chore: bump version X.Y.Z → A.B.C` commits from the
 bump-minor workflow are filtered out before classification — they
