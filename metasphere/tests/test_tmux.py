@@ -904,6 +904,107 @@ def test_submit_confirmed_retry_kill_switch_disables_refire(monkeypatch):
     )
 
 
+# --- #26 x #28 interaction (escape_prefix=False vs confirmed-submit re-fire) --
+# These pin the #1 risk of reviving #26 over the just-merged #28: #26 makes the
+# user-inbound telegram submit escape_prefix=False (queue, never interrupt) and
+# #28 re-fires a bare C-m when an inline submit is eaten. They share the tmux
+# submit path. The composition must hold: the ONLY interrupt vector was the
+# Escape in the `if escape_prefix:` branch — #26 skips it — and #28's re-fire is
+# a bare C-m (never Escape), so neither introduces an interrupt.
+
+
+def test_user_inbound_no_interrupt_composes_with_confirmed_refire_clean(monkeypatch):
+    """Clean landing: a user-inbound telegram submit (escape_prefix=False)
+    lands while a turn is running — Claude Code queues it and the input box
+    clears. #28's confirmed-submit re-fire is ACTIVE (no kill-switch) but must
+    NOT fire a second submit once the box clears (no double-submit), and NO
+    Escape may fire (the message queues behind the running turn, never
+    interrupts it). Exactly 2 C-m: pre-flush + the single submit."""
+    state = {"c_m": 0}
+
+    def fake_run(argv, **kw):
+        if "has-session" in argv:
+            return _fake_cp(returncode=0)
+        if "send-keys" in argv and "C-m" in argv:
+            state["c_m"] += 1
+            return _fake_cp(returncode=0)
+        if "capture-pane" in argv:
+            # Before the submit (c_m<2): the pasted text is inline (paste
+            # landed). After the submit C-m (c_m>=2): the box CLEARS — the
+            # message was accepted into Claude Code's user-turn queue.
+            content = ["❯ queue me behind the turn"] if state["c_m"] < 2 else ["❯ "]
+            return _fake_cp(stdout=_pane(content))
+        return _fake_cp(returncode=0)
+
+    calls: list[list[str]] = []
+
+    def recording(argv, **kw):
+        calls.append(list(argv))
+        return fake_run(argv, **kw)
+
+    monkeypatch.setattr("subprocess.run", recording)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+
+    assert T.submit_to_tmux("sess", "queue me behind the turn",
+                            escape_prefix=False) is True
+    sendkeys = [c for c in calls if "send-keys" in c]
+    assert not any("Escape" in c for c in sendkeys), (
+        "#26: a user-inbound submit must fire NO Escape — it queues behind the "
+        f"running turn, never interrupts it. Got: {sendkeys}"
+    )
+    c_m = [c for c in sendkeys if "C-m" in c]
+    assert len(c_m) == 2, (
+        "clean landing = pre-flush + single submit; #28 must NOT re-fire once "
+        f"the box clears (no double-submit), got {len(c_m)}: {c_m}"
+    )
+
+
+def test_user_inbound_eaten_submit_recovered_by_refire_without_interrupt(monkeypatch):
+    """Eaten submit: the SAME user-inbound path (escape_prefix=False) whose
+    submit C-m is eaten (inline content stays byte-stable). #28's re-fire must
+    recover it — proving #28's recovery still works under #26's no-Escape
+    path — and it must do so with a bare C-m and STILL no Escape anywhere, so
+    the re-fire cannot interrupt the running turn. ≥3 C-m (pre-flush + eaten
+    submit + re-fire), returns True."""
+    human = "hey can you look at the deploy when you get a sec"  # unmarked
+    state = {"c_m": 0}
+
+    def fake_run(argv, **kw):
+        if "has-session" in argv:
+            return _fake_cp(returncode=0)
+        if "send-keys" in argv and "C-m" in argv:
+            state["c_m"] += 1
+            return _fake_cp(returncode=0)
+        if "capture-pane" in argv:
+            # #1 pre-flush, #2 submit (EATEN — box stays dirty, no
+            # placeholder). Only the confirmed re-fire (#3) clears it.
+            content = ["❯ " + human] if state["c_m"] < 3 else ["❯ "]
+            return _fake_cp(stdout=_pane(content))
+        return _fake_cp(returncode=0)
+
+    calls: list[list[str]] = []
+
+    def recording(argv, **kw):
+        calls.append(list(argv))
+        return fake_run(argv, **kw)
+
+    monkeypatch.setattr("subprocess.run", recording)
+    monkeypatch.setattr(T, "_find_tmux", lambda: "/usr/bin/tmux")
+
+    assert T.submit_to_tmux("sess", human, escape_prefix=False) is True
+    sendkeys = [c for c in calls if "send-keys" in c]
+    # The composition proof: the re-fire recovered the eaten submit with NO
+    # Escape — #26 (no interrupt) and #28 (bare-C-m re-fire) do not fight.
+    assert not any("Escape" in c for c in sendkeys), (
+        "#26 x #28: the confirmed-submit re-fire must never introduce an "
+        f"Escape — bare C-m only, no interrupt. Got: {sendkeys}"
+    )
+    c_m = [c for c in sendkeys if "C-m" in c]
+    assert len(c_m) >= 3, (
+        "eaten user-inbound submit must be recovered by #28's re-fire "
+        f"(pre-flush + eaten submit + re-fire), got {len(c_m)}: {c_m}"
+    )
+
 
 def test_find_tmux_refuses_real_server_under_pytest(monkeypatch):
     """Regression — 2026-07-05: sandboxed message tests leaked real
