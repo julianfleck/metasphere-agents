@@ -1046,6 +1046,48 @@ def test_handle_update_telegram_inject_does_not_defer(tmp_path, monkeypatch):
     )
 
 
+def test_handle_update_telegram_inject_does_not_interrupt(tmp_path, monkeypatch):
+    """Telegram-user inbound must QUEUE behind a running turn, not interrupt it.
+
+    Regression for the 2026-07-28 wedge: escape_prefix=True (the old default)
+    fired an Escape to kill the in-flight turn before pasting; landing mid-tool-
+    call it corrupted the session ("Request interrupted by user" → "Something
+    went wrong / use /new"). The handler MUST pass escape_prefix=False so Claude
+    Code's user-turn queue holds the message until the current turn finishes.
+    """
+    captured: list[dict] = []
+
+    def fake_submit(from_user, text, session="metasphere-orchestrator", **kwargs):
+        captured.append({"from": from_user, "text": text, "kwargs": dict(kwargs)})
+        return True
+
+    monkeypatch.setattr(inject, "submit_to_tmux", fake_submit)
+    monkeypatch.setattr(archiver, "DEFAULT_DIR", str(tmp_path / "tg"))
+    monkeypatch.setattr(_handler, "_default_save_chat_id", lambda cid: None)
+    monkeypatch.setattr(_handler, "_default_pending_ack_writer", lambda cid, mid: None)
+
+    payload = {
+        "update_id": 2002,
+        "message": {
+            "message_id": 902,
+            "chat": {"id": 123, "is_forum": False},
+            "from": {"username": "testuser"},
+            "date": 1700000000,
+            "text": "do not interrupt my turn",
+        },
+    }
+    u = poller.Update.from_payload(payload)
+    _handler.handle_update(u)
+
+    assert len(captured) == 1
+    assert captured[0]["kwargs"].get("escape_prefix") is False, (
+        "handler must pass escape_prefix=False — interrupting a running turn "
+        "with an Escape wedges the session; the message must queue instead."
+    )
+    # Delivery guarantee is unchanged: still fires regardless of busy state.
+    assert captured[0]["kwargs"].get("defer_if_busy") is False
+
+
 # NOTE: there is no integration test against a real bot token. The
 # poller-side path above covers the download + inject wiring with
 # mocked getFile + http_get. A live end-to-end test would require a
