@@ -83,6 +83,30 @@ def test_ensure_session_noop_when_alive(tmp_paths: Paths):
     assert m.call_count == 0
 
 
+def test_start_session_builds_runtime_command_at_creation_time(
+    tmp_paths: Paths, monkeypatch
+):
+    """Runtime selection must not be frozen when the module is imported."""
+    calls: list[tuple[str, ...]] = []
+
+    def fake_tmux(*args):
+        calls.append(args)
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setenv("METASPHERE_AGENT_RUNTIME", "codex")
+    with patch.object(gw_session, "session_alive", return_value=False), \
+         patch.object(gw_session, "_tmux", side_effect=fake_tmux):
+        assert gw_session.start_session(tmp_paths) is True
+
+    launch = [
+        call for call in calls
+        if call[:3] == ("send-keys", "-t", gw_session.SESSION_NAME)
+        and any("codex --no-alt-screen" in arg for arg in call)
+    ]
+    assert len(launch) == 1
+    assert "--dangerously-bypass-hook-trust" in launch[0][3]
+
+
 # ---------------------------------------------------------------------------
 # Watchdog: stuck paste
 # ---------------------------------------------------------------------------
@@ -1292,6 +1316,27 @@ def test_respawn_cmd_with_model_still_disables_feedback():
     cmd = gw_session._respawn_cmd("@worker", model="anthropic/claude-haiku-4-5")
     assert "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1" in cmd
     assert "--model anthropic/claude-haiku-4-5" in cmd
+
+
+def test_respawn_cmd_codex_runtime_uses_interactive_tmux_flags():
+    cmd = gw_session._respawn_cmd("@orchestrator", runtime="codex")
+    assert "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox" in cmd
+    assert "--dangerously-bypass-hook-trust" in cmd
+    assert "claude --dangerously-skip-permissions" not in cmd
+    assert "[gateway] codex exited" in cmd
+
+
+def test_respawn_cmd_codex_project_agent_does_not_bypass_hook_trust():
+    cmd = gw_session._respawn_cmd("@project-worker", runtime="codex")
+    assert "codex --no-alt-screen" in cmd
+    assert "--dangerously-bypass-hook-trust" not in cmd
+
+
+def test_respawn_cmd_codex_runtime_from_env(monkeypatch):
+    monkeypatch.setenv("METASPHERE_AGENT_RUNTIME", "codex")
+    cmd = gw_session._respawn_cmd("@orchestrator")
+    assert "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox" in cmd
+    assert "--dangerously-bypass-hook-trust" in cmd
 
 
 # ---------------------------------------------------------------------------

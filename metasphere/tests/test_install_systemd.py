@@ -83,6 +83,7 @@ def test_template_uses_placeholders(daemon):
     tmpl = (TEMPLATE_DIR / f"metasphere-{daemon}.service").read_text()
     assert "@@METASPHERE_DIR@@" in tmpl
     assert "@@METASPHERE_VENV_BIN@@" in tmpl
+    assert "@@METASPHERE_AGENT_RUNTIME@@" in tmpl
 
 
 def test_gateway_conflicts_with_telegram_unit():
@@ -165,7 +166,13 @@ def test_install_sh_does_not_auto_restart_active_units():
 # ---------------------------------------------------------------------------
 
 
-def _run_render(tmp_home: Path, metasphere_dir: Path, *, premake_omnibus: bool = False):
+def _run_render(
+    tmp_home: Path,
+    metasphere_dir: Path,
+    *,
+    premake_omnibus: bool = False,
+    runtime: str = "claude",
+):
     """Drive the install.sh render block in isolation against a
     sandbox HOME + METASPHERE_DIR. Stubs systemctl so no real systemd
     interaction occurs.
@@ -195,6 +202,7 @@ def _run_render(tmp_home: Path, metasphere_dir: Path, *, premake_omnibus: bool =
         export PATH="{bin_dir}:$PATH"
         export HOME="{tmp_home}"
         METASPHERE_DIR="{metasphere_dir}"
+        AGENT_RUNTIME="{runtime}"
         SCRIPT_DIR="{REPO_ROOT}"
 
         ok()   {{ echo "[ok] $*"; }}
@@ -230,6 +238,7 @@ def _run_render(tmp_home: Path, metasphere_dir: Path, *, premake_omnibus: bool =
                 -e "s|@@METASPHERE_DIR@@|$METASPHERE_DIR|g" \\
                 -e "s|@@METASPHERE_PROJECT_ROOT@@|$SCRIPT_DIR|g" \\
                 -e "s|@@METASPHERE_VENV_BIN@@|$venv_bin|g" \\
+                -e "s|@@METASPHERE_AGENT_RUNTIME@@|$AGENT_RUNTIME|g" \\
                 "$tmpl" > "$tmp"
             if [[ ! -f "$out" ]] || ! cmp -s "$tmp" "$out"; then
                 mv "$tmp" "$out"
@@ -269,9 +278,23 @@ def test_render_writes_three_units(tmp_path):
         assert "@@" not in body
         assert f"{metasphere_dir}/venv/bin/metasphere" in body
         assert f"METASPHERE_DIR={metasphere_dir}" in body
+        assert "METASPHERE_AGENT_RUNTIME=claude" in body
         assert "Restart=always" in body
         # Operator paths from the host running tests must not bleed in.
         assert "rage-substrate" not in body
+
+
+def test_render_threads_codex_runtime_to_all_units(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    metasphere_dir = home / ".metasphere"
+    _, stderr, rc, service_dir = _run_render(
+        home, metasphere_dir, runtime="codex"
+    )
+    assert rc == 0, stderr
+    for daemon in DAEMONS:
+        body = (service_dir / f"metasphere-{daemon}.service").read_text()
+        assert "METASPHERE_AGENT_RUNTIME=codex" in body
 
 
 def test_render_is_idempotent(tmp_path):

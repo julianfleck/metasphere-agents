@@ -19,6 +19,7 @@ from typing import Iterable
 
 from metasphere import agents as _agents
 from metasphere.cli._argv import reject_flag_shape
+from metasphere.cli import daemon as _daemon_cli
 from metasphere.paths import Paths, resolve
 
 _DAEMONS = (
@@ -33,8 +34,8 @@ USAGE = """\
 Usage: metasphere restart [<agent-name>]
 
 Without args:
-  Restart the three systemd user services (gateway, heartbeat,
-  schedule), then kill + respawn every alive persistent agent's tmux
+  Restart the three platform services (gateway, heartbeat, schedule),
+  then kill + respawn every alive persistent agent's tmux
   session — including @orchestrator. If invoked from inside the
   orchestrator pane, that restart kills the caller; a warning is
   printed first and the orchestrator is restarted last so earlier
@@ -64,26 +65,46 @@ def _systemctl(*args: str) -> int:
     return proc.returncode
 
 
+def _is_macos() -> bool:
+    return sys.platform == "darwin"
+
+
+def _launchd_short_name(name: str) -> str:
+    return name.removeprefix("metasphere-").removesuffix(".service")
+
+
 def _restart_daemon(name: str) -> bool:
-    """Restart one systemd unit. Returns True on success."""
+    """Restart one service-manager unit. Returns True on success."""
+    if _is_macos():
+        rc, _, _ = _daemon_cli._launchctl("restart", _launchd_short_name(name))
+        return rc == 0
     return _systemctl("restart", name) == 0
 
 
 def daemon_health() -> dict[str, bool]:
-    """Return ``{daemon_name: is_active}`` for the three systemd user
-    services that back the harness. A daemon shows ``False`` when
-    ``systemctl --user is-active`` returns non-zero (inactive, failed,
-    or unknown) or when systemctl is missing entirely.
+    """Return ``{daemon_name: is_active}`` for the three platform
+    services that back the harness. A daemon shows ``False`` when its
+    systemd unit or launchd job is inactive, failed, or unavailable.
 
     Used by ``metasphere status`` so a silently dead heartbeat or
     schedule daemon surfaces to the operator instead of hiding behind
     a healthy-looking REPL.
     """
+    if _is_macos():
+        health: dict[str, bool] = {}
+        for daemon in _DAEMONS:
+            rc, out, _ = _daemon_cli._launchctl(
+                "status", _launchd_short_name(daemon)
+            )
+            health[daemon] = rc == 0 and any(
+                line.strip() == "state = running" for line in out.splitlines()
+            )
+        return health
     return {d: _systemctl("is-active", "--quiet", d) == 0 for d in _DAEMONS}
 
 
 def _restart_systemd_daemons() -> dict[str, bool]:
-    """Restart all three daemons. Return ``{name: ok}``."""
+    """Restart all three daemons through the platform service manager."""
     return {d: _restart_daemon(d) for d in _DAEMONS}
 
 
@@ -204,7 +225,7 @@ def _restart_all(paths: Paths) -> int:
             file=sys.stderr,
         )
 
-    print("restarting systemd daemons:")
+    print("restarting daemons:")
     rc = _print_daemon_results(_restart_systemd_daemons())
 
     agents_to_restart = _alive_persistent_agent_ids(paths)

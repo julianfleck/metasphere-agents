@@ -26,7 +26,7 @@ Commands:
   ensure                 Start the orchestrator session if it is not
                          already alive.
   status                 Print orchestrator session liveness + idle.
-  restart                Restart Claude inside the orchestrator
+  restart                Restart the agent REPL inside the orchestrator
                          session (preserves the tmux pane).
 """
 
@@ -85,7 +85,7 @@ def cmd_restart(args: argparse.Namespace) -> int:
         print(f"session={SESSION_NAME} started")
         return 0
     restart_session("CLI restart", paths)
-    print(f"session={SESSION_NAME} claude restarted")
+    print(f"session={SESSION_NAME} agent REPL restarted")
     return 0
 
 

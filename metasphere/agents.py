@@ -4,10 +4,10 @@ This module owns identity-directory creation, the spawn-vs-wake split, and
 the tmux/REPL bring-up sequence for persistent agents.
 
 Why this shape:
-- Ephemeral spawn = headless ``claude -p`` one-shot. No tmux session.
+- Ephemeral spawn = provider-specific headless one-shot. No tmux session.
 - Persistent wake = ``metasphere-<name>`` tmux session running a respawn
-  loop around ``claude --dangerously-skip-permissions``. Persistence is
-  declared by the presence of ``MISSION.md`` in the agent dir.
+  loop around the configured agent REPL. Persistence is declared by the
+  presence of ``MISSION.md`` in the agent dir.
 
 Tmux paste-submission uses :mod:`metasphere.tmux`. The respawn loop and
 readiness poll stay as direct tmux commands: this module just orchestrates
@@ -39,7 +39,42 @@ from .tmux import submit_to_tmux as _tmux_submit
 
 _SESSION_PREFIX = "metasphere-"
 _READY_TIMEOUT_S = 15
-_READY_MARKER = "bypass permissions"
+_READY_MARKERS = ("bypass permissions", "permissions: YOLO mode")
+
+
+def _selected_agent_runtime(runtime: str | None = None) -> str:
+    """Return the configured agent runtime, rejecting silent fallbacks."""
+    selected = (
+        runtime or os.environ.get("METASPHERE_AGENT_RUNTIME", "claude")
+    ).strip().lower()
+    if selected not in ("claude", "codex"):
+        raise ValueError(f"unsupported agent runtime: {selected}")
+    return selected
+
+
+def _headless_runtime_command(
+    harness: str,
+    *,
+    model: str = "",
+    runtime: str | None = None,
+) -> tuple[str, list[str]]:
+    """Return ``(runtime, argv)`` for an ephemeral headless agent."""
+    selected = _selected_agent_runtime(runtime)
+    if selected == "claude":
+        cmd = ["claude", "-p", harness, "--dangerously-skip-permissions"]
+    else:
+        cmd = [
+            "codex",
+            "exec",
+            "--dangerously-bypass-approvals-and-sandbox",
+            # Claude print mode works outside git repositories. Keep the
+            # provider switch from narrowing valid Metasphere scopes.
+            "--skip-git-repo-check",
+            harness,
+        ]
+    if model:
+        cmd.extend(["--model", model])
+    return selected, cmd
 
 # Above this body size, ``wake_persistent`` persists the task to the
 # recipient's inbox and injects only a short pointer banner. The Claude
@@ -446,7 +481,7 @@ def spawn_ephemeral(
     model: str = "",
 ) -> AgentRecord:
     """Create an ephemeral one-shot agent and (unless opted out) launch
-    it headless via ``claude -p``.
+    it through the configured runtime's headless command.
 
     The three optional contract fields — ``authority``, ``responsibility``,
     ``accountability`` — implement a minimum-viable version of the
@@ -575,12 +610,13 @@ def spawn_ephemeral(
         )
         return record
 
-    if shutil.which("claude") is None:
+    runtime, cmd = _headless_runtime_command(harness, model=model)
+    if shutil.which(runtime) is None:
         log_event(
             "agent.spawn",
-            f"{agent_id} harness ready at {scope_path} (claude not in PATH)",
+            f"{agent_id} harness ready at {scope_path} ({runtime} not in PATH)",
             agent=parent,
-            meta={**spawn_meta, "claude_missing": True},
+            meta={**spawn_meta, "runtime": runtime, "runtime_missing": True},
             paths=paths,
         )
         return record
@@ -612,14 +648,6 @@ def spawn_ephemeral(
     log_fh = None
     try:
         log_fh = open(log_file, "ab")
-        cmd = [
-            "claude",
-            "-p",
-            harness,
-            "--dangerously-skip-permissions",
-        ]
-        if model:
-            cmd.extend(["--model", model])
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
@@ -644,7 +672,7 @@ def spawn_ephemeral(
         "agent.spawn",
         f"{agent_id} spawned at {scope_path} (pid {proc.pid})",
         agent=parent,
-        meta={**spawn_meta, "pid": proc.pid},
+        meta={**spawn_meta, "pid": proc.pid, "runtime": runtime},
         paths=paths,
     )
     return record
@@ -700,7 +728,8 @@ def _find_agent_dir(agent_id: str, paths: Paths) -> Optional[Path]:
 
 def _wait_for_ready(session: str, timeout_s: int = _READY_TIMEOUT_S) -> bool:
     for _ in range(timeout_s):
-        if _READY_MARKER in _capture_pane(session):
+        pane = _capture_pane(session)
+        if any(marker in pane for marker in _READY_MARKERS):
             return True
         time.sleep(1)
     return False

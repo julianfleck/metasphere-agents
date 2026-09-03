@@ -3,7 +3,7 @@
 Walks the repo for urgent unread messages, agents in waiting/blocked
 states, and urgent tasks; optionally invokes the orchestrator agent
 with a freshly built context block (via tmux paste if a session is
-live, otherwise via a ``claude -p`` one-shot).
+live, otherwise via the configured runtime's headless mode).
 
 State (which urgent items have already been notified about) lives in
 ``$METASPHERE_DIR/state/heartbeat_state`` and is mutated under
@@ -519,7 +519,17 @@ def build_agent_context(agent: str = "@orchestrator", paths: Paths | None = None
     """
     paths = paths or resolve()
     body = build_context(paths)
-    header = f"# HEARTBEAT {_utcnow()} ({agent})\n"
+    header = (
+        f"# HEARTBEAT {_utcnow()} ({agent})\n\n"
+        "## Response contract\n\n"
+        "If this tick produced no user-visible work, change, warning, or "
+        "question, reply with exactly `[idle]` and no other text. Do not "
+        "describe an empty queue, say that nothing is new, or say that you "
+        "are standing by. Do not repeat a warning or status merely because "
+        "it appears in Recent Events or was reported on an earlier tick. "
+        "Only send prose when the operator should actually receive a new "
+        "Telegram message.\n"
+    )
     return header + "\n" + body
 
 
@@ -531,7 +541,7 @@ def invoke_agent_heartbeat(
 
     If a tmux session for the agent is alive, paste via the
     ``submit_to_tmux`` helper. Otherwise fall back to a
-    ``claude -p`` one-shot. Returns True on best-effort success.
+    provider-specific headless one-shot. Returns True on best-effort success.
     """
     paths = paths or resolve()
     context = build_agent_context(agent, paths)
@@ -583,7 +593,7 @@ def invoke_agent_heartbeat(
             pass
         return True
 
-    # Fallback: one-shot claude -p with sandboxed allowed tools.
+    # Fallback: provider-specific one-shot with sandboxed tools.
     agent_dir = paths.agent_dir(agent)
     sandbox = "none"
     sf = agent_dir / "sandbox"
@@ -598,7 +608,7 @@ def invoke_agent_heartbeat(
     elif sandbox == "nobash":
         allowed = "Read,Write,Edit,Glob,Grep"
 
-    # Match bash: cd to the agent's scope dir before invoking claude so
+    # Match bash: cd to the agent's scope dir before invoking the runtime so
     # `git rev-parse --show-toplevel` (and metasphere.paths.resolve()
     # inside the spawned process) resolve relative to the agent's repo,
     # not whatever cwd the heartbeat daemon was started from.
@@ -618,9 +628,30 @@ def invoke_agent_heartbeat(
     # context. Without it the hook would misread the headless heartbeat as
     # an interactive human session and skip injection (issue #150).
     env = {**os.environ, "METASPHERE_GATEWAY_SESSION": "1"}
+    runtime = os.environ.get("METASPHERE_AGENT_RUNTIME", "claude").strip().lower()
+    if runtime == "claude":
+        cmd = ["claude", "-p", "--allowedTools", allowed]
+    elif runtime == "codex":
+        # Codex has no direct equivalent of Claude's per-tool ``nobash``
+        # allowlist. Fail closed instead of silently granting shell access.
+        if sandbox == "nobash":
+            return False
+        sandbox_mode = "read-only" if sandbox == "readonly" else "workspace-write"
+        cmd = [
+            "codex",
+            "--ask-for-approval",
+            "never",
+            "exec",
+            "--sandbox",
+            sandbox_mode,
+            "--skip-git-repo-check",
+            "-",
+        ]
+    else:
+        return False
     try:
         subprocess.run(
-            ["claude", "-p", "--allowedTools", allowed],
+            cmd,
             input=context,
             text=True,
             check=False,

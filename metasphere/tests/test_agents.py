@@ -437,6 +437,68 @@ def test_spawn_ephemeral_does_not_pollute_scope_inbox(tmp_paths: Paths, monkeypa
     assert msgs == [], f"spawn should not create scope-inbox messages, got {msgs}"
 
 
+def test_spawn_ephemeral_codex_runtime_uses_headless_exec(
+    tmp_paths: Paths, monkeypatch
+):
+    monkeypatch.setenv("METASPHERE_AGENT_RUNTIME", "codex")
+    monkeypatch.setattr(agents.shutil, "which", lambda binary: f"/bin/{binary}")
+
+    with patch("metasphere.agents.subprocess.Popen") as popen:
+        popen.return_value.pid = 4242
+        rec = agents.spawn_ephemeral(
+            "@codex-child",
+            "/",
+            "execute the contract",
+            paths=tmp_paths,
+            model="gpt-test",
+        )
+
+    cmd = popen.call_args.args[0]
+    assert cmd[:2] == ["codex", "exec"]
+    assert "--dangerously-bypass-approvals-and-sandbox" in cmd
+    assert "--dangerously-bypass-hook-trust" not in cmd
+    assert "--skip-git-repo-check" in cmd
+    assert cmd[-2:] == ["--model", "gpt-test"]
+    assert "execute the contract" in cmd[-3]
+    assert rec.pid_file is not None
+    assert rec.pid_file.read_text().strip() == "4242"
+
+
+def test_spawn_ephemeral_probes_only_selected_runtime(
+    tmp_paths: Paths, monkeypatch
+):
+    monkeypatch.setenv("METASPHERE_AGENT_RUNTIME", "codex")
+    probes: list[str] = []
+
+    def fake_which(binary: str) -> None:
+        probes.append(binary)
+        return None
+
+    monkeypatch.setattr(agents.shutil, "which", fake_which)
+    with patch("metasphere.agents.subprocess.Popen") as popen:
+        rec = agents.spawn_ephemeral(
+            "@codex-missing", "/", "task", paths=tmp_paths
+        )
+
+    assert probes == ["codex"]
+    popen.assert_not_called()
+    assert rec.pid_file is None
+
+
+def test_headless_runtime_command_defaults_to_claude(monkeypatch):
+    monkeypatch.delenv("METASPHERE_AGENT_RUNTIME", raising=False)
+    runtime, cmd = agents._headless_runtime_command("harness", model="sonnet")
+    assert runtime == "claude"
+    assert cmd == [
+        "claude",
+        "-p",
+        "harness",
+        "--dangerously-skip-permissions",
+        "--model",
+        "sonnet",
+    ]
+
+
 @pytest.mark.parametrize(
     "bad_name",
     [
@@ -479,6 +541,13 @@ def test_wake_persistent_rejects_non_persistent(tmp_paths: Paths):
     (tmp_paths.agents / "@nope").mkdir(parents=True)
     with pytest.raises(ValueError, match="not a persistent agent"):
         agents.wake_persistent("@nope", paths=tmp_paths)
+
+
+def test_wait_for_ready_accepts_codex_yolo_marker(monkeypatch):
+    monkeypatch.setattr(
+        agents, "_capture_pane", lambda session: "permissions: YOLO mode"
+    )
+    assert agents._wait_for_ready("metasphere-worker", timeout_s=1) is True
 
 
 def test_wake_persistent_cold_start_runs_tmux_new_session(tmp_paths: Paths):

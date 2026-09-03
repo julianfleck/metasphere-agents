@@ -1,6 +1,6 @@
 """Stop-hook entry point.
 
-Reads the claude-code Stop-hook JSON payload from stdin, runs the
+Reads a Claude Code or Codex Stop-hook JSON payload from stdin, runs the
 posthook pipeline, and exits 0 unconditionally — the Stop hook must
 never break the host.
 """
@@ -13,8 +13,7 @@ DESCRIPTION = "Stop-hook: forward the assistant's last turn to Telegram."
 USAGE = """\
 Usage: metasphere hooks posthook [--dry-run]
 
-Stop-hook entrypoint. Wired into Claude Code via
-~/.metasphere/.claude/settings.local.json. Reads the Stop-hook JSON
+Stop-hook entrypoint. Wired into the configured agent REPL. Reads the Stop-hook JSON
 payload from stdin, applies the posthook pipeline (silent-tick
 filter, identifier scrub, chunking, send), and exits 0 unconditionally
 — the Stop hook must never break the host process.
@@ -31,12 +30,10 @@ Always exits 0.
 import argparse
 import json
 import sys
-from pathlib import Path
-
 from metasphere.paths import resolve
 from metasphere.posthook import (
     _resolve_chat_id,
-    extract_last_assistant_text,
+    extract_stop_assistant_text,
     read_stop_hook_payload,
     run_posthook,
     should_skip_silent_tick,
@@ -49,10 +46,7 @@ def _dry_run(stdin_bytes: bytes) -> int:
     payload = read_stop_hook_payload(stdin_bytes)
     agent = resolve_agent_id(paths)
 
-    text: str | None = None
-    transcript = payload.get("transcript_path") if isinstance(payload, dict) else None
-    if transcript:
-        text = extract_last_assistant_text(Path(transcript))
+    text = extract_stop_assistant_text(payload) if isinstance(payload, dict) else None
 
     would_skip = should_skip_silent_tick(text)
     text_str = text or ""

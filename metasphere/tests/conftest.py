@@ -5,6 +5,17 @@ from pathlib import Path
 from metasphere.paths import Paths
 
 
+@pytest.fixture(autouse=True)
+def _isolate_agent_runtime(monkeypatch):
+    """Keep host runtime selection from changing provider-neutral tests.
+
+    Runtime-specific tests opt in with ``monkeypatch.setenv``. Without this
+    guard, running the suite from a managed Codex pane makes legacy/default
+    command and Claude-TUI fixture tests silently exercise the Codex branch.
+    """
+    monkeypatch.delenv("METASPHERE_AGENT_RUNTIME", raising=False)
+
+
 # ---------------------------------------------------------------------------
 # Test-pollution guard
 #

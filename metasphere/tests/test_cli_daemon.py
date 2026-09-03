@@ -14,6 +14,11 @@ import pytest
 from metasphere.cli import daemon as d
 
 
+@pytest.fixture(autouse=True)
+def _systemd_platform(monkeypatch):
+    monkeypatch.setattr(d, "_is_macos", lambda: False)
+
+
 def _fake_cp(rc: int = 0, stdout: str = "", stderr: str = ""):
     cp = MagicMock()
     cp.returncode = rc
@@ -117,3 +122,77 @@ def test_unknown_action_rejected_by_parser(capsys):
 def test_unknown_service_rejected_by_parser(capsys):
     with pytest.raises(SystemExit):
         d.main(["start", "unknown-service"])
+
+
+def test_launchd_start_bootstraps_unloaded_service(monkeypatch):
+    monkeypatch.setattr(d, "_is_macos", lambda: True)
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[:2] == ["launchctl", "print"]:
+            return _fake_cp(rc=113, stderr="Could not find service")
+        return _fake_cp(rc=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    rc = d.main(["start", "gateway"])
+    assert rc == 0
+    assert calls[-1][:3] == ["launchctl", "bootstrap", f"gui/{d.os.getuid()}"]
+    assert calls[-1][-1].endswith("com.metasphere.gateway.plist")
+
+
+def test_launchd_restart_reloads_loaded_service_definition(monkeypatch):
+    monkeypatch.setattr(d, "_is_macos", lambda: True)
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return _fake_cp(rc=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    rc = d.main(["restart", "heartbeat"])
+    assert rc == 0
+    target = f"gui/{d.os.getuid()}/com.metasphere.heartbeat"
+    assert calls == [
+        ["launchctl", "print", target],
+        ["launchctl", "bootout", target],
+        [
+            "launchctl",
+            "bootstrap",
+            f"gui/{d.os.getuid()}",
+            d._launchd_plist("heartbeat"),
+        ],
+    ]
+
+
+def test_launchd_restart_bootstraps_unloaded_service(monkeypatch):
+    monkeypatch.setattr(d, "_is_macos", lambda: True)
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[:2] == ["launchctl", "print"]:
+            return _fake_cp(rc=113, stderr="Could not find service")
+        return _fake_cp(rc=0)
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert d.main(["restart", "schedule"]) == 0
+    assert ["launchctl", "bootout"] not in [call[:2] for call in calls]
+    assert calls[-1] == [
+        "launchctl",
+        "bootstrap",
+        f"gui/{d.os.getuid()}",
+        d._launchd_plist("schedule"),
+    ]
+
+
+def test_launchd_status_renders_state_and_pid(monkeypatch, capsys):
+    monkeypatch.setattr(d, "_is_macos", lambda: True)
+
+    def fake_run(argv, **kwargs):
+        return _fake_cp(rc=0, stdout="state = running\npid = 4242\n")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    rc = d.main(["status", "schedule"])
+    assert rc == 0
+    assert "running (pid 4242)" in capsys.readouterr().out
