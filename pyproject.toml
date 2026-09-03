@@ -62,11 +62,6 @@ markers = [
   "live: tests that hit external services (excluded by default — opt in via -m live)",
 ]
 
-[tool.setuptools]
-packages = [
-  "metasphere",
-  "metasphere.cli",
-  "metasphere.telegram",
-  "metasphere.memory",
-  "metasphere.gateway",
-]
+[tool.setuptools.packages.find]
+include = ["metasphere*"]
+exclude = ["metasphere.tests*"]
