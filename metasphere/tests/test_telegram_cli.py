@@ -180,6 +180,15 @@ def test_send_explicit_chat_id_still_works(addressbook, stub_send, monkeypatch):
     assert stub_send == [(5555, "msg-text")]
 
 
+def test_send_positional_newline_escapes_render_as_paragraphs(
+        addressbook, stub_send, monkeypatch):
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")
+    rc = _cli.main(["send", r"first paragraph\n\nsecond paragraph",
+                    "--chat-id", "5555"])
+    assert rc == 0
+    assert stub_send == [(5555, "first paragraph\n\nsecond paragraph")]
+
+
 def test_send_explicit_to_still_works(addressbook, stub_send, monkeypatch):
     """--to alpha resolves via addressbook same as @alpha shorthand."""
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@orchestrator")

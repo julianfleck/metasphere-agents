@@ -34,6 +34,28 @@ class TestResolveBody:
     def test_positional_passthrough(self):
         assert _body.resolve_body("hello") == "hello"
 
+    def test_positional_expands_shell_safe_newlines(self):
+        assert _body.resolve_body(r"first\n\nsecond") == "first\n\nsecond"
+
+    def test_positional_expands_shell_safe_crlf(self):
+        assert _body.resolve_body(r"first\r\nsecond") == "first\nsecond"
+
+    def test_positional_doubled_backslash_preserves_literal_escape(self):
+        assert _body.resolve_body(r"literal \\n token") == r"literal \n token"
+
+    def test_positional_preserves_other_backslash_sequences(self):
+        assert _body.resolve_body(r"price\tpath\q") == r"price\tpath\q"
+
+    def test_stdin_preserves_literal_newline_escape(self):
+        body = r"first\nsecond"
+        assert _body.resolve_body("-", stdin=io.StringIO(body)) == body
+
+    def test_file_preserves_literal_newline_escape(self, tmp_path):
+        body = r"first\nsecond"
+        f = tmp_path / "escaped.txt"
+        f.write_text(body, encoding="utf-8")
+        assert _body.resolve_body(None, str(f)) == body
+
     def test_positional_rich_unchanged(self):
         assert _body.resolve_body(RICH) == RICH
 

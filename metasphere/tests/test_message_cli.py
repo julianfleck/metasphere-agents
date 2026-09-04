@@ -73,6 +73,25 @@ def test_message_send_surface_explicit_overrides_active(_wire_paths):
     )
 
 
+def test_message_send_positional_newline_escapes_render_as_paragraphs(
+    _wire_paths,
+):
+    with patch(
+        "metasphere.telegram.api.send_with_cc"
+    ) as send_mock, patch(
+        "metasphere.telegram.archiver.archive_outgoing"
+    ):
+        rc = _run([
+            "send", r"first paragraph\n\nsecond paragraph",
+            "--surface", "telegram",
+            "--chat-id", "55555",
+        ])
+    assert rc == 0
+    send_mock.assert_called_once_with(
+        55555, "first paragraph\n\nsecond paragraph", surface_id="telegram",
+    )
+
+
 def test_message_send_auto_fallback_to_legacy_default_when_no_pointer(
     _wire_paths, capsys,
 ):

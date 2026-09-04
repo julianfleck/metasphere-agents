@@ -50,6 +50,31 @@ def _strip_one_trailing_newline(s: str) -> str:
     return s
 
 
+def _expand_positional_newlines(s: str) -> str:
+    """Expand newline escapes in a shell-quoted positional message body.
+
+    ``\\n`` and ``\\r\\n`` are decoded; all other escape sequences are
+    preserved. A doubled backslash protects a literal escape. Stdin and
+    file bodies bypass this helper because those modes are verbatim.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(s):
+        if s.startswith("\\\\", i):
+            out.append("\\")
+            i += 2
+        elif s.startswith("\\r\\n", i):
+            out.append("\n")
+            i += 4
+        elif s.startswith("\\n", i):
+            out.append("\n")
+            i += 2
+        else:
+            out.append(s[i])
+            i += 1
+    return "".join(out)
+
+
 def resolve_body(
     text: Optional[str],
     body_file: Optional[str] = None,
@@ -62,7 +87,9 @@ def resolve_body(
     Precedence: ``--body-file PATH`` > positional ``"-"`` (stdin) >
     positional ``text``. File / stdin content is read as UTF-8 verbatim
     except a single trailing newline is stripped (see
-    :func:`_strip_one_trailing_newline`).
+    :func:`_strip_one_trailing_newline`). Positional text expands literal
+    ``\\n`` / ``\\r\\n`` sequences so shell-quoted paragraphs render as
+    actual line breaks.
 
     Raises :class:`ValueError` on conflicting inputs (both a positional
     body and ``--body-file``) or an empty body (unless ``allow_empty``),
@@ -85,7 +112,7 @@ def resolve_body(
             stream = sys.stdin
         body = _strip_one_trailing_newline(stream.read())
     else:
-        body = text or ""
+        body = _expand_positional_newlines(text or "")
 
     if not allow_empty and not body.strip():
         raise ValueError("empty message body")
