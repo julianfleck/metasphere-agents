@@ -47,7 +47,6 @@ Subcommands:
   update                Run the metasphere self-update flow (or manage its cron job).
   accounts              Manage Anthropic OAuth credential profiles via symlink swap.
   addressbook           Manage cross-surface contacts (e.g. sync Slack user names).
-  audit-docs            Scan commits since the last CHANGELOG entry for doc drift.
   migrate-project-dirs  Migrate project-scoped content to the canonical projects/ layout.
   docs                  Regenerate docs/CLI.md from each handler's DESCRIPTION + USAGE.
   version               Print installed package version + current HEAD commit hash.
@@ -762,50 +761,6 @@ Notes:
   Slack contacts are PER-SURFACE and standalone (uid -> name), kept separate
   from telegram contacts — no unified identity. On missing_scope the sync is a
   no-op (0 synced) and inbound falls back to the raw uid.
-```
-
-### `metasphere audit-docs`
-
-Scan commits since the last CHANGELOG entry for doc drift.
-
-```
-Usage: metasphere audit-docs --project <name> [options]
-       metasphere audit-docs register-cron [options]
-
-Default mode (audit): scan commits in the registered project repo
-since the newest CHANGELOG entry, classify them, and write a markdown
-report (CHANGELOG draft + README-staleness flags).
-
-Options:
-  --project <name>   Registered project name to audit (required).
-  --output <dir>     Report directory (default: ~/.metasphere/audits/).
-  --no-notify        Skip the !info message to @orchestrator.
-  --since <window>   Override the CHANGELOG-derived window. Accepts a
-                     bare YYYY-MM-DD (interpreted as 00:00:00 UTC, so
-                     same-day commits are included) or any string git
-                     --since understands.
-
-Auto-generated `chore: bump version X.Y.Z → A.B.C` commits from the
-bump-minor workflow are filtered out before classification — they
-carry no CHANGELOG signal and would otherwise be stripped by hand.
-
-Commits whose 7-char SHA prefix is already cited in the newest
-CHANGELOG entry are also filtered out. This catches the same-day
-boundary where commits and their documenting entry land on the
-same UTC date and would otherwise be re-reported by the next
-audit. The date floor stays as the coarse window; the SHA filter
-is the fine cutter.
-
-Subcommand `register-cron`:
-  --project <name>          Only register one project (default: all).
-  --cron-expr "<expr>"      Cron expression (default: "0 18 * * *").
-  --metasphere-bin <path>   Absolute path to the metasphere binary.
-  --dry-run                 List jobs that would be added.
-
-Exit codes:
-  0  report produced, no staleness flags
-  1  report produced, staleness flags raised
-  2  precondition failed (unknown project, no repo)
 ```
 
 ### `metasphere migrate-project-dirs`
