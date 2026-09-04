@@ -424,9 +424,9 @@ def submit_to_tmux(
             # before typing. Without it, the first 6-7 characters
             # get eaten when the pane is in a post-turn transition
             # state (e.g., TUI still rendering the previous reply
-            # / ack). 2026-04-20 repro: cam-lead pane, wake with
-            # "[task] TEST ..." payload, "[task] " (7 chars)
-            # consistently lost; 0.5s pre-type settle eliminates it.
+            # / ack). 2026-04-20 repro: an agent pane during a
+            # wake-with-payload, "[task] " (7 chars) consistently
+            # lost; 0.5s pre-type settle eliminates it.
             time.sleep(0.5)
 
         # Deliver message via tmux paste-buffer (single atomic paste)
