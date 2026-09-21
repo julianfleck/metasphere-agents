@@ -19,6 +19,17 @@ def summary() -> str:
     paths = resolve()
     lines = []
 
+    # Runtime provenance belongs in the one-screen health snapshot. Without
+    # it, an operator must run a second command before attributing behavior to
+    # a rollout, and an old editable install can look otherwise healthy.
+    try:
+        from .cli.version import runtime_identity
+
+        version, commit = runtime_identity()
+        lines.append(f"Runtime: {version} ({commit})")
+    except Exception as exc:
+        lines.append(f"Runtime: (unavailable: {type(exc).__name__}: {exc})")
+
     # Session status
     sessions = list_sessions()
     alive_count = len(sessions)
