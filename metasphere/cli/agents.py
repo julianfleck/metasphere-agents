@@ -543,6 +543,10 @@ def _seed(argv: list[str]) -> int:
     """
     from metasphere import specs as _specs
 
+    usage = (
+        "Usage: metasphere agent seed --spec <spec-name> @agent-id "
+        "[--project <name>] [--force]"
+    )
     spec_name = ""
     agent_id = ""
     project_name = ""
@@ -550,26 +554,57 @@ def _seed(argv: list[str]) -> int:
     i = 0
     while i < len(argv):
         arg = argv[i]
-        if arg == "--spec" and i + 1 < len(argv):
-            spec_name = argv[i + 1]
-            i += 2
-        elif arg == "--project" and i + 1 < len(argv):
-            project_name = argv[i + 1]
+        if arg in ("--help", "-h"):
+            print(usage)
+            return 0
+        if arg in ("--spec", "--project"):
+            if i + 1 >= len(argv):
+                print(
+                    f"metasphere agent seed: {arg} requires a value",
+                    file=sys.stderr,
+                )
+                return 2
+            value = argv[i + 1]
+            if value.startswith("-"):
+                print(
+                    f"metasphere agent seed: {arg} value {value!r} "
+                    "looks like a flag",
+                    file=sys.stderr,
+                )
+                return 2
+            if arg == "--spec":
+                spec_name = value
+            else:
+                project_name = value
             i += 2
         elif arg == "--force":
             force = True
             i += 1
         elif arg.startswith("@"):
+            if agent_id:
+                print(
+                    f"metasphere agent seed: multiple agent ids: "
+                    f"{agent_id}, {arg}",
+                    file=sys.stderr,
+                )
+                return 2
             agent_id = arg
             i += 1
+        elif arg.startswith("-"):
+            print(
+                f"metasphere agent seed: unknown flag: {arg}",
+                file=sys.stderr,
+            )
+            return 2
         else:
-            i += 1
+            print(
+                f"metasphere agent seed: unexpected argument: {arg}",
+                file=sys.stderr,
+            )
+            return 2
 
     if not spec_name or not agent_id:
-        print(
-            "Usage: metasphere agent seed --spec <spec-name> @agent-id [--project <name>] [--force]",
-            file=sys.stderr,
-        )
+        print(usage, file=sys.stderr)
         return 1
 
     spec = _specs.get_spec(spec_name)

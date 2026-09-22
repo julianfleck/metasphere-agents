@@ -245,3 +245,32 @@ def test_agent_seed_rejects_flag_shaped_name(
     assert rc == 2
     assert "looks like a CLI flag" in err
     assert not (tmp_paths.agents / "@--bogus").exists()
+
+
+def test_agent_seed_help_prints_usage(capsys):
+    rc = cli_agents.main(["seed", "--help"])
+
+    out, err = capsys.readouterr()
+    assert rc == 0
+    assert "metasphere agent seed --spec" in out
+    assert err == ""
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["--bogus"], "unknown flag: --bogus"),
+        (["--spec"], "--spec requires a value"),
+        (["--project"], "--project requires a value"),
+        (["--spec", "--force", "@agent"], "--spec value '--force' looks like a flag"),
+        (["--project", "--force"], "--project value '--force' looks like a flag"),
+        (["stray"], "unexpected argument: stray"),
+        (["@alpha", "@beta"], "multiple agent ids"),
+    ],
+)
+def test_agent_seed_rejects_malformed_args(capsys, argv, expected):
+    rc = cli_agents.main(["seed", *argv])
+
+    _, err = capsys.readouterr()
+    assert rc == 2
+    assert expected in err
