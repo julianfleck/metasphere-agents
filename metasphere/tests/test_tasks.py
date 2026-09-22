@@ -761,6 +761,26 @@ def test_cli_list_all_projects_fallback(tmp_path, monkeypatch, capsys):
     assert "Owner:" not in out
 
 
+def test_cli_list_all_projects_includes_paused_excludes_terminal(
+    tmp_path, monkeypatch, capsys
+):
+    """Bare task listing must use the same definition of open as status."""
+    from metasphere.cli import tasks as cli_tasks
+
+    _, _, proj_a, _ = _make_two_project_registry(tmp_path, monkeypatch)
+    t.update_task("alpha-ww", proj_a, status="paused")
+    t.update_task("beta-ww", proj_a, status="completed")
+
+    capsys.readouterr()
+    rc = cli_tasks._cmd_list([])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "alpha-ww" in out
+    assert "beta-ww" not in out
+    assert "one-ma" in out
+
+
 def test_cli_list_condensed_flag_with_project_filter(tmp_path, monkeypatch, capsys):
     """`--condensed` forces one-line view even with a --project filter."""
     from metasphere.cli import tasks as cli_tasks

@@ -279,10 +279,10 @@ def _cmd_list(args: list[str]) -> int:
         if filter_ == "completed":
             items = [t for t in items if t.status == _tasks.STATUS_COMPLETED]
         elif filter_ == "active":
-            items = [t for t in items
-                     if t.status in (_tasks.STATUS_PENDING,
-                                     _tasks.STATUS_IN_PROGRESS,
-                                     _tasks.STATUS_BLOCKED)]
+            # Use the task model's canonical open/terminal distinction.
+            # A local allowlist here previously hid paused work even though
+            # ``metasphere status`` correctly counted it as open.
+            items = [t for t in items if _tasks.is_active(t)]
         if not items:
             print("Tasks: no active tasks across any registered project")
             return 0

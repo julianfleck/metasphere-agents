@@ -239,19 +239,19 @@ def _render_agents(c: _C, paths: Paths, lines: list[str],
 def _render_tasks(c: _C, paths: Paths, lines: list[str]) -> None:
     """Task summary across the project root and all registered projects.
 
-    Uses :func:`metasphere.tasks.list_tasks` against the configured
-    scope+repo and renders up to 10 lines.
+    Uses the same cross-project open-task source as ``metasphere status`` and
+    renders up to 10 lines. Keeping one source of truth prevents paused or
+    blocked work from disappearing in one landscape while being counted in
+    another.
     """
     lines.append(f"{c.bold}Tasks{c.nc}")
     try:
-        from metasphere.tasks import list_tasks
+        from metasphere.tasks import active_tasks_across_projects
 
-        tasks = list_tasks(paths.scope, paths.project_root)
+        active = active_tasks_across_projects(paths)
     except Exception:
         lines.append(_dim(c, "(no tasks)"))
         return
-    active = [t for t in tasks if getattr(t, "status", "") in
-              ("pending", "in-progress", "in_progress", "active", "")]
     if not active:
         lines.append(_dim(c, "(no active tasks)"))
         return
@@ -261,7 +261,7 @@ def _render_tasks(c: _C, paths: Paths, lines: list[str]) -> None:
         tid = getattr(t, "id", "?")
         title = getattr(t, "title", "") or ""
         prio = getattr(t, "priority", "") or ""
-        prio_fmt = f" !{prio}" if prio and prio != "normal" else ""
+        prio_fmt = f" {prio}" if prio and prio != "!normal" else ""
         lines.append(f"  {tid}{prio_fmt} {title[:60]}")
     if len(active) > 10:
         lines.append(_dim(c, f"... +{len(active) - 10} more"))
