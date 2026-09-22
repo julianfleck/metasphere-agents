@@ -679,6 +679,45 @@ def test_cli_list_rejects_missing_filter_value(tmp_paths, capsys, flag):
     assert f"{flag} requires a value" in err
 
 
+def test_cli_all_alias_forwards_filters(monkeypatch):
+    """The legacy `task all` spelling must retain its remaining argv."""
+    from metasphere.cli import tasks as cli_tasks
+
+    seen = []
+    monkeypatch.setattr(
+        cli_tasks,
+        "_cmd_list",
+        lambda args: seen.append(args) or 0,
+    )
+
+    rc = cli_tasks.main(["all", "--project", "demo", "--owner", "@alice"])
+
+    assert rc == 0
+    assert seen == [["all", "--project", "demo", "--owner", "@alice"]]
+
+
+@pytest.mark.parametrize(
+    ("filter_arg", "expected"),
+    [
+        ("active", "Tasks: no active tasks across any registered project"),
+        ("completed", "Tasks: no completed tasks across any registered project"),
+        ("all", "Tasks: no tasks across any registered project"),
+    ],
+)
+def test_cli_list_empty_message_matches_filter(
+    tmp_paths, monkeypatch, capsys, filter_arg, expected
+):
+    from metasphere.cli import tasks as cli_tasks
+
+    monkeypatch.setattr(cli_tasks, "_scope_is_in_registered_project", lambda scope: False)
+    monkeypatch.setattr(cli_tasks, "_all_projects_tasks", lambda **kwargs: [])
+
+    rc = cli_tasks._cmd_list([filter_arg])
+
+    assert rc == 0
+    assert capsys.readouterr().out.strip() == expected
+
+
 def test_cli_list_project_redirect_from_outside_scope(tmp_path, monkeypatch, capsys):
     """--project <name> must resolve to the registered project's path even
     when the CWD/scope lives outside that project (the Telegram-gateway

@@ -289,6 +289,7 @@ def _cmd_list(args: list[str]) -> int:
         else:
             i += 1
     include_completed = filter_ in ("all", "completed")
+    empty_label = "tasks" if filter_ == "all" else f"{filter_} tasks"
     scope, repo = _ctx()
 
     # All-projects fallback: no --project, no owner/unassigned filter, and
@@ -311,7 +312,7 @@ def _cmd_list(args: list[str]) -> int:
             # ``metasphere status`` correctly counted it as open.
             items = [t for t in items if _tasks.is_active(t)]
         if not items:
-            print("Tasks: no active tasks across any registered project")
+            print(f"Tasks: no {empty_label} across any registered project")
             return 0
         from metasphere.format import format_task_condensed
         print(format_task_condensed(items))
@@ -334,7 +335,7 @@ def _cmd_list(args: list[str]) -> int:
         owner_norm = owner_filter if owner_filter.startswith("@") else "@" + owner_filter
         items = [t for t in items if t.assignee == owner_norm]
     if not items:
-        print(f"Tasks: no {filter_} tasks in scope")
+        print(f"Tasks: no {empty_label} in scope")
         return 0
     if condensed:
         from metasphere.format import format_task_condensed
@@ -655,7 +656,7 @@ def main(argv: list[str] | None = None) -> int:
         "park": _cmd_park,
         "unpark": _cmd_unpark,
         "show": _cmd_show,
-        "all": lambda _r: _cmd_list(["all"]),
+        "all": lambda r: _cmd_list(["all", *r]),
     }
     h = handlers.get(cmd)
     if not h:
