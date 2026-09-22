@@ -633,6 +633,52 @@ def test_cli_list_filters(tmp_paths, monkeypatch, capsys):
     assert "gamma" in out and "alpha" not in out
 
 
+def test_cli_list_accepts_all_flag_alias(tmp_paths, monkeypatch, capsys):
+    """The conventional --all spelling must not silently run active-only."""
+    from metasphere.cli import tasks as cli_tasks
+
+    active = t.create_task(
+        "active item", "!normal", tmp_paths.scope, tmp_paths.project_root,
+        project="default", assigned_to="@alice",
+    )
+    completed = t.create_task(
+        "completed item", "!normal", tmp_paths.scope, tmp_paths.project_root,
+        project="default", assigned_to="@alice",
+    )
+    t.complete_task(completed.id, "done", tmp_paths.project_root)
+
+    capsys.readouterr()
+    rc = cli_tasks._cmd_list(["--project", "default", "--all"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert active.title in out
+    assert completed.title in out
+
+
+@pytest.mark.parametrize("flag", ["--bogus", "--al"])
+def test_cli_list_rejects_unknown_flags(tmp_paths, capsys, flag):
+    from metasphere.cli import tasks as cli_tasks
+
+    rc = cli_tasks._cmd_list([flag])
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert f"unexpected flag: {flag}" in err
+    assert "Usage: metasphere task list" in err
+
+
+@pytest.mark.parametrize("flag", ["--project", "--owner"])
+def test_cli_list_rejects_missing_filter_value(tmp_paths, capsys, flag):
+    from metasphere.cli import tasks as cli_tasks
+
+    rc = cli_tasks._cmd_list([flag])
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert f"{flag} requires a value" in err
+
+
 def test_cli_list_project_redirect_from_outside_scope(tmp_path, monkeypatch, capsys):
     """--project <name> must resolve to the registered project's path even
     when the CWD/scope lives outside that project (the Telegram-gateway

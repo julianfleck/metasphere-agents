@@ -17,7 +17,9 @@ Usage: metasphere task [<command> [args...]]
 
 With no arguments, lists active tasks for the current scope. Commands:
 
-  metasphere task list [all|completed]    Filter by status.
+  metasphere task list [active|all|completed] [filters]
+                                          Filter and list tasks. Status also
+                                          accepts --active/--all/--completed.
   metasphere task new "title" [!priority] Create a new task.
   metasphere task start <task-id>         Mark a task in-progress.
   metasphere task update <task-id> "note" Append a progress note.
@@ -241,14 +243,27 @@ def _cmd_list(args: list[str]) -> int:
     i = 0
     while i < len(rest):
         a = rest[i]
+        if a in ("--help", "-h"):
+            sys.stdout.write(USAGE)
+            return 0
         if a == "--unassigned":
             unassigned = True
             i += 1
-        elif a == "--project" and i + 1 < len(rest):
-            project_filter = rest[i + 1]
-            i += 2
-        elif a == "--owner" and i + 1 < len(rest):
-            owner_filter = rest[i + 1]
+        elif a in ("--project", "--owner"):
+            if i + 1 >= len(rest):
+                print(f"task list: {a} requires a value", file=sys.stderr)
+                return 2
+            value = rest[i + 1]
+            if value.startswith("-"):
+                print(
+                    f"task list: {a} value {value!r} looks like a flag",
+                    file=sys.stderr,
+                )
+                return 2
+            if a == "--project":
+                project_filter = value
+            else:
+                owner_filter = value
             i += 2
         elif a in ("--condensed", "-c"):
             condensed = True
@@ -256,6 +271,18 @@ def _cmd_list(args: list[str]) -> int:
         elif a in ("active", "all", "completed"):
             filter_ = a
             i += 1
+        elif a in ("--active", "--all", "--completed"):
+            filter_ = a[2:]
+            i += 1
+        elif a.startswith("-"):
+            print(
+                f"task list: unexpected flag: {a}\n"
+                "Usage: metasphere task list "
+                "[active|all|completed] [--project NAME] [--owner AGENT] "
+                "[--unassigned] [--condensed]",
+                file=sys.stderr,
+            )
+            return 2
         elif not a.startswith("-") and project_filter is None:
             project_filter = a
             i += 1
