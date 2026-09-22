@@ -9,6 +9,8 @@ agents are sorted by name.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from metasphere.cli import agents as cli_agents
@@ -274,3 +276,52 @@ def test_agent_seed_rejects_malformed_args(capsys, argv, expected):
     _, err = capsys.readouterr()
     assert rc == 2
     assert expected in err
+
+
+def test_agent_seed_rejects_unknown_project_before_writing(
+    tmp_paths: Paths, capsys, monkeypatch,
+):
+    spec = SimpleNamespace(name="researcher")
+    writes = []
+    monkeypatch.setattr("metasphere.specs.get_spec", lambda name: spec)
+    monkeypatch.setattr("metasphere.project.load_project", lambda name: None)
+    monkeypatch.setattr(
+        "metasphere.specs.seed_agent",
+        lambda *args, **kwargs: writes.append((args, kwargs)) or tmp_paths.agents,
+    )
+
+    rc = cli_agents.main(
+        ["seed", "--spec", "researcher", "@probe", "--project", "ghost"]
+    )
+
+    _, err = capsys.readouterr()
+    assert rc == 1
+    assert "project 'ghost' not found" in err
+    assert writes == []
+
+
+def test_agent_seed_passes_resolved_project_context(
+    tmp_paths: Paths, capsys, monkeypatch,
+):
+    spec = SimpleNamespace(name="researcher")
+    project = SimpleNamespace(goal="Ship safely", path="/srv/demo")
+    calls = []
+    monkeypatch.setattr("metasphere.specs.get_spec", lambda name: spec)
+    monkeypatch.setattr("metasphere.project.load_project", lambda name: project)
+    monkeypatch.setattr(
+        "metasphere.specs.seed_agent",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or tmp_paths.agents,
+    )
+
+    rc = cli_agents.main(
+        ["seed", "--spec", "researcher", "@probe", "--project", "demo"]
+    )
+
+    assert rc == 0
+    assert capsys.readouterr().err == ""
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args == ("@probe", spec)
+    assert kwargs["project_name"] == "demo"
+    assert kwargs["project_goal"] == "Ship safely"
+    assert kwargs["scope"] == "/srv/demo"

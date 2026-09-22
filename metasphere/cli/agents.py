@@ -622,10 +622,21 @@ def _seed(argv: list[str]) -> int:
         from metasphere import project as _proj
         try:
             proj = _proj.load_project(project_name)
-            project_goal = proj.goal or ""
-            project_scope = proj.path
-        except Exception:
-            pass
+        except Exception as e:
+            print(
+                f"metasphere agent seed: failed to load project "
+                f"{project_name!r}: {e}",
+                file=sys.stderr,
+            )
+            return 1
+        if proj is None:
+            print(
+                f"metasphere agent seed: project {project_name!r} not found",
+                file=sys.stderr,
+            )
+            return 1
+        project_goal = proj.goal or ""
+        project_scope = proj.path or ""
 
     try:
         agent_dir = _specs.seed_agent(
