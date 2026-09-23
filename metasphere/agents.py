@@ -936,7 +936,7 @@ def wake_persistent(
     respawn = _respawn_cmd(agent_id, model=model, agent_class=agent_class)
     _tmux_run("send-keys", "-t", session, respawn, "Enter")
 
-    _atomic_meta_write(agent_dir, "status", "active: persistent session")
+    _atomic_meta_write(agent_dir, "status", f"active: {agent_class} session")
     _atomic_meta_write(agent_dir, "spawned_at", _utcnow())
     touch_last_active(agent_id, paths)  # prevent reap_dormant from killing a just-woken session
 
