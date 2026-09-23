@@ -16,12 +16,13 @@ from metasphere.paths import Paths
 
 def _snap(*, z_total=0, z_npm=0, t_total=0, t_pers=0, t_eph=0,
           pid_limit=1000, pid_current=100, pid_free_pct=90.0,
-          pid_source="kernel") -> mon.MonitoringSnapshot:
+          pid_source="kernel", pid_denials=0) -> mon.MonitoringSnapshot:
     return mon.MonitoringSnapshot(
         zombies=mon.ZombieCounters(total=z_total, npm_root_g=z_npm),
         tmux=mon.TmuxCounters(total=t_total, persistent=t_pers, ephemeral=t_eph),
         pids=mon.PidHeadroom(limit=pid_limit, current=pid_current,
-                             free_pct=pid_free_pct, source=pid_source),
+                             free_pct=pid_free_pct, source=pid_source,
+                             denials=pid_denials),
     )
 
 
@@ -190,22 +191,86 @@ def test_render_status_contains_all_three_sections(tmp_paths: Paths):
         z_total=3, z_npm=1,
         t_total=4, t_pers=2, t_eph=2,
         pid_limit=4194304, pid_current=450, pid_free_pct=99.99,
-        pid_source="kernel",
+        pid_source="kernel", pid_denials=7,
     )
     with patch.object(mon, "snapshot", return_value=fake):
         out = mon.render_status(tmp_paths)
     assert "zombies total=3 npm_root_g=1" in out
     assert "tmux total=4 persistent=2 ephemeral=2" in out
-    assert "pid_headroom limit=4194304 current=450" in out
+    assert "pid_headroom limit=4194304 tasks=450" in out
     assert "source=kernel" in out
+    assert "denials=7" in out
 
 
-def test_render_status_shows_unlimited_when_no_limit(tmp_paths: Paths):
+def test_render_status_shows_unknown_when_no_effective_limit(tmp_paths: Paths):
     fake = _snap(pid_limit=0, pid_current=200, pid_free_pct=100.0,
                  pid_source="unknown")
     with patch.object(mon, "snapshot", return_value=fake):
         out = mon.render_status(tmp_paths)
-    assert "limit=unlimited" in out
+    assert "limit=unknown" in out
+    assert "free_pct=unknown" in out
+
+
+# ---------------------------------------------------------------------------
+# PID headroom — cgroup task semantics and diagnostic counters
+# ---------------------------------------------------------------------------
+
+def test_current_task_count_counts_threads_not_processes(tmp_path, monkeypatch):
+    process_dirs = [tmp_path / "101", tmp_path / "202"]
+    for process_dir, tids in zip(process_dirs, (("101", "102"), ("202",))):
+        task_dir = process_dir / "task"
+        task_dir.mkdir(parents=True)
+        for tid in tids:
+            (task_dir / tid).mkdir()
+
+    monkeypatch.setattr(mon, "_iter_proc_dirs", lambda: process_dirs)
+
+    assert mon._current_task_count() == 3
+
+
+def test_pid_headroom_uses_cgroup_task_limit_and_denials(tmp_path, monkeypatch):
+    cgroup_max = tmp_path / "pids.max"
+    cgroup_events = tmp_path / "pids.events"
+    cgroup_max.write_text("512\n")
+    cgroup_events.write_text("max 12\n")
+
+    monkeypatch.setattr(mon, "_PID_CGROUP_V2", cgroup_max)
+    monkeypatch.setattr(mon, "_PID_CGROUP_V2_EVENTS", cgroup_events)
+    monkeypatch.setattr(mon, "_PID_CGROUP_UNIFIED", tmp_path / "missing.max")
+    monkeypatch.setattr(mon, "_PID_CGROUP_UNIFIED_EVENTS", tmp_path / "missing.events")
+    monkeypatch.setattr(mon, "_current_task_count", lambda: 500)
+
+    headroom = mon.pid_headroom()
+
+    assert headroom.limit == 512
+    assert headroom.current == 500
+    assert headroom.free_pct == 12 / 512 * 100
+    assert headroom.source == "cgroup"
+    assert headroom.denials == 12
+
+
+def test_unbounded_cgroup_does_not_claim_kernel_headroom(tmp_path, monkeypatch):
+    cgroup_max = tmp_path / "pids.max"
+    cgroup_events = tmp_path / "pids.events"
+    kernel_max = tmp_path / "pid_max"
+    cgroup_max.write_text("max\n")
+    cgroup_events.write_text("max 79658\n")
+    kernel_max.write_text("4194304\n")
+
+    monkeypatch.setattr(mon, "_PID_CGROUP_V2", cgroup_max)
+    monkeypatch.setattr(mon, "_PID_CGROUP_V2_EVENTS", cgroup_events)
+    monkeypatch.setattr(mon, "_PID_CGROUP_UNIFIED", tmp_path / "missing.max")
+    monkeypatch.setattr(mon, "_PID_CGROUP_UNIFIED_EVENTS", tmp_path / "missing.events")
+    monkeypatch.setattr(mon, "_PID_MAX_PATH", kernel_max)
+    monkeypatch.setattr(mon, "_current_task_count", lambda: 510)
+
+    headroom = mon.pid_headroom()
+
+    assert headroom.limit == 0
+    assert headroom.current == 510
+    assert headroom.free_pct == 100.0
+    assert headroom.source == "cgroup-unbounded"
+    assert headroom.denials == 79658
 
 
 # ---------------------------------------------------------------------------

@@ -6,10 +6,9 @@ Three counter families, each a pure-Python probe with no side effects:
 - ``tmux_counters(paths)``  — live tmux sessions split by persistent /
                               ephemeral via ``AgentRecord.is_persistent``
                               (sidecar override or MISSION.md fallback)
-- ``pid_headroom()``        — configured PID limit (cgroup pids.max
-                              authoritative when finite, otherwise
-                              ``/proc/sys/kernel/pid_max``), current
-                              process count, and free-slot percentage.
+- ``pid_headroom()``        — configured task limit (cgroup pids.max
+                              authoritative when present), current task
+                              count, denial events, and free-slot percentage.
 
 Thresholds are expressed as a small dataclass so tests can inject
 synthetic counters and rebuild the ALERT string deterministically. The
@@ -67,10 +66,11 @@ class TmuxCounters:
 
 @dataclass(frozen=True)
 class PidHeadroom:
-    limit: int              # effective PID limit (0 when unlimited / unknown)
-    current: int            # live process count
-    free_pct: float         # percent of slots available (100.0 when unlimited)
-    source: str             # 'cgroup' | 'kernel' | 'unknown'
+    limit: int              # effective task limit (0 when unknown)
+    current: int            # live task/thread count
+    free_pct: float         # percent of slots available (100.0 when unknown)
+    source: str             # 'cgroup' | 'cgroup-unbounded' | 'kernel' | 'unknown'
+    denials: int = 0        # cumulative cgroup pids.events max counter
 
 
 @dataclass(frozen=True)
@@ -258,7 +258,9 @@ def tmux_threshold(paths: Paths) -> int:
 
 _PID_MAX_PATH = Path("/proc/sys/kernel/pid_max")
 _PID_CGROUP_V2 = Path("/sys/fs/cgroup/pids.max")
+_PID_CGROUP_V2_EVENTS = Path("/sys/fs/cgroup/pids.events")
 _PID_CGROUP_UNIFIED = Path("/sys/fs/cgroup/unified/pids.max")
+_PID_CGROUP_UNIFIED_EVENTS = Path("/sys/fs/cgroup/unified/pids.events")
 
 
 def _read_int(path: Path) -> int:
@@ -274,37 +276,98 @@ def _read_int(path: Path) -> int:
         return 0
 
 
-def _current_proc_count() -> int:
-    return len(_iter_proc_dirs())
+def _read_cgroup_limit(path: Path) -> tuple[bool, int]:
+    """Return ``(readable, limit)``; ``limit=0`` represents ``max``.
+
+    Readability matters: a readable unbounded cgroup is not evidence that the
+    process can use the kernel-wide PID space. A parent cgroup outside the
+    namespace may still impose a finite task ceiling.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False, 0
+    if raw == "max":
+        return True, 0
+    try:
+        return True, max(0, int(raw))
+    except ValueError:
+        return True, 0
+
+
+def _read_cgroup_denials(path: Path) -> int:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+    for line in lines:
+        key, _, raw = line.partition(" ")
+        if key != "max":
+            continue
+        try:
+            return max(0, int(raw.strip()))
+        except ValueError:
+            return 0
+    return 0
+
+
+def _current_task_count() -> int:
+    """Count kernel tasks (threads), matching cgroup pids semantics."""
+    total = 0
+    for pid_dir in _iter_proc_dirs():
+        try:
+            total += sum(
+                1 for entry in os.listdir(pid_dir / "task") if entry.isdigit()
+            )
+        except OSError:
+            # The process may have raced with the procfs walk. Counting its
+            # leader is a conservative approximation and avoids under-reporting
+            # pressure merely because one task directory became unreadable.
+            total += 1
+    return total
 
 
 def pid_headroom() -> PidHeadroom:
-    """Best-effort PID headroom probe.
+    """Best-effort task headroom probe.
 
-    Cgroup pids.max wins when it is a finite number — on a pid-namespaced
-    container (systemd-nspawn / Docker / k8s) that's the real ceiling.
-    When the cgroup file is missing or ``max`` we fall back to
-    /proc/sys/kernel/pid_max, which is the kernel-wide ceiling.
+    A readable cgroup pids.max is authoritative, including ``max``. In that
+    case effective headroom is unknown because a parent cgroup hidden outside
+    the namespace may still impose a finite ceiling. Only hosts without a
+    readable cgroup controller fall back to the kernel-wide PID ceiling.
     """
     limit = 0
     source = "unknown"
-    for candidate in (_PID_CGROUP_V2, _PID_CGROUP_UNIFIED):
-        val = _read_int(candidate)
-        if val > 0:
+    denials = 0
+    cgroup_visible = False
+    candidates = (
+        (_PID_CGROUP_V2, _PID_CGROUP_V2_EVENTS),
+        (_PID_CGROUP_UNIFIED, _PID_CGROUP_UNIFIED_EVENTS),
+    )
+    for limit_path, events_path in candidates:
+        readable, val = _read_cgroup_limit(limit_path)
+        if readable:
+            cgroup_visible = True
             limit = val
-            source = "cgroup"
+            source = "cgroup" if val > 0 else "cgroup-unbounded"
+            denials = _read_cgroup_denials(events_path)
             break
-    if limit == 0:
+    if not cgroup_visible:
         kernel = _read_int(_PID_MAX_PATH)
         if kernel > 0:
             limit = kernel
             source = "kernel"
-    current = _current_proc_count()
+    current = _current_task_count()
     if limit <= 0:
-        return PidHeadroom(limit=0, current=current, free_pct=100.0, source=source)
+        return PidHeadroom(
+            limit=0, current=current, free_pct=100.0, source=source,
+            denials=denials,
+        )
     free = max(0, limit - current)
     free_pct = (free / limit) * 100.0
-    return PidHeadroom(limit=limit, current=current, free_pct=free_pct, source=source)
+    return PidHeadroom(
+        limit=limit, current=current, free_pct=free_pct, source=source,
+        denials=denials,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -328,13 +391,15 @@ def render_status(paths: Paths) -> str:
     z = snap.zombies
     t = snap.tmux
     p = snap.pids
-    limit_label = str(p.limit) if p.limit else "unlimited"
+    limit_label = str(p.limit) if p.limit else "unknown"
+    free_pct_label = f"{p.free_pct:.1f}" if p.limit else "unknown"
     lines = [
         f"zombies total={z.total} npm_root_g={z.npm_root_g}",
         f"tmux total={t.total} persistent={t.persistent} ephemeral={t.ephemeral}",
         (
-            f"pid_headroom limit={limit_label} current={p.current} "
-            f"free_pct={p.free_pct:.1f} source={p.source}"
+            f"pid_headroom limit={limit_label} tasks={p.current} "
+            f"free_pct={free_pct_label} source={p.source} "
+            f"denials={p.denials}"
         ),
     ]
     return "\n".join(lines)
@@ -396,7 +461,7 @@ def evaluate_alert(
             f"(persistent={snap.tmux.persistent}, ephemeral={snap.tmux.ephemeral}) "
             f"> {tmux_threshold}"
         )
-    if snap.pids.free_pct < PID_HEADROOM_PCT_THRESHOLD:
+    if snap.pids.limit > 0 and snap.pids.free_pct < PID_HEADROOM_PCT_THRESHOLD:
         trips.append(
             f"pid_headroom={snap.pids.free_pct:.1f}% "
             f"(current={snap.pids.current}/{snap.pids.limit or 'unlimited'}) "
