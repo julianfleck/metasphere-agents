@@ -63,12 +63,13 @@ def test_filter_open_excludes_green(tmp_paths: Paths):
     assert "🟢" not in body
 
 
-def test_unknown_filter_degrades_to_all(tmp_paths: Paths):
+def test_unknown_filter_fails_closed(tmp_paths: Paths):
     _write(tmp_paths, _SAMPLE)
     body, rc = q.render_questions("bogus")
-    assert rc == 0
-    # Treated as no filter → everything renders.
-    assert "🔴" in body and "🟡" in body and "🟢" in body
+    assert rc == 2
+    assert "unknown filter" in body
+    assert "bogus" in body
+    assert "PR #40" not in body
 
 
 def test_missing_file_is_clean_rc0(tmp_paths: Paths):
@@ -99,6 +100,16 @@ def test_main_prints_body(tmp_paths: Paths, capsys):
     assert "Needs from the operator" in out
 
 
+def test_main_rejects_extra_arguments_without_rendering(tmp_paths: Paths, capsys):
+    _write(tmp_paths, _SAMPLE)
+    rc = q.main(["red", "extra"])
+    out, err = capsys.readouterr()
+    assert rc == 2
+    assert out == ""
+    assert "takes at most one filter" in err
+    assert "PR #40" not in err
+
+
 def test_telegram_cmd_questions(tmp_paths: Paths):
     """The /questions telegram command renders the same body."""
     _write(tmp_paths, _SAMPLE)
@@ -110,6 +121,14 @@ def test_telegram_cmd_questions(tmp_paths: Paths):
     body_red = cmd_questions("red", ctx)
     assert "PR #40" in body_red
     assert "🟢" not in body_red
+
+    body_unknown = cmd_questions("bogus", ctx)
+    assert "unknown filter" in body_unknown
+    assert "PR #40" not in body_unknown
+
+    body_extra = cmd_questions("red extra", ctx)
+    assert "unknown filter" in body_extra
+    assert "PR #40" not in body_extra
 
 
 # ---------------------------------------------------------------------------
