@@ -65,7 +65,6 @@ SUBCOMMANDS: tuple[Subcommand, ...] = (
     Subcommand("update",       "metasphere.cli.update"),
     Subcommand("accounts",     "metasphere.cli.accounts"),
     Subcommand("addressbook",  "metasphere.cli.addressbook"),
-    Subcommand("audit-docs",   "metasphere.cli.audit_docs"),
     Subcommand("migrate-project-dirs", "metasphere.cli.migrate"),
     Subcommand("docs",         "metasphere.cli.docs"),
     Subcommand("version",      "metasphere.cli.version"),
