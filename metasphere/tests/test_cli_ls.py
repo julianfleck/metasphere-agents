@@ -8,6 +8,7 @@ import pytest
 
 from metasphere.cli import ls as ls_mod
 from metasphere.cli import main as main_mod
+from metasphere.tasks import Task
 
 
 def test_ls_help_returns_zero(capsys):
@@ -29,6 +30,32 @@ def test_ls_empty_environment_does_not_crash(tmp_paths, capsys, monkeypatch):
     assert "Events" in out
     assert "Agents" in out
     assert "Tasks" in out
+
+
+def test_ls_tasks_include_paused_and_render_priority_once(
+    tmp_paths, capsys, monkeypatch
+):
+    """Landscape task visibility must agree with status/task list."""
+    monkeypatch.setattr("metasphere.agents.session_alive", lambda name: False)
+    monkeypatch.setattr(
+        "metasphere.tasks.active_tasks_across_projects",
+        lambda paths: [
+            Task(
+                id="paused-work",
+                title="Waiting for integration window",
+                status="paused",
+                priority="!high",
+                project="demo",
+            )
+        ],
+    )
+
+    rc = ls_mod.main([])
+
+    out, _ = capsys.readouterr()
+    assert rc == 0
+    assert "paused-work !high Waiting for integration window" in out
+    assert "!!high" not in out
 
 
 def test_ls_registered_project_shows_counts(tmp_paths, capsys, monkeypatch):

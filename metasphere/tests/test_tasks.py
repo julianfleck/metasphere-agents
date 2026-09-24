@@ -633,6 +633,91 @@ def test_cli_list_filters(tmp_paths, monkeypatch, capsys):
     assert "gamma" in out and "alpha" not in out
 
 
+def test_cli_list_accepts_all_flag_alias(tmp_paths, monkeypatch, capsys):
+    """The conventional --all spelling must not silently run active-only."""
+    from metasphere.cli import tasks as cli_tasks
+
+    active = t.create_task(
+        "active item", "!normal", tmp_paths.scope, tmp_paths.project_root,
+        project="default", assigned_to="@alice",
+    )
+    completed = t.create_task(
+        "completed item", "!normal", tmp_paths.scope, tmp_paths.project_root,
+        project="default", assigned_to="@alice",
+    )
+    t.complete_task(completed.id, "done", tmp_paths.project_root)
+
+    capsys.readouterr()
+    rc = cli_tasks._cmd_list(["--project", "default", "--all"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert active.title in out
+    assert completed.title in out
+
+
+@pytest.mark.parametrize("flag", ["--bogus", "--al"])
+def test_cli_list_rejects_unknown_flags(tmp_paths, capsys, flag):
+    from metasphere.cli import tasks as cli_tasks
+
+    rc = cli_tasks._cmd_list([flag])
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert f"unexpected flag: {flag}" in err
+    assert "Usage: metasphere task list" in err
+
+
+@pytest.mark.parametrize("flag", ["--project", "--owner"])
+def test_cli_list_rejects_missing_filter_value(tmp_paths, capsys, flag):
+    from metasphere.cli import tasks as cli_tasks
+
+    rc = cli_tasks._cmd_list([flag])
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert f"{flag} requires a value" in err
+
+
+def test_cli_all_alias_forwards_filters(monkeypatch):
+    """The legacy `task all` spelling must retain its remaining argv."""
+    from metasphere.cli import tasks as cli_tasks
+
+    seen = []
+    monkeypatch.setattr(
+        cli_tasks,
+        "_cmd_list",
+        lambda args: seen.append(args) or 0,
+    )
+
+    rc = cli_tasks.main(["all", "--project", "demo", "--owner", "@alice"])
+
+    assert rc == 0
+    assert seen == [["all", "--project", "demo", "--owner", "@alice"]]
+
+
+@pytest.mark.parametrize(
+    ("filter_arg", "expected"),
+    [
+        ("active", "Tasks: no active tasks across any registered project"),
+        ("completed", "Tasks: no completed tasks across any registered project"),
+        ("all", "Tasks: no tasks across any registered project"),
+    ],
+)
+def test_cli_list_empty_message_matches_filter(
+    tmp_paths, monkeypatch, capsys, filter_arg, expected
+):
+    from metasphere.cli import tasks as cli_tasks
+
+    monkeypatch.setattr(cli_tasks, "_scope_is_in_registered_project", lambda scope: False)
+    monkeypatch.setattr(cli_tasks, "_all_projects_tasks", lambda **kwargs: [])
+
+    rc = cli_tasks._cmd_list([filter_arg])
+
+    assert rc == 0
+    assert capsys.readouterr().out.strip() == expected
+
+
 def test_cli_list_project_redirect_from_outside_scope(tmp_path, monkeypatch, capsys):
     """--project <name> must resolve to the registered project's path even
     when the CWD/scope lives outside that project (the Telegram-gateway
@@ -759,6 +844,26 @@ def test_cli_list_all_projects_fallback(tmp_path, monkeypatch, capsys):
     # Condensed formatting, not card formatting
     assert "Created:" not in out
     assert "Owner:" not in out
+
+
+def test_cli_list_all_projects_includes_paused_excludes_terminal(
+    tmp_path, monkeypatch, capsys
+):
+    """Bare task listing must use the same definition of open as status."""
+    from metasphere.cli import tasks as cli_tasks
+
+    _, _, proj_a, _ = _make_two_project_registry(tmp_path, monkeypatch)
+    t.update_task("alpha-ww", proj_a, status="paused")
+    t.update_task("beta-ww", proj_a, status="completed")
+
+    capsys.readouterr()
+    rc = cli_tasks._cmd_list([])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "alpha-ww" in out
+    assert "beta-ww" not in out
+    assert "one-ma" in out
 
 
 def test_cli_list_condensed_flag_with_project_filter(tmp_path, monkeypatch, capsys):
