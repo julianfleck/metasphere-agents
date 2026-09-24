@@ -750,13 +750,14 @@ def test_wake_persistent_threads_ephemeral_class_into_respawn_cmd(tmp_paths: Pat
         "ephemeral-classed agent must drop to interactive bash on exit "
         "so reap_ephemeral_idle picks up the idle pane"
     )
+    assert (d / "status").read_text().strip() == "active: ephemeral session"
 
 
 def test_wake_persistent_default_class_keeps_loop(tmp_paths: Paths):
     """Backward-compat: an agent with no class sidecar (MISSION.md only)
     keeps the persistent-shape respawn loop. Ensures the class change
     doesn't silently downgrade existing persistent agents."""
-    _make_persistent(tmp_paths, "@plain-persistent")
+    d = _make_persistent(tmp_paths, "@plain-persistent")
 
     send_keys_calls: list[list[str]] = []
 
@@ -787,6 +788,7 @@ def test_wake_persistent_default_class_keeps_loop(tmp_paths: Paths):
     respawn_cmd = " ".join(respawn_calls[0])
     assert "while true" in respawn_cmd
     assert "restart_pending.@plain-persistent.json" in respawn_cmd
+    assert (d / "status").read_text().strip() == "active: persistent session"
 
 
 def test_wake_persistent_already_alive_injects_task(tmp_paths: Paths):
