@@ -2237,6 +2237,43 @@ def test_reap_crashed_terminal_status_no_op(tmp_paths: Paths):
     assert sent == [], f"no alerts expected for terminal agents, got {sent}"
 
 
+def test_reap_crashed_completed_linked_task_marks_agent_complete(
+    tmp_paths: Paths,
+):
+    """A stale non-terminal agent status must not override the durable task
+    result.  Consolidation or an operator may complete the backing task after
+    the worker has produced its output but before its process exits; once that
+    task is archived as completed, a later dead-pid sweep is cleanup, not a
+    newly discovered crash.
+    """
+    from metasphere import tasks
+
+    d = _seed_ephemeral_with_pid(
+        tmp_paths, "@task-complete", pid=99999, parent="@orchestrator",
+    )
+    task = tasks.create_task(
+        "completed elsewhere", "!normal", tmp_paths.scope,
+        tmp_paths.project_root, assigned_to="@task-complete",
+    )
+    (d / "task_id").write_text(task.id + "\n")
+    tasks.complete_task(task.id, "accepted by parent", tmp_paths.project_root)
+
+    sent: list[tuple] = []
+
+    def fake_send(*a, **k):
+        sent.append((a, k))
+        return MagicMock(id="x")
+
+    with patch("metasphere.agents._pid_alive", return_value=False), \
+         patch("metasphere.agents.session_alive", return_value=False), \
+         patch("metasphere.messages.send_message", side_effect=fake_send):
+        reaped = agents.reap_crashed(paths=tmp_paths)
+
+    assert reaped == ["@task-complete"]
+    assert (d / "status").read_text().startswith("complete:")
+    assert sent == [], f"completed backing task must suppress crash alert: {sent}"
+
+
 def test_reap_crashed_missing_pid_file_no_op(tmp_paths: Paths):
     """No pid file → no recorded liveness signal → reap_crashed must not
     transition. This is the legacy ``METASPHERE_SPAWN_NO_EXEC`` shape

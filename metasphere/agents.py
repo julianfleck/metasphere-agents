@@ -1464,6 +1464,28 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _linked_task_completed(agent_dir: Path, paths: Paths) -> bool:
+    """Return whether an ephemeral agent's backing task is complete.
+
+    The task store is the durable result record.  Its completion can race
+    with worker teardown (for example when consolidation accepts and archives
+    the work while the agent status sidecar still says ``spawned:``).  A
+    later dead-pid sweep must not overwrite that accepted result as a crash.
+    """
+    task_id = _read_text(agent_dir / "task_id")
+    if not task_id:
+        return False
+    try:
+        from . import tasks as _tasks
+
+        task_path = _tasks._find_task_file(task_id, paths=paths)
+        if task_path is None:
+            return False
+        return _tasks._load(task_path).status == _tasks.STATUS_COMPLETED
+    except (OSError, ValueError):
+        return False
+
+
 def reap_crashed(paths: Paths | None = None) -> list[str]:
     """Detect agents that died silently and promote them to ``crashed:``.
 
@@ -1484,6 +1506,9 @@ def reap_crashed(paths: Paths | None = None) -> list[str]:
       :func:`mark_exit_self`) are transitioned to ``complete:`` instead
       — a clean self-termination the sweep visited before cleanup is
       not a crash, and must not ``!alert`` the parent.
+    - Agents whose linked backing task is already completed are likewise
+      transitioned to ``complete:`` without an alert.  The archived task is
+      authoritative when its result raced with a stale agent status sidecar.
 
     Per-agent failures are swallowed — this runs on a daemon tick and
     must never abort the gateway loop. Returns the list of agent names
@@ -1508,6 +1533,31 @@ def reap_crashed(paths: Paths | None = None) -> list[str]:
             continue
 
         if agent.agent_dir is None:
+            continue
+
+        # Task completion is a durable outcome and wins over a stale
+        # ``spawned:`` / ``working:`` sidecar.  This commonly happens when
+        # consolidation accepts a worker's result before its process exits.
+        if _linked_task_completed(agent.agent_dir, paths):
+            try:
+                _atomic_meta_write(
+                    agent.agent_dir, "status",
+                    "complete: linked backing task already completed",
+                )
+            except OSError:
+                continue
+            try:
+                log_event(
+                    "agent.exited",
+                    f"{agent.name} linked task already complete — pid {pid} "
+                    f"dead, session {session} gone; stale status reconciled",
+                    agent=agent.name,
+                    meta={"pid": pid, "session": session},
+                    paths=paths,
+                )
+            except Exception:
+                pass
+            out.append(agent.name)
             continue
 
         # Both signals dead, but an exit_self tombstone from this life

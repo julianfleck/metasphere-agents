@@ -486,7 +486,12 @@ def dispatch_task(
     }
 
 
-def _find_task_file(task_id: str, *, include_completed: bool = True) -> Path | None:
+def _find_task_file(
+    task_id: str,
+    *,
+    include_completed: bool = True,
+    paths: "Paths | None" = None,
+) -> Path | None:
     """Locate ``<task_id>.md`` across every canonical task dir.
 
     Searches ``~/.metasphere/projects/*/.tasks/`` and ``~/.metasphere/tasks/``.
@@ -495,7 +500,7 @@ def _find_task_file(task_id: str, *, include_completed: bool = True) -> Path | N
     ``completed/<id>.md``, then dated ``archive/YYYY-MM-DD/<id>.md``
     (newest-first).
     """
-    for tasks_dir in _canonical_tasks_dirs():
+    for tasks_dir in _canonical_tasks_dirs(paths):
         cand = tasks_dir / "active" / f"{task_id}.md"
         if cand.exists():
             return cand
