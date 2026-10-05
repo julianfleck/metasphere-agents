@@ -245,3 +245,56 @@ def test_agent_seed_rejects_flag_shaped_name(
     assert rc == 2
     assert "looks like a CLI flag" in err
     assert not (tmp_paths.agents / "@--bogus").exists()
+
+
+def test_agent_seed_help_is_scoped_and_side_effect_free(capsys, monkeypatch):
+    monkeypatch.setattr(
+        "metasphere.specs.seed_agent",
+        lambda *args, **kwargs: pytest.fail("help must not seed an agent"),
+    )
+
+    rc = cli_agents.main(["seed", "--help"])
+
+    out, err = capsys.readouterr()
+    assert rc == 0
+    assert "Usage: metasphere agent seed" in out
+    assert err == ""
+
+
+@pytest.mark.parametrize(
+    "argv, message",
+    [
+        (["seed", "--spec"], "--spec requires a value"),
+        (["seed", "--project"], "--project requires a value"),
+        (
+            ["seed", "--spec", "researcher", "@agent", "--bogus"],
+            "unknown flag: --bogus",
+        ),
+        (
+            ["seed", "--spec", "researcher", "@agent", "extra"],
+            "unexpected argument: extra",
+        ),
+        (
+            ["seed", "--spec", "researcher", "@agent", "@other"],
+            "multiple agent ids",
+        ),
+        (
+            ["seed", "--spec", "researcher", "--spec", "critic", "@agent"],
+            "--spec may be given only once",
+        ),
+        (
+            [
+                "seed", "--spec", "researcher", "@agent",
+                "--project", "one", "--project", "two",
+            ],
+            "--project may be given only once",
+        ),
+    ],
+)
+def test_agent_seed_rejects_malformed_argv_before_lookup(argv, message, capsys):
+    rc = cli_agents.main(argv)
+
+    out, err = capsys.readouterr()
+    assert rc == 2
+    assert out == ""
+    assert message in err

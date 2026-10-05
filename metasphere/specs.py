@@ -367,6 +367,13 @@ def seed_agent(
     Returns the agent directory path.
     """
     _validate_agent_name(agent_id)
+    if project_name:
+        # Project names become path components below. Reuse the project
+        # subsystem's canonical validation so every caller (CLI, Telegram,
+        # and project-member bootstrapping) rejects absolute/path-traversal
+        # values before creating directories.
+        from .project import _validate_name as _validate_project_name
+        _validate_project_name(project_name)
     paths = paths or resolve()
     if not agent_id.startswith("@"):
         agent_id = "@" + agent_id

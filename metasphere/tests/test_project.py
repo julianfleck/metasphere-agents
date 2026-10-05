@@ -155,6 +155,10 @@ def test_validate_name_rejects_empty_and_path_separators():
         _validate_name("a/b")
     with pytest.raises(ValueError, match="invalid"):
         _validate_name("a\\b")
+    with pytest.raises(ValueError, match="invalid"):
+        _validate_name(".")
+    with pytest.raises(ValueError, match="invalid"):
+        _validate_name("..")
 
 
 def test_validate_name_accepts_normal_names():

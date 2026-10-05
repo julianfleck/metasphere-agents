@@ -155,6 +155,45 @@ def test_seed_agent_skips_user_md_for_root_scoped(tmp_paths):
     assert not (agent_dir / "USER.md").exists()
 
 
+@pytest.mark.parametrize(
+    "project_name", ["../escaped", "--project", ".", ".."]
+)
+def test_seed_agent_rejects_unsafe_project_name(
+    tmp_paths, project_name
+):
+    """Project identity must never become a path escape or leaked flag."""
+    spec = _seed_test_spec(
+        tmp_paths.project_root / "templates" / "agents" / "researcher",
+        name="researcher",
+        role="researcher",
+    )
+
+    with pytest.raises(ValueError, match="invalid project name"):
+        _specs.seed_agent(
+            "@safe-agent", spec, project_name=project_name, paths=tmp_paths,
+        )
+
+    assert not (tmp_paths.root / "escaped").exists()
+    assert not (tmp_paths.projects / "--project").exists()
+
+
+def test_seed_agent_rejects_absolute_project_path(tmp_paths, tmp_path):
+    """An absolute project token must not redirect writes outside the store."""
+    spec = _seed_test_spec(
+        tmp_paths.project_root / "templates" / "agents" / "researcher",
+        name="researcher",
+        role="researcher",
+    )
+    escaped = tmp_path / "absolute-escape"
+
+    with pytest.raises(ValueError, match="invalid project name"):
+        _specs.seed_agent(
+            "@safe-agent", spec, project_name=str(escaped), paths=tmp_paths,
+        )
+
+    assert not escaped.exists()
+
+
 def test_seed_agent_two_agents_share_one_project_user_md(tmp_paths):
     """Two agents on the same project share the same USER.md target."""
     _register_project(tmp_paths, "alpha")

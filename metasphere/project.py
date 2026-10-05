@@ -299,6 +299,11 @@ def _validate_name(name: str) -> None:
     """
     if not name:
         raise ValueError("project name must be non-empty")
+    if name in (".", ".."):
+        raise ValueError(
+            f"invalid project name: {name!r} "
+            "(must not be a relative path segment)"
+        )
     if name.startswith("-"):
         raise ValueError(
             f"invalid project name: {name!r} "
