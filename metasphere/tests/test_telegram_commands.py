@@ -79,3 +79,55 @@ def test_team_rejects_unbalanced_shell_quoting():
 
     assert isinstance(result, str)
     assert "Invalid /team syntax" in result
+
+
+@pytest.mark.parametrize(
+    "args, patched, detail",
+    [
+        ("assign @agent task extra", "metasphere.tasks.dispatch_task", "unexpected argument"),
+        ("assign @agent task --bogus", "metasphere.tasks.dispatch_task", "unexpected flag"),
+        ("assign @agent task --project", "metasphere.tasks.dispatch_task", "requires a value"),
+        ("wake @agent extra", "metasphere.agents.wake_persistent", "unexpected argument"),
+        ("wake @agent --force", "metasphere.agents.wake_persistent", "unexpected flag"),
+        ("specs extra", "metasphere.specs.list_specs", "unexpected argument"),
+        ("status alpha extra", "metasphere.agents.list_agents", "unexpected argument"),
+        ("status --all", "metasphere.agents.list_agents", "unexpected flag"),
+    ],
+)
+def test_team_subcommands_reject_surplus_before_side_effect(
+    monkeypatch, args, patched, detail
+):
+    monkeypatch.setattr(
+        patched,
+        lambda *a, **kw: pytest.fail("malformed argv reached command backend"),
+    )
+
+    result = commands.cmd_team(args, CTX)
+
+    assert isinstance(result, str)
+    assert "Usage: /team" in result
+    assert detail in result
+
+
+def test_team_assign_passes_exact_project_value(monkeypatch):
+    seen = {}
+
+    class Task:
+        id = "task-1"
+
+    def fake_dispatch(**kwargs):
+        seen.update(kwargs)
+        return {"task": Task(), "agent": None}
+
+    monkeypatch.setattr("metasphere.tasks.dispatch_task", fake_dispatch)
+
+    result = commands.cmd_team(
+        'assign @agent "do the work" --project alpha', CTX,
+    )
+
+    assert isinstance(result, commands.Reply)
+    assert seen == {
+        "title": "do the work",
+        "agent_id": "@agent",
+        "project": "alpha",
+    }

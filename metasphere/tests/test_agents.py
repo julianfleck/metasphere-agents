@@ -40,6 +40,12 @@ def test_list_agents_finds_created_agents(tmp_paths: Paths):
     assert "@beta" in names
 
 
+@pytest.mark.parametrize("project", ["/tmp/outside", "../outside", ".", "..", "--all"])
+def test_list_agents_rejects_unsafe_project_filter(tmp_paths: Paths, project):
+    with pytest.raises(ValueError, match="invalid project name"):
+        agents.list_agents(tmp_paths, project=project)
+
+
 class TestStaleThresholdEnvParse:
     """``METASPHERE_STALE_SESSION_THRESHOLD_SEC`` parse hygiene.
 

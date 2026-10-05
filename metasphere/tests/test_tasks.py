@@ -511,6 +511,18 @@ def test_create_task_rejects_flag_shaped_project(
     assert not active.exists() or not list(active.glob("*.md"))
 
 
+@pytest.mark.parametrize("project", ["/tmp/outside", "../outside", ".", ".."])
+def test_create_task_rejects_path_shaped_project(
+    tmp_paths, monkeypatch, project
+):
+    monkeypatch.setenv("METASPHERE_AGENT_ID", "@owner")
+    with pytest.raises(ValueError, match="invalid project name"):
+        t.create_task(
+            "unsafe project", "!normal", tmp_paths.scope,
+            tmp_paths.project_root, project=project,
+        )
+
+
 @pytest.mark.parametrize("bad_project", ["--bogus", "-x", "", "   "])
 def test_move_task_rejects_flag_shaped_project(tmp_paths, monkeypatch, bad_project):
     """Library-level guard: ``move_task_project("foo", "--bogus")`` would

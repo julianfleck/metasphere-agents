@@ -296,6 +296,8 @@ def list_agents(paths: Paths | None = None, project: str = "") -> list[AgentReco
     out: list[AgentRecord] = []
 
     if project:
+        from .project import _validate_name as _validate_project_name
+        _validate_project_name(project)
         # Only look in the specified project
         project_agents = paths.project_agents_dir(project)
         out.extend(_list_agents_in_dir(project_agents, project=project))

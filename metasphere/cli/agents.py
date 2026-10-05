@@ -61,11 +61,12 @@ from metasphere import paths as _paths
 
 def _list(project_filter: str | None = None) -> int:
     p = _paths.resolve()
-    items = _agents.list_agents(p)
+    try:
+        items = _agents.list_agents(p, project=project_filter or "")
+    except ValueError as e:
+        print(f"metasphere agent list: {e}", file=sys.stderr)
+        return 2
     persistent = [a for a in items if a.is_persistent]
-    if project_filter:
-        persistent = [a for a in persistent
-                      if getattr(a, "project", None) == project_filter]
     if not persistent:
         print("No persistent agents.")
         return 0

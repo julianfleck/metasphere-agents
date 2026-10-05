@@ -226,6 +226,21 @@ def get_spec(name: str, paths: Paths | None = None) -> Optional[AgentSpec]:
     return None
 
 
+def get_spec_from_pointer(
+    name: str,
+    paths: Paths | None = None,
+) -> Optional[AgentSpec]:
+    """Load a spec named by persisted agent metadata.
+
+    New CLI input intentionally rejects names retired by the role-template
+    collapse, but existing agent ``spec`` files predate that migration and
+    remain valid runtime state. Canonicalize only this stored-data path so
+    those agents retain their role behavior without reviving deprecated names
+    for new seed/spawn commands.
+    """
+    return get_spec(_LEGACY_SPEC_RENAMES.get(name, name), paths)
+
+
 def get_spec_for_agent(agent_id: str, paths: Paths | None = None) -> Optional[AgentSpec]:
     """Load the spec referenced by a seeded agent's ``spec`` pointer.
 
@@ -246,7 +261,7 @@ def get_spec_for_agent(agent_id: str, paths: Paths | None = None) -> Optional[Ag
         return None
     if not spec_name:
         return None
-    return get_spec(spec_name, paths)
+    return get_spec_from_pointer(spec_name, paths)
 
 
 # ---------------------------------------------------------------------------

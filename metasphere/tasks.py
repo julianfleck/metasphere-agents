@@ -370,11 +370,8 @@ def _validate_project_name(project: str) -> None:
     """
     if not isinstance(project, str) or not project.strip():
         raise ValueError("project must be a non-empty string")
-    if project.startswith("-"):
-        raise ValueError(
-            f"project name looks like a CLI flag: {project!r} "
-            f"(must not start with '-')"
-        )
+    from .project import _validate_name
+    _validate_name(project)
 
 
 def assign_task(task_id: str, agent: str, project_root: Path) -> Task:

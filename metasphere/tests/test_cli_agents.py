@@ -177,6 +177,14 @@ def test_read_side_rejects_unknown_args(
     assert extra in err
 
 
+def test_list_rejects_unsafe_project_filter(tmp_paths: Paths, capsys):
+    rc = cli_agents.main(["list", "/tmp/outside"])
+
+    _, err = capsys.readouterr()
+    assert rc == 2
+    assert "invalid project name" in err
+
+
 def test_spawn_rejects_flag_shaped_parent(tmp_paths: Paths, capsys, monkeypatch):
     """``metasphere agent spawn @x / task --bogus`` previously took
     ``--bogus`` as the parent and rc=0'd. Same trailing-arg leak class

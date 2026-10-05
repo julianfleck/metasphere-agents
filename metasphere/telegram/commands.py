@@ -483,6 +483,24 @@ def cmd_questions(args: str, ctx: Context) -> str:
         return f"(questions error: {e})"
 
 
+def _team_unexpected(usage: str, token: str) -> str:
+    kind = "flag" if token.startswith("-") else "argument"
+    return f"{usage}\nunexpected {kind}: {token}"
+
+
+def _team_optional_project(rest: list[str], usage: str) -> tuple[str, str]:
+    """Parse an optional exact ``--project <name>`` suffix."""
+    if not rest:
+        return "", ""
+    if rest[0] != "--project":
+        return "", _team_unexpected(usage, rest[0])
+    if len(rest) < 2 or rest[1].startswith("-"):
+        return "", f"{usage}\n--project requires a value"
+    if len(rest) > 2:
+        return "", _team_unexpected(usage, rest[2])
+    return rest[1], ""
+
+
 def cmd_team(args: str, ctx: Context) -> "Reply | str":
     """Team operations: seed, wake, status.
 
@@ -499,21 +517,24 @@ def cmd_team(args: str, ctx: Context) -> "Reply | str":
     sub = sub_argv[0] if sub_argv else "status"
 
     if sub == "specs":
+        if len(sub_argv) > 1:
+            return _team_unexpected("Usage: /team specs", sub_argv[1])
         return cmd_specs("", ctx)
 
     if sub in ("assign", "dispatch"):
         # /team assign @agent "task description" [--project name]
+        usage = 'Usage: /team assign agent-name "task description" [--project name]'
         if len(sub_argv) < 3:
-            return "Usage: /team assign agent-name \"task description\" [--project name]"
+            return usage
         target_agent = sub_argv[1]
         if not target_agent.startswith("@"):
             target_agent = "@" + target_agent
         task_title = sub_argv[2]
-        project_name = ""
-        if "--project" in sub_argv:
-            idx = sub_argv.index("--project")
-            if idx + 1 < len(sub_argv):
-                project_name = sub_argv[idx + 1]
+        if not task_title.strip():
+            return f"{usage}\ntask description must not be empty"
+        project_name, error = _team_optional_project(sub_argv[3:], usage)
+        if error:
+            return error
         try:
             from metasphere.tasks import dispatch_task
             result = dispatch_task(
@@ -542,18 +563,9 @@ def cmd_team(args: str, ctx: Context) -> "Reply | str":
             return usage
         spec_name = sub_argv[1]
         agent_id = sub_argv[2]
-        project_name = ""
-        rest = sub_argv[3:]
-        if rest:
-            if rest[0] != "--project":
-                kind = "flag" if rest[0].startswith("-") else "argument"
-                return f"{usage}\nunexpected {kind}: {rest[0]}"
-            if len(rest) < 2 or rest[1].startswith("-"):
-                return f"{usage}\n--project requires a value"
-            project_name = rest[1]
-            if len(rest) > 2:
-                kind = "flag" if rest[2].startswith("-") else "argument"
-                return f"{usage}\nunexpected {kind}: {rest[2]}"
+        project_name, error = _team_optional_project(sub_argv[3:], usage)
+        if error:
+            return error
         try:
             from metasphere.specs import get_spec, seed_agent
             spec = get_spec(spec_name)
@@ -572,8 +584,11 @@ def cmd_team(args: str, ctx: Context) -> "Reply | str":
             return f"Seed failed: {e}"
 
     if sub == "wake":
+        usage = "Usage: /team wake @agent-name"
         if len(sub_argv) < 2:
-            return "Usage: /team wake @agent-name"
+            return usage
+        if len(sub_argv) > 2:
+            return _team_unexpected(usage, sub_argv[2])
         agent_id = sub_argv[1]
         try:
             from metasphere import agents as _agents
@@ -583,6 +598,11 @@ def cmd_team(args: str, ctx: Context) -> "Reply | str":
             return f"Wake failed: {e}"
 
     if sub == "status":
+        usage = "Usage: /team status [project-name]"
+        if len(sub_argv) > 2:
+            return _team_unexpected(usage, sub_argv[2])
+        if len(sub_argv) == 2 and sub_argv[1].startswith("-"):
+            return _team_unexpected(usage, sub_argv[1])
         try:
             from metasphere import agents as _agents
             from metasphere.paths import resolve
