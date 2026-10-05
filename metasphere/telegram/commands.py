@@ -492,7 +492,10 @@ def cmd_team(args: str, ctx: Context) -> "Reply | str":
     /team wake @name     - wake a seeded agent
     """
     import shlex as _shlex
-    sub_argv = _shlex.split(args) if args.strip() else ["status"]
+    try:
+        sub_argv = _shlex.split(args) if args.strip() else ["status"]
+    except ValueError as e:
+        return f"Invalid /team syntax: {e}"
     sub = sub_argv[0] if sub_argv else "status"
 
     if sub == "specs":
@@ -534,15 +537,23 @@ def cmd_team(args: str, ctx: Context) -> "Reply | str":
             return f"Dispatch failed: {e}"
 
     if sub == "seed":
+        usage = "Usage: /team seed &lt;spec-name&gt; @agent-name [--project name]"
         if len(sub_argv) < 3:
-            return "Usage: /team seed &lt;spec-name&gt; @agent-name [--project name]"
+            return usage
         spec_name = sub_argv[1]
         agent_id = sub_argv[2]
         project_name = ""
-        if "--project" in sub_argv:
-            idx = sub_argv.index("--project")
-            if idx + 1 < len(sub_argv):
-                project_name = sub_argv[idx + 1]
+        rest = sub_argv[3:]
+        if rest:
+            if rest[0] != "--project":
+                kind = "flag" if rest[0].startswith("-") else "argument"
+                return f"{usage}\nunexpected {kind}: {rest[0]}"
+            if len(rest) < 2 or rest[1].startswith("-"):
+                return f"{usage}\n--project requires a value"
+            project_name = rest[1]
+            if len(rest) > 2:
+                kind = "flag" if rest[2].startswith("-") else "argument"
+                return f"{usage}\nunexpected {kind}: {rest[2]}"
         try:
             from metasphere.specs import get_spec, seed_agent
             spec = get_spec(spec_name)

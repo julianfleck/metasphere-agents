@@ -401,3 +401,55 @@ def test_get_spec_legacy_name_returns_none_and_warns(
     assert f"'{legacy}'" in rendered
     assert f"'{new}'" in rendered
     assert f"--spec {new}" in rendered
+@pytest.mark.parametrize(
+    "name", ["../outside", "a/b", "a\\b", ".", "..", "--help", "<b>"]
+)
+def test_get_spec_rejects_path_capabilities(tmp_paths, tmp_path, name):
+    """A spec identifier may select a child name, never an arbitrary path."""
+    outside = tmp_path / "outside"
+    _seed_test_spec(outside, name="outside", role="researcher")
+
+    assert _specs.get_spec(name, paths=tmp_paths) is None
+
+
+def test_get_spec_rejects_existing_absolute_spec_path(tmp_paths, tmp_path):
+    outside = tmp_path / "outside-spec"
+    _seed_test_spec(outside, name="outside", role="researcher")
+
+    assert _specs.get_spec(str(outside), paths=tmp_paths) is None
+
+
+def test_get_spec_for_agent_ignores_unsafe_persisted_pointer(tmp_paths):
+    agent_dir = tmp_paths.agent_dir("@unsafe-pointer")
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "spec").write_text("/tmp/outside\n")
+
+    assert _specs.get_spec_for_agent("@unsafe-pointer", paths=tmp_paths) is None
+
+
+@pytest.mark.parametrize(
+    "legacy,new,role",
+    [
+        ("implementer", "eng", "eng"),
+        ("planner", "lead", "lead"),
+        ("reviewer", "critic", "critic"),
+        ("monitor", "explorer", "explorer"),
+    ],
+)
+def test_get_spec_for_agent_resolves_legacy_persisted_pointer(
+    tmp_paths, caplog, legacy, new, role,
+):
+    _write_spec(
+        tmp_paths, new,
+        f"---\nname: {new}\nrole: {role}\n---\n",
+    )
+    agent_dir = tmp_paths.agent_dir(f"@old-{legacy}")
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "spec").write_text(f"{legacy}\n")
+
+    resolved = _specs.get_spec_for_agent(f"@old-{legacy}", paths=tmp_paths)
+
+    assert resolved is not None
+    assert resolved.name == new
+    assert resolved.role == role
+    assert not caplog.records

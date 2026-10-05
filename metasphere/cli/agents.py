@@ -610,6 +610,11 @@ def _seed(argv: list[str]) -> int:
         print(_SEED_USAGE.rstrip(), file=sys.stderr)
         return 1
 
+    try:
+        _specs._validate_spec_name(spec_name)
+    except ValueError as e:
+        print(f"metasphere agent seed: {e}", file=sys.stderr)
+        return 2
     spec = _specs.get_spec(spec_name)
     if not spec:
         print(f"Spec '{spec_name}' not found.", file=sys.stderr)

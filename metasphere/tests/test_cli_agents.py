@@ -289,6 +289,10 @@ def test_agent_seed_help_is_scoped_and_side_effect_free(capsys, monkeypatch):
             ],
             "--project may be given only once",
         ),
+        (
+            ["seed", "--spec", "/tmp/outside", "@agent"],
+            "invalid spec name",
+        ),
     ],
 )
 def test_agent_seed_rejects_malformed_argv_before_lookup(argv, message, capsys):

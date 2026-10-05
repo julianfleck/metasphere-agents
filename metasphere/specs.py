@@ -177,6 +177,23 @@ _LEGACY_SPEC_RENAMES = {
     "monitor": "explorer",
 }
 
+_SPEC_NAME_INVALID_RE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def _validate_spec_name(name: str) -> None:
+    """Reject identifiers that could escape a configured spec directory."""
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("spec name must be a non-empty string")
+    if (
+        name in (".", "..")
+        or name.startswith("-")
+        or _SPEC_NAME_INVALID_RE.search(name)
+    ):
+        raise ValueError(
+            f"invalid spec name: {name!r} "
+            "(use only ASCII letters, digits, '.', '_' and '-')"
+        )
+
 
 def get_spec(name: str, paths: Paths | None = None) -> Optional[AgentSpec]:
     """Load a spec by name (searches all spec directories).
@@ -186,6 +203,13 @@ def get_spec(name: str, paths: Paths | None = None) -> Optional[AgentSpec]:
     helps shell aliases / scripts catch up without keeping the alias
     map alive in resolution itself.
     """
+    try:
+        _validate_spec_name(name)
+    except ValueError:
+        # This is an Optional lookup API and is also used for persisted spec
+        # pointers. Unsafe or corrupt names behave like missing specs, without
+        # ever being joined to a search root.
+        return None
     for parent in _spec_dirs(paths):
         d = parent / name
         if d.is_dir():
