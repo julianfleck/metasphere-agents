@@ -618,7 +618,7 @@ def test_git_pull_or_reset_refuses_when_status_fails():
         _update._git_pull_or_reset(Path("/tmp"), "main", runner)
 
 
-def _unpushed_runner(calls, *, rebase_rc=0):
+def _unpushed_runner(calls, *, rebase_rc=0, abort_rc=0):
     """Fake git: clean tree, two unpushed commits, scriptable rebase result."""
     import subprocess as _sp
 
@@ -634,7 +634,11 @@ def _unpushed_runner(calls, *, rebase_rc=0):
                 "b2d5ad5 fix(tmux): preserve a residual paste tail\n",
                 "",
             )
-        if args[0] == "rebase" and len(args) > 1 and args[1] != "--abort":
+        if args[:2] == ["rebase", "--abort"]:
+            return _sp.CompletedProcess(
+                args, abort_rc, "", "fatal: could not restore worktree"
+            )
+        if args[0] == "rebase":
             return _sp.CompletedProcess(args, rebase_rc, "", "CONFLICT (content)")
         return _sp.CompletedProcess(args, 0, "", "")
 
@@ -653,13 +657,32 @@ def test_git_pull_or_reset_rebases_unpushed_commits_without_resetting():
 def test_git_pull_or_reset_aborts_and_refuses_when_rebase_conflicts():
     calls: list[list[str]] = []
 
-    with pytest.raises(RuntimeError, match="replay.*failed"):
+    with pytest.raises(RuntimeError, match="replay.*failed") as raised:
         _update._git_pull_or_reset(
             Path("/tmp"), "main", _unpushed_runner(calls, rebase_rc=1)
         )
 
+    assert "HEAD and the working tree were restored" in str(raised.value)
+    assert "manual recovery" not in str(raised.value)
     assert ["rebase", "--abort"] in calls
     assert not any(call[0] in ("pull", "reset") for call in calls)
+
+
+def test_git_pull_or_reset_does_not_claim_restoration_when_abort_fails():
+    calls: list[list[str]] = []
+
+    with pytest.raises(RuntimeError) as raised:
+        _update._git_pull_or_reset(
+            Path("/tmp"),
+            "main",
+            _unpushed_runner(calls, rebase_rc=1, abort_rc=128),
+        )
+
+    message = str(raised.value)
+    assert "rebase --abort also failed" in message
+    assert "manual recovery" in message
+    assert "could not restore worktree" in message
+    assert "HEAD and the working tree were restored" not in message
 
 
 def test_git_pull_or_reset_refuses_when_rev_list_fails():

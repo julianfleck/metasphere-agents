@@ -464,16 +464,27 @@ def _rebase_or_refuse(
         return
 
     abort = runner(["rebase", "--abort"])
+    abort_detail = (abort.stderr or abort.stdout or "").strip()
     if abort.returncode != 0:
         logger.warning("git rebase --abort failed (rc=%s)", abort.returncode)
+        recovery = (
+            f"git rebase --abort also failed (rc={abort.returncode}), so the "
+            "repository may still be mid-rebase; manual recovery is required "
+            "before re-running auto-update.\n"
+            f"Abort detail: {abort_detail or '(no output)'}\n"
+        )
+    else:
+        recovery = (
+            "The rebase was aborted, so HEAD and the working tree were restored.\n"
+            "Resolve by hand, push, or reset explicitly, before re-running.\n"
+        )
     preview = "\n  ".join(unpushed[:20])
     more = f"\n  ...and {len(unpushed) - 20} more" if len(unpushed) > 20 else ""
     detail = (rebase.stderr or rebase.stdout or "").strip()
     raise RuntimeError(
         f"refusing to update: replay of {len(unpushed)} local commit(s) "
         f"onto origin/{branch} failed (rc={rebase.returncode}).\n"
-        "The rebase was aborted, so HEAD and the working tree were restored.\n"
-        "Resolve by hand, push, or reset explicitly, before re-running.\n"
+        f"{recovery}"
         f"Local commits:\n  {preview}{more}\n{detail}"
     )
 
