@@ -516,6 +516,18 @@ SHIM
 setup_path() {
     local BIN_DIR="$1"
 
+    # Ensure the entry lands in ~/.profile regardless of the user's login
+    # shell, and regardless of whether the interactive PATH is already
+    # configured. Agent runtimes run their tool calls via `bash -lc` (a
+    # non-interactive LOGIN shell), which sources ~/.profile but NOT the
+    # interactive-only tail of ~/.bashrc (Debian's ~/.bashrc returns early
+    # for non-interactive shells via `case $- in *i*) ;; *) return;;`). If
+    # the PATH entry only lives in ~/.bashrc/.zshrc/config.fish, those tool
+    # calls get `metasphere: command not found`. Run this FIRST, before the
+    # early-returns below, so existing installs (interactive PATH already
+    # set) still get ~/.profile hardened on upgrade.
+    ensure_profile_path "$BIN_DIR"
+
     # Already in PATH?
     if [[ ":$PATH:" == *":$BIN_DIR:"* ]]; then
         ok "PATH already configured"
@@ -582,6 +594,26 @@ setup_path() {
 
     # Also export for current session
     export PATH="$BIN_DIR:$PATH"
+}
+
+# Append a POSIX-sh PATH export for BIN_DIR to ~/.profile if not already
+# present. Idempotent: keyed on the "metasphere/bin" marker.
+ensure_profile_path() {
+    local BIN_DIR="$1"
+    local profile="$HOME/.profile"
+
+    if [[ -f "$profile" ]] && grep -q "metasphere/bin" "$profile" 2>/dev/null; then
+        return
+    fi
+
+    {
+        echo ""
+        echo "# Metasphere Agents — kept in ~/.profile so non-interactive"
+        echo "# login shells (e.g. agent runtimes' \`bash -lc\` tool calls)"
+        echo "# find metasphere on PATH."
+        echo "export PATH=\"$BIN_DIR:\$PATH\""
+    } >> "$profile"
+    ok "Ensured PATH entry in $profile"
 }
 
 # =============================================================================
