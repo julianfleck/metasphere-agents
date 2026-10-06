@@ -139,11 +139,19 @@ def _render(items: list, *, header_path, stale_note: str | None = None) -> str:
 def render_questions(filter_: str | None = None) -> tuple[str, int]:
     """Return (rendered_text, rc). Shared by the CLI and the telegram view.
 
-    ``filter_`` is one of red/amber/yellow/green/open or None (all). An
-    unknown filter is treated as None (show everything) so a typo degrades
-    to the full list rather than an error.
+    ``filter_`` is one of red/amber/yellow/green/open or None (all). Unknown
+    filters fail closed: silently widening a mistyped query to the full
+    operator ledger can expose unrelated questions and mislead automation.
     """
     from metasphere import heartbeat as _hb
+
+    normalized_filter = (filter_ or "").strip().lower()
+    if normalized_filter and normalized_filter not in _FLAG_BY_NAME:
+        valid = ", ".join(sorted(_FLAG_BY_NAME))
+        return (
+            f"questions: unknown filter {filter_!r}; expected one of: {valid}",
+            2,
+        )
 
     paths = _paths.resolve()
     p = _hb._questions_file(paths)
@@ -155,7 +163,7 @@ def render_questions(filter_: str | None = None) -> tuple[str, int]:
         return (f"Could not read {p}: {exc}", 1)
 
     items = _hb.parse_questions(text)
-    keep = _FLAG_BY_NAME.get((filter_ or "").strip().lower())
+    keep = _FLAG_BY_NAME.get(normalized_filter)
     if keep is not None:
         items = [q for q in items if q.flag in keep]
     stale_note = _staleness_note(p)
@@ -167,6 +175,13 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] in ("--help", "-h"):
         sys.stdout.write(USAGE)
         return 0
+    if len(argv) > 1:
+        print(
+            "metasphere questions: takes at most one filter\n" + USAGE,
+            file=sys.stderr,
+            end="",
+        )
+        return 2
     filter_ = argv[0] if argv else None
     body, rc = render_questions(filter_)
     if rc == 0:

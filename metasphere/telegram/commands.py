@@ -476,7 +476,9 @@ def cmd_questions(args: str, ctx: Context) -> str:
     try:
         from metasphere.cli.questions import render_questions
 
-        filter_ = (args or "").strip().split()[0] if args else None
+        # Pass the complete argument through so extra tokens fail closed
+        # instead of silently broadening a malformed query.
+        filter_ = (args or "").strip() or None
         body, _rc = render_questions(filter_)
         return body
     except Exception as e:  # noqa: BLE001
