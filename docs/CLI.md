@@ -164,7 +164,9 @@ Usage: metasphere task [<command> [args...]]
 
 With no arguments, lists active tasks for the current scope. Commands:
 
-  metasphere task list [all|completed]    Filter by status.
+  metasphere task list [active|all|completed] [filters]
+                                          Filter and list tasks. Status also
+                                          accepts --active/--all/--completed.
   metasphere task new "title" [!priority] Create a new task.
   metasphere task start <task-id>         Mark a task in-progress.
   metasphere task update <task-id> "note" Append a progress note.

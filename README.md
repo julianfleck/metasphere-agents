@@ -170,6 +170,7 @@ Every task is a markdown file in the project's `.tasks/active/` directory — a 
 
 ```bash
 metasphere task list                        # Show active tasks
+metasphere task list --all                  # Show active and archived tasks
 metasphere task new "title" [!priority]     # Create (!urgent, !high, !normal, !low)
 metasphere task start <task-id>             # Assign to self
 metasphere task update <task-id> "note"     # Add progress
