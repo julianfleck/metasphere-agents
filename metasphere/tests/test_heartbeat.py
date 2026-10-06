@@ -21,6 +21,23 @@ def _agent(paths: Paths, name: str, status: str) -> Path:
     return d
 
 
+#: Runtimes ``invoke_agent_heartbeat`` may shell out to. Used to assert a
+#: fail-closed path spawned NONE of them — distinct from the context-building
+#: ``cam``/tmux subprocess calls that always run before the runtime dispatch.
+_RUNTIME_BINS = ("codex", "claude")
+
+
+def _runtime_spawns(run_mock) -> list:
+    """Return the argv of every mocked subprocess.run call that launched an
+    agent RUNTIME (codex/claude). Ignores the pre-dispatch context calls."""
+    spawns = []
+    for c in run_mock.call_args_list:
+        argv = c.args[0] if c.args else c.kwargs.get("args")
+        if isinstance(argv, (list, tuple)) and argv and argv[0] in _RUNTIME_BINS:
+            spawns.append(list(argv))
+    return spawns
+
+
 # ---------------------------------------------------------------------------
 # check_urgent_messages
 # ---------------------------------------------------------------------------
@@ -155,6 +172,61 @@ def test_invoke_agent_heartbeat_codex_fallback_is_sandboxed(
     assert "workspace-write" in cmd
     assert "--dangerously-bypass-hook-trust" not in cmd
     assert run.call_args.kwargs["input"].startswith("# HEARTBEAT")
+
+
+def test_invoke_agent_heartbeat_codex_nobash_fails_closed(
+    tmp_paths: Paths, monkeypatch
+):
+    """SECURITY-CORE: Codex has no per-tool ``nobash`` allowlist equivalent
+    (unlike Claude's ``--allowedTools``). A ``nobash`` sandbox under the codex
+    runtime must therefore FAIL CLOSED — return False and never shell out —
+    rather than silently granting Bash by falling through to a codex exec.
+
+    Guards the exact branch a refactor could quietly drop, re-granting shell
+    to an agent an operator explicitly de-shelled.
+    """
+    d = _agent(tmp_paths, "@orchestrator", "active")
+    (d / "sandbox").write_text("nobash", encoding="utf-8")
+    monkeypatch.setenv("METASPHERE_AGENT_RUNTIME", "codex")
+
+    with mock.patch.object(hb, "session_alive", return_value=False), mock.patch.object(
+        hb.subprocess, "run"
+    ) as run:
+        ok = hb.invoke_agent_heartbeat("@orchestrator", tmp_paths)
+
+    # NB: build_agent_context shells out (cam search / tmux probe) BEFORE the
+    # runtime dispatch, so assert on the RUNTIME spawn specifically, not on
+    # run.called — the security property is "no codex/claude runtime executed".
+    runtime_spawns = _runtime_spawns(run)
+    assert ok is False, "codex + nobash must fail closed (no shell granted)"
+    assert not runtime_spawns, (
+        "failing closed must NOT spawn a runtime subprocess — a codex exec "
+        f"here would grant the shell the nobash sandbox forbids; got {runtime_spawns}"
+    )
+
+
+def test_invoke_agent_heartbeat_unknown_runtime_fails_closed(
+    tmp_paths: Paths, monkeypatch
+):
+    """SECURITY-CORE: an unknown/unsupported ``METASPHERE_AGENT_RUNTIME`` must
+    FAIL CLOSED — return False and never shell out — not fall through to a
+    default runtime. A silent fallback to ``claude``/``codex`` on a typo'd or
+    hostile runtime value would execute an unintended provider.
+    """
+    _agent(tmp_paths, "@orchestrator", "active")
+    monkeypatch.setenv("METASPHERE_AGENT_RUNTIME", "definitely-not-a-runtime")
+
+    with mock.patch.object(hb, "session_alive", return_value=False), mock.patch.object(
+        hb.subprocess, "run"
+    ) as run:
+        ok = hb.invoke_agent_heartbeat("@orchestrator", tmp_paths)
+
+    runtime_spawns = _runtime_spawns(run)
+    assert ok is False, "unknown runtime must fail closed"
+    assert not runtime_spawns, (
+        "an unknown runtime must NOT fall through to a default provider "
+        f"subprocess; got {runtime_spawns}"
+    )
 
 
 def test_invoke_agent_heartbeat_passes_defer_if_busy_true(tmp_paths: Paths):
