@@ -223,6 +223,27 @@ def _cmd_set_enabled(job_id: str, enabled: bool) -> int:
     return 0
 
 
+def _validate_effect_args(
+    command: str,
+    argv: list[str],
+    *,
+    max_args: int,
+) -> int | None:
+    """Reject ambiguous scheduled effects before any backend call."""
+    if any(token in ("--help", "-h") for token in argv):
+        sys.stdout.write(USAGE)
+        return 0
+    if len(argv) <= max_args:
+        return None
+    token = argv[max_args]
+    kind = "flag" if token.startswith("-") else "argument"
+    print(
+        f"metasphere schedule {command}: unexpected {kind}: {token}",
+        file=sys.stderr,
+    )
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in ("--help", "-h"):
@@ -248,16 +269,34 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "add":
         return _cmd_add(rest)
     if cmd in ("remove", "rm", "delete"):
+        invalid = _validate_effect_args("remove", rest, max_args=1)
+        if invalid is not None:
+            return invalid
         return _cmd_remove(rest[0] if rest else "")
     if cmd in ("fire", "run-now"):
+        invalid = _validate_effect_args("fire", rest, max_args=1)
+        if invalid is not None:
+            return invalid
         return _cmd_fire(rest[0] if rest else "")
     if cmd in ("run", "check"):
+        invalid = _validate_effect_args("run", rest, max_args=0)
+        if invalid is not None:
+            return invalid
         return _cmd_run()
     if cmd == "daemon":
+        invalid = _validate_effect_args("daemon", rest, max_args=1)
+        if invalid is not None:
+            return invalid
         return _cmd_daemon(rest)
     if cmd == "enable":
+        invalid = _validate_effect_args("enable", rest, max_args=1)
+        if invalid is not None:
+            return invalid
         return _cmd_set_enabled(rest[0] if rest else "", True)
     if cmd == "disable":
+        invalid = _validate_effect_args("disable", rest, max_args=1)
+        if invalid is not None:
+            return invalid
         return _cmd_set_enabled(rest[0] if rest else "", False)
     if cmd in ("wire-exit-self", "wire_exit_self"):
         from metasphere.cli.wire_exit_self import main as _wire_main

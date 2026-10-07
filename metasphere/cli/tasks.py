@@ -426,10 +426,41 @@ def _cmd_new(args: list[str]) -> int:
     return 0
 
 
-def _cmd_assign(args: list[str]) -> int:
-    if len(args) < 2:
-        print("Usage: metasphere task assign <task-id> @agent", file=sys.stderr)
+def _require_exact_args(
+    args: list[str],
+    *,
+    command: str,
+    count: int,
+    usage: str,
+) -> int | None:
+    """Validate a fixed-shape task command before any task lookup."""
+    if any(token in ("--help", "-h") for token in args):
+        print(usage)
+        return 0
+    if len(args) < count:
+        print(usage, file=sys.stderr)
         return 1
+    if len(args) > count:
+        token = args[count]
+        kind = "flag" if token.startswith("-") else "argument"
+        print(
+            f"metasphere task {command}: unexpected {kind}: {token}\n"
+            f"{usage}",
+            file=sys.stderr,
+        )
+        return 2
+    return None
+
+
+def _cmd_assign(args: list[str]) -> int:
+    invalid = _require_exact_args(
+        args,
+        command="assign",
+        count=2,
+        usage="Usage: metasphere task assign <task-id> @agent",
+    )
+    if invalid is not None:
+        return invalid
     task_id, agent = args[0], args[1]
     _, repo = _ctx()
     try:
@@ -443,16 +474,20 @@ def _cmd_assign(args: list[str]) -> int:
 
 def _cmd_move(args: list[str]) -> int:
     # Usage: metasphere task move <task-id> --project <name>
-    if not args or "--project" not in args:
-        print("Usage: metasphere task move <task-id> --project <name>", file=sys.stderr)
+    usage = "Usage: metasphere task move <task-id> --project <name>"
+    invalid = _require_exact_args(
+        args,
+        command="move",
+        count=3,
+        usage=usage,
+    )
+    if invalid is not None:
+        return invalid
+    if args[1] != "--project":
+        print(usage, file=sys.stderr)
         return 1
     task_id = args[0]
-    try:
-        idx = args.index("--project")
-        project = args[idx + 1]
-    except (ValueError, IndexError):
-        print("Usage: metasphere task move <task-id> --project <name>", file=sys.stderr)
-        return 1
+    project = args[2]
     _, repo = _ctx()
     try:
         t = _tasks.move_task_project(task_id, project, repo)
@@ -464,9 +499,14 @@ def _cmd_move(args: list[str]) -> int:
 
 
 def _cmd_start(args: list[str]) -> int:
-    if not args:
-        print("Usage: metasphere task start <task-id>", file=sys.stderr)
-        return 1
+    invalid = _require_exact_args(
+        args,
+        command="start",
+        count=1,
+        usage="Usage: metasphere task start <task-id>",
+    )
+    if invalid is not None:
+        return invalid
     rc = _reject_flag_shape_task_id(args[0], "start")
     if rc is not None:
         return rc
@@ -553,9 +593,14 @@ def _cmd_park(args: list[str]) -> int:
 
 
 def _cmd_unpark(args: list[str]) -> int:
-    if not args:
-        print("Usage: metasphere task unpark <task-id>", file=sys.stderr)
-        return 1
+    invalid = _require_exact_args(
+        args,
+        command="unpark",
+        count=1,
+        usage="Usage: metasphere task unpark <task-id>",
+    )
+    if invalid is not None:
+        return invalid
     rc = _reject_flag_shape_task_id(args[0], "unpark")
     if rc is not None:
         return rc
@@ -592,9 +637,14 @@ def _cmd_describe(args: list[str]) -> int:
 
 
 def _cmd_show(args: list[str]) -> int:
-    if not args:
-        print("Usage: metasphere task show <task-id>", file=sys.stderr)
-        return 1
+    invalid = _require_exact_args(
+        args,
+        command="show",
+        count=1,
+        usage="Usage: metasphere task show <task-id>",
+    )
+    if invalid is not None:
+        return invalid
     rc = _reject_flag_shape_task_id(args[0], "show")
     if rc is not None:
         return rc

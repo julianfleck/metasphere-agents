@@ -49,6 +49,7 @@ _FLAG_BY_NAME = {
     "green": {_GREEN},
     "open": {_RED, _AMBER},
 }
+_FILTER_NAMES = ", ".join(_FLAG_BY_NAME)
 
 
 def _stale_days_threshold() -> float:
@@ -139,10 +140,18 @@ def _render(items: list, *, header_path, stale_note: str | None = None) -> str:
 def render_questions(filter_: str | None = None) -> tuple[str, int]:
     """Return (rendered_text, rc). Shared by the CLI and the telegram view.
 
-    ``filter_`` is one of red/amber/yellow/green/open or None (all). An
-    unknown filter is treated as None (show everything) so a typo degrades
-    to the full list rather than an error.
+    ``filter_`` is one of red/amber/yellow/green/open or None (all). Reject
+    unknown filters before filesystem access so a typo cannot masquerade as
+    an intentionally unfiltered ledger.
     """
+    normalized = (filter_ or "").strip().lower()
+    if normalized and normalized not in _FLAG_BY_NAME:
+        return (
+            f"questions: unknown filter {filter_!r}; expected one of: "
+            f"{_FILTER_NAMES}",
+            2,
+        )
+
     from metasphere import heartbeat as _hb
 
     paths = _paths.resolve()
@@ -155,7 +164,7 @@ def render_questions(filter_: str | None = None) -> tuple[str, int]:
         return (f"Could not read {p}: {exc}", 1)
 
     items = _hb.parse_questions(text)
-    keep = _FLAG_BY_NAME.get((filter_ or "").strip().lower())
+    keep = _FLAG_BY_NAME.get(normalized)
     if keep is not None:
         items = [q for q in items if q.flag in keep]
     stale_note = _staleness_note(p)
@@ -167,6 +176,15 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] in ("--help", "-h"):
         sys.stdout.write(USAGE)
         return 0
+    if len(argv) > 1:
+        token = argv[1]
+        kind = "flag" if token.startswith("-") else "argument"
+        print(
+            f"metasphere questions: unexpected {kind}: {token}\n"
+            "Usage: metasphere questions [red|amber|yellow|green|open]",
+            file=sys.stderr,
+        )
+        return 2
     filter_ = argv[0] if argv else None
     body, rc = render_questions(filter_)
     if rc == 0:

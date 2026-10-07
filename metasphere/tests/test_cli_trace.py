@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from metasphere.cli import trace as T
@@ -70,6 +72,32 @@ def test_prune_valid_days_returns_zero(capsys):
     rc = T.main(["prune", "9999"])
     assert rc == 0
     assert "removed" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "extra",
+    ["--dry-run", "--compress", "extra"],
+)
+def test_prune_rejects_surplus_tokens_before_deletion(extra, capsys):
+    """An imagined safety flag must not be ignored before a delete."""
+    with patch("metasphere.cli.trace.prune_traces") as prune:
+        rc = T.main(["prune", "30", extra])
+
+    assert rc == 2
+    prune.assert_not_called()
+    err = capsys.readouterr().err
+    assert "trace prune" in err
+    assert "unexpected" in err.lower()
+    assert extra in err
+
+
+def test_prune_help_after_days_does_not_delete(capsys):
+    with patch("metasphere.cli.trace.prune_traces") as prune:
+        rc = T.main(["prune", "30", "--help"])
+
+    assert rc == 0
+    prune.assert_not_called()
+    assert "Usage:" in capsys.readouterr().out
 
 
 # ---------- trace list --limit ----------

@@ -87,3 +87,69 @@ def test_daemon_valid_interval_dispatches():
     m.assert_called_once()
     _, kwargs = m.call_args
     assert kwargs["interval_seconds"] == 0
+
+
+@pytest.mark.parametrize(
+    "args, unexpected",
+    [
+        (["once", "extra"], "extra"),
+        (["check", "--bogus"], "--bogus"),
+        (["daemon", "300", "extra"], "extra"),
+        (["daemon", "300", "--bogus"], "--bogus"),
+    ],
+)
+def test_surplus_arguments_are_rejected_before_dispatch(args, unexpected, capsys):
+    with (
+        patch("metasphere.cli.heartbeat.heartbeat_once") as once,
+        patch("metasphere.cli.heartbeat.heartbeat_daemon") as daemon,
+    ):
+        rc = cli.main(args)
+
+    assert rc == 2
+    once.assert_not_called()
+    daemon.assert_not_called()
+    err = capsys.readouterr().err
+    assert unexpected in err
+    assert "unexpected" in err.lower()
+
+
+def test_duplicate_invoke_agent_flag_is_rejected_before_dispatch(capsys):
+    with patch("metasphere.cli.heartbeat.heartbeat_once") as once:
+        rc = cli.main(["once", "--invoke-agent", "--invoke-agent"])
+
+    assert rc == 2
+    once.assert_not_called()
+    err = capsys.readouterr().err
+    assert "--invoke-agent" in err
+    assert "more than once" in err
+
+
+@pytest.mark.parametrize(
+    "args, expected_invoke",
+    [
+        ([], False),
+        (["once"], False),
+        (["check", "--invoke-agent"], True),
+        (["--invoke-agent", "once"], True),
+    ],
+)
+def test_one_shot_exact_forms_dispatch(args, expected_invoke, monkeypatch):
+    monkeypatch.delenv("HEARTBEAT_INVOKE_AGENT", raising=False)
+    with patch("metasphere.cli.heartbeat.heartbeat_once") as once:
+        rc = cli.main(args)
+
+    assert rc == 0
+    once.assert_called_once()
+    _, kwargs = once.call_args
+    assert kwargs["invoke_agent"] is expected_invoke
+
+
+def test_daemon_accepts_invoke_agent_before_interval():
+    with patch("metasphere.cli.heartbeat.heartbeat_daemon") as daemon:
+        rc = cli.main(["daemon", "--invoke-agent", "30"])
+
+    assert rc == 0
+    daemon.assert_called_once()
+    _, kwargs = daemon.call_args
+    assert kwargs["interval_seconds"] == 30
+    assert kwargs["invoke_agent"] is True

@@ -252,10 +252,43 @@ def _cmd_done(args: list[str]) -> int:
     return 0
 
 
-def _cmd_read(args: list[str]) -> int:
-    if not args:
-        print("Usage: metasphere msg read <msg-id>", file=sys.stderr)
+def _validate_fixed_args(
+    args: list[str],
+    *,
+    command: str,
+    min_count: int,
+    max_count: int,
+    usage: str,
+) -> int | None:
+    """Validate a fixed-shape message command before state access."""
+    if any(token in ("--help", "-h") for token in args):
+        print(USAGE, end="")
+        return 0
+    if len(args) < min_count:
+        print(usage, file=sys.stderr)
         return 1
+    if len(args) > max_count:
+        token = args[max_count]
+        kind = "flag" if token.startswith("-") else "argument"
+        print(
+            f"metasphere msg {command}: unexpected {kind}: {token}\n"
+            f"{usage}",
+            file=sys.stderr,
+        )
+        return 2
+    return None
+
+
+def _cmd_read(args: list[str]) -> int:
+    invalid = _validate_fixed_args(
+        args,
+        command="read",
+        min_count=1,
+        max_count=1,
+        usage="Usage: metasphere msg read <msg-id>",
+    )
+    if invalid is not None:
+        return invalid
     rc = _reject_flag_shape(args[0], "msg-id", "read")
     if rc is not None:
         return rc
@@ -270,7 +303,16 @@ def _cmd_read(args: list[str]) -> int:
     return 0
 
 
-def _cmd_tree(_args: list[str]) -> int:
+def _cmd_tree(args: list[str]) -> int:
+    invalid = _validate_fixed_args(
+        args,
+        command="tree",
+        min_count=0,
+        max_count=0,
+        usage="Usage: metasphere msg tree",
+    )
+    if invalid is not None:
+        return invalid
     p, _ = _ctx()
     print("## Message Tree")
     print(f"## Scope: {_paths.rel_path(p.scope, p.repo)}")
@@ -290,6 +332,15 @@ def _cmd_tree(_args: list[str]) -> int:
 
 
 def _cmd_status(args: list[str]) -> int:
+    invalid = _validate_fixed_args(
+        args,
+        command="status",
+        min_count=0,
+        max_count=1,
+        usage="Usage: metasphere msg status [msg-id]",
+    )
+    if invalid is not None:
+        return invalid
     p, _ = _ctx()
     if not args:
         print("## Agent Status")

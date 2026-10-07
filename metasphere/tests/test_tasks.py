@@ -564,6 +564,55 @@ def test_cli_move_rejects_flag_shaped_project(tmp_paths, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize(
+    "argv, backend",
+    [
+        (["assign", "task-id", "@agent", "extra"], "assign_task"),
+        (
+            ["move", "task-id", "--project", "widget", "extra"],
+            "move_task_project",
+        ),
+        (["start", "task-id", "--dry-run"], "start_task"),
+        (["unpark", "task-id", "extra"], "update_task"),
+        (["show", "task-id", "extra"], "_find_task_file"),
+    ],
+)
+def test_fixed_shape_task_commands_reject_surplus_before_effect(
+    argv, backend, capsys,
+):
+    from unittest.mock import patch
+    from metasphere.cli import tasks as cli_tasks
+
+    with patch(f"metasphere.tasks.{backend}") as effect:
+        rc = cli_tasks.main(argv)
+
+    assert rc == 2
+    effect.assert_not_called()
+    err = capsys.readouterr().err
+    assert "unexpected" in err.lower()
+    assert argv[-1] in err
+
+
+@pytest.mark.parametrize(
+    "argv, backend",
+    [
+        (["assign", "task-id", "--help"], "assign_task"),
+        (["start", "task-id", "--help"], "start_task"),
+        (["show", "task-id", "-h"], "_find_task_file"),
+    ],
+)
+def test_fixed_shape_task_nested_help_never_dispatches(argv, backend, capsys):
+    from unittest.mock import patch
+    from metasphere.cli import tasks as cli_tasks
+
+    with patch(f"metasphere.tasks.{backend}") as effect:
+        rc = cli_tasks.main(argv)
+
+    assert rc == 0
+    effect.assert_not_called()
+    assert "Usage:" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
     "op,argv",
     [
         ("start",    ["--bogus"]),

@@ -48,20 +48,43 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     invoke_agent = os.environ.get("HEARTBEAT_INVOKE_AGENT", "").lower() == "true"
-    if "--invoke-agent" in args:
+    invoke_flags = args.count("--invoke-agent")
+    if invoke_flags > 1:
+        print(
+            "heartbeat: --invoke-agent may not be provided more than once",
+            file=sys.stderr,
+        )
+        return 2
+    if invoke_flags:
         invoke_agent = True
         args = [a for a in args if a != "--invoke-agent"]
 
-    paths = resolve()
-
-    if not args or args[0] in ("once", "check"):
-        heartbeat_once(paths, invoke_agent=invoke_agent)
+    if args and args[0] in ("--help", "-h"):
+        sys.stdout.write(USAGE)
         return 0
 
-    if args[0] == "daemon":
+    if not args:
+        heartbeat_once(resolve(), invoke_agent=invoke_agent)
+        return 0
+
+    cmd, *rest = args
+    if cmd in ("once", "check"):
+        if rest:
+            token = rest[0]
+            kind = "flag" if token.startswith("-") else "argument"
+            print(
+                f"heartbeat {cmd}: unexpected {kind}: {token}\n"
+                f"Usage: metasphere heartbeat {cmd} [--invoke-agent]",
+                file=sys.stderr,
+            )
+            return 2
+        heartbeat_once(resolve(), invoke_agent=invoke_agent)
+        return 0
+
+    if cmd == "daemon":
         interval = 300
-        if len(args) > 1:
-            raw = args[1]
+        if rest:
+            raw = rest[0]
             if raw in ("--help", "-h"):
                 sys.stdout.write(USAGE)
                 return 0
@@ -91,8 +114,18 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 2
+        if len(rest) > 1:
+            token = rest[1]
+            kind = "flag" if token.startswith("-") else "argument"
+            print(
+                f"heartbeat daemon: unexpected {kind}: {token}\n"
+                "Usage: metasphere heartbeat daemon "
+                "[<interval-seconds>] [--invoke-agent]",
+                file=sys.stderr,
+            )
+            return 2
         heartbeat_daemon(
-            paths,
+            resolve(),
             interval_seconds=interval,
             invoke_agent=invoke_agent,
         )

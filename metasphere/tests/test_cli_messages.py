@@ -272,3 +272,53 @@ def test_done_no_note_still_allowed(capsys, tmp_paths):
 
     assert rc == 0
     assert seen == [""]
+
+
+@pytest.mark.parametrize(
+    "argv, backend",
+    [
+        (["read", "msg-123", "--dry-run"], "mark_read"),
+        (["tree", "extra"], None),
+        (["status", "msg-123", "extra"], None),
+    ],
+)
+def test_fixed_shape_message_commands_reject_surplus_before_access(
+    argv, backend, capsys,
+):
+    target = (
+        mock.patch.object(cli_msgs._msgs, backend)
+        if backend
+        else mock.patch.object(cli_msgs, "_ctx")
+    )
+    with target as access:
+        rc = cli_msgs.main(argv)
+
+    assert rc == 2
+    access.assert_not_called()
+    err = capsys.readouterr().err
+    assert "unexpected" in err.lower()
+    assert argv[-1] in err
+
+
+@pytest.mark.parametrize(
+    "argv, backend",
+    [
+        (["read", "msg-123", "--help"], "mark_read"),
+        (["tree", "--help"], None),
+        (["status", "msg-123", "-h"], None),
+    ],
+)
+def test_fixed_shape_message_nested_help_never_accesses_state(
+    argv, backend, capsys,
+):
+    target = (
+        mock.patch.object(cli_msgs._msgs, backend)
+        if backend
+        else mock.patch.object(cli_msgs, "_ctx")
+    )
+    with target as access:
+        rc = cli_msgs.main(argv)
+
+    assert rc == 0
+    access.assert_not_called()
+    assert "Usage:" in capsys.readouterr().out

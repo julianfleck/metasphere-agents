@@ -205,3 +205,51 @@ def test_remove_and_fire_commands(capsys):
         assert cli.main(["fire", "daily-check"]) == 0
     fire.assert_called_once()
     assert "[fire] @orchestrator: daily-check -- ok" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "argv, backend",
+    [
+        (["remove", "daily-check", "--dry-run"], "remove_job"),
+        (["fire", "daily-check", "extra"], "fire_job"),
+        (["enable", "daily-check", "extra"], "set_enabled"),
+        (["disable", "daily-check", "--force"], "set_enabled"),
+        (["run", "extra"], "run_due_jobs"),
+    ],
+)
+def test_effect_commands_reject_surplus_before_dispatch(argv, backend, capsys):
+    with patch(f"metasphere.schedule.{backend}") as effect:
+        rc = cli.main(argv)
+
+    assert rc == 2
+    effect.assert_not_called()
+    err = capsys.readouterr().err
+    assert "unexpected" in err.lower()
+    assert argv[-1] in err
+
+
+def test_daemon_rejects_surplus_before_loop(capsys):
+    rc = cli.main(["daemon", "60", "extra"])
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "schedule daemon" in err
+    assert "extra" in err
+
+
+@pytest.mark.parametrize(
+    "argv, backend",
+    [
+        (["remove", "daily-check", "--help"], "remove_job"),
+        (["fire", "daily-check", "-h"], "fire_job"),
+        (["enable", "daily-check", "--help"], "set_enabled"),
+        (["run", "--help"], "run_due_jobs"),
+    ],
+)
+def test_nested_help_never_dispatches(argv, backend, capsys):
+    with patch(f"metasphere.schedule.{backend}") as effect:
+        rc = cli.main(argv)
+
+    assert rc == 0
+    effect.assert_not_called()
+    assert "Usage:" in capsys.readouterr().out

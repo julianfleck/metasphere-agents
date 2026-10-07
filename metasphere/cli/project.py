@@ -266,8 +266,44 @@ def _cmd_member(rest: list[str], paths) -> int:
     return 2
 
 
+def _validate_effect_args(
+    rest: list[str],
+    *,
+    command: str,
+    min_count: int,
+    max_count: int,
+    usage: str,
+) -> int | None:
+    """Validate fixed-shape project effects before backend dispatch."""
+    if any(token in ("--help", "-h") for token in rest):
+        sys.stdout.write(USAGE)
+        return 0
+    if len(rest) < min_count:
+        print(usage, file=sys.stderr)
+        return 2
+    if len(rest) > max_count:
+        token = rest[max_count]
+        kind = "flag" if token.startswith("-") else "argument"
+        print(
+            f"metasphere project {command}: unexpected {kind}: {token}\n"
+            f"{usage}",
+            file=sys.stderr,
+        )
+        return 2
+    return None
+
+
 def _cmd_wake(rest: list[str], paths) -> int:
     from metasphere.project import wake_members, project_for_scope
+    invalid = _validate_effect_args(
+        rest,
+        command="wake",
+        min_count=0,
+        max_count=1,
+        usage="Usage: metasphere project wake [name]",
+    )
+    if invalid is not None:
+        return invalid
     if rest:
         rc = _reject_flag_shape(rest[0], "wake")
         if rc is not None:
@@ -339,6 +375,15 @@ def _cmd_chat(rest: list[str], paths) -> int:
 
 def _cmd_topic(rest: list[str], paths) -> int:
     from metasphere.project import attach_topic
+    invalid = _validate_effect_args(
+        rest,
+        command="topic",
+        min_count=2,
+        max_count=2,
+        usage="Usage: metasphere project topic create <name>",
+    )
+    if invalid is not None:
+        return invalid
     if not rest or rest[0] not in ("create", "attach"):
         print("usage: project topic create <name>", file=sys.stderr)
         return 2
@@ -362,6 +407,15 @@ def _cmd_topic(rest: list[str], paths) -> int:
 
 def _cmd_changelog(rest: list[str], paths) -> int:
     from metasphere.project import project_changelog
+    invalid = _validate_effect_args(
+        rest,
+        command="changelog",
+        min_count=0,
+        max_count=1,
+        usage="Usage: metasphere project changelog [name]",
+    )
+    if invalid is not None:
+        return invalid
     if rest:
         rc = _reject_flag_shape(rest[0], "changelog")
         if rc is not None:
@@ -377,6 +431,15 @@ def _cmd_changelog(rest: list[str], paths) -> int:
 
 def _cmd_learnings(rest: list[str], paths) -> int:
     from metasphere.project import project_learnings
+    invalid = _validate_effect_args(
+        rest,
+        command="learnings",
+        min_count=0,
+        max_count=1,
+        usage="Usage: metasphere project learnings [name]",
+    )
+    if invalid is not None:
+        return invalid
     if rest:
         rc = _reject_flag_shape(rest[0], "learnings")
         if rc is not None:
@@ -393,6 +456,15 @@ def _cmd_learnings(rest: list[str], paths) -> int:
 def _cmd_rename(rest: list[str], paths) -> int:
     from metasphere.project import rename_project, get_project
 
+    invalid = _validate_effect_args(
+        rest,
+        command="rename",
+        min_count=2,
+        max_count=2,
+        usage="Usage: metasphere project rename <old-name> <new-name>",
+    )
+    if invalid is not None:
+        return invalid
     if rest:
         rc = _reject_flag_shape(rest[0], "rename")
         if rc is not None:
@@ -401,10 +473,6 @@ def _cmd_rename(rest: list[str], paths) -> int:
             rc = _reject_flag_shape(rest[1], "rename")
             if rc is not None:
                 return rc
-    if len(rest) < 2:
-        print("Usage: metasphere project rename <old-name> <new-name>",
-              file=sys.stderr)
-        return 2
     old_name, new_name = rest[0], rest[1]
 
     if old_name == new_name:

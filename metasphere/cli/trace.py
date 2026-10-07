@@ -53,12 +53,12 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(USAGE)
         return 2
     cmd, *rest = args
-    paths = resolve()
 
     if cmd in ("capture", "run", "exec"):
         if not rest:
             print("usage: trace capture <command...>", file=sys.stderr)
             return 2
+        paths = resolve()
         # If single string with spaces, run via shell; else argv
         if len(rest) == 1:
             t = capture_trace(rest[0], paths=paths)
@@ -96,7 +96,11 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        for t in list_traces(limit=limit, errors_only=errors_only, paths=paths):
+        for t in list_traces(
+            limit=limit,
+            errors_only=errors_only,
+            paths=resolve(),
+        ):
             _print_trace_row(t)
         return 0
 
@@ -104,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         if not rest:
             print("usage: trace search <pattern>", file=sys.stderr)
             return 2
-        for t in search_traces(" ".join(rest), paths=paths):
+        for t in search_traces(" ".join(rest), paths=resolve()):
             _print_trace_row(t)
         return 0
 
@@ -115,9 +119,18 @@ def main(argv: list[str] | None = None) -> int:
         # Reject flag-shaped tokens so ``trace prune --help`` doesn't
         # detonate inside ``int(...)`` and dump a traceback. Same class
         # as the schedule.enable / spawn-name flag-leak guards.
-        if rest[0] in ("--help", "-h"):
+        if any(token in ("--help", "-h") for token in rest):
             sys.stdout.write(USAGE)
             return 0
+        if len(rest) > 1:
+            token = rest[1]
+            kind = "flag" if token.startswith("-") else "argument"
+            print(
+                f"trace prune: unexpected {kind}: {token}\n"
+                "Usage: metasphere trace prune <days>",
+                file=sys.stderr,
+            )
+            return 2
         if rest[0].startswith("-") and not rest[0].lstrip("-").isdigit():
             print(
                 f"trace prune: {rest[0]!r} looks like a CLI flag, not a "
@@ -142,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        n = prune_traces(days, paths=paths)
+        n = prune_traces(days, paths=resolve())
         print(f"removed {n} day-dirs")
         return 0
 

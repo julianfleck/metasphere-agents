@@ -63,12 +63,22 @@ def test_filter_open_excludes_green(tmp_paths: Paths):
     assert "🟢" not in body
 
 
-def test_unknown_filter_degrades_to_all(tmp_paths: Paths):
+def test_unknown_filter_is_rejected_before_reading_ledger(tmp_paths: Paths, monkeypatch):
     _write(tmp_paths, _SAMPLE)
+    resolve_calls = 0
+    real_resolve = q._paths.resolve
+
+    def tracked_resolve():
+        nonlocal resolve_calls
+        resolve_calls += 1
+        return real_resolve()
+
+    monkeypatch.setattr(q._paths, "resolve", tracked_resolve)
     body, rc = q.render_questions("bogus")
-    assert rc == 0
-    # Treated as no filter → everything renders.
-    assert "🔴" in body and "🟡" in body and "🟢" in body
+    assert rc == 2
+    assert "unknown filter" in body.lower()
+    assert "bogus" in body
+    assert resolve_calls == 0
 
 
 def test_missing_file_is_clean_rc0(tmp_paths: Paths):
@@ -99,6 +109,33 @@ def test_main_prints_body(tmp_paths: Paths, capsys):
     assert "Needs from the operator" in out
 
 
+def test_main_rejects_surplus_argument_before_render(monkeypatch, capsys):
+    def fail_render(_filter=None):
+        raise AssertionError("render must not run for ambiguous argv")
+
+    monkeypatch.setattr(q, "render_questions", fail_render)
+
+    rc = q.main(["red", "extra"])
+
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "unexpected argument" in captured.err.lower()
+    assert "extra" in captured.err
+
+
+def test_main_unknown_filter_prints_error_to_stderr(tmp_paths: Paths, capsys):
+    _write(tmp_paths, _SAMPLE)
+
+    rc = q.main(["reed"])
+
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "unknown filter" in captured.err.lower()
+    assert "reed" in captured.err
+
+
 def test_telegram_cmd_questions(tmp_paths: Paths):
     """The /questions telegram command renders the same body."""
     _write(tmp_paths, _SAMPLE)
@@ -110,6 +147,8 @@ def test_telegram_cmd_questions(tmp_paths: Paths):
     body_red = cmd_questions("red", ctx)
     assert "PR #40" in body_red
     assert "🟢" not in body_red
+    assert "unknown filter" in cmd_questions("reed", ctx).lower()
+    assert "unknown filter" in cmd_questions("red extra", ctx).lower()
 
 
 # ---------------------------------------------------------------------------

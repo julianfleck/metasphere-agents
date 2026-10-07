@@ -20,6 +20,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
+from metasphere.format import escape_html
+
 # Telegram-controlled identifiers that get interpolated into filesystem
 # paths or argv must match this; rejects "..", "/", whitespace, etc.
 _AGENT_RE = re.compile(r"^@[A-Za-z0-9_-]+$")
@@ -128,7 +130,10 @@ def cmd_tasks(args: str, ctx: Context) -> "Reply | str":
             # counters can't drift. Includes blocked + paused open work.
             active = active_tasks_across_projects(paths)
             if not active:
-                names = [p.name for p in list_projects(paths=paths)]
+                names = [
+                    escape_html(str(p.name))
+                    for p in list_projects(paths=paths)
+                ]
                 return Reply(
                     "No active tasks across any registered project.\n"
                     "Known projects: "
@@ -149,7 +154,7 @@ def cmd_tasks(args: str, ctx: Context) -> "Reply | str":
         repo = registered
         tasks = list_tasks(scope, repo)
         active = [t for t in tasks if is_active(t)]
-        header = f"Tasks ({project_name})"
+        header = f"Tasks ({escape_html(project_name)})"
         body = format_task_table(active, html=True)
         return Reply(f"<b>{header}</b>\n{body}", parse_mode="HTML")
     except Exception as e:
@@ -183,18 +188,18 @@ def cmd_agents(args: str, ctx: Context) -> "Reply | str":
         for proj_name in sorted(by_project.keys()):
             agents = by_project[proj_name]
             if len(by_project) > 1:
-                lines.append(f"\n<b>{proj_name}</b>")
+                lines.append(f"\n<b>{escape_html(proj_name)}</b>")
             for a in agents:
                 alive = _agents.session_alive(a.session_name)
                 icon = "\U0001f7e2" if alive else "\u26aa"
                 spec_file = a.agent_dir / "spec" if a.agent_dir else None
                 spec_label = ""
                 if spec_file and spec_file.is_file():
-                    spec_label = f" ({spec_file.read_text().strip()})"
-                display_name = a.name.lstrip("@")
+                    spec_label = f" ({escape_html(spec_file.read_text().strip())})"
+                display_name = escape_html(a.name.lstrip("@"))
                 lines.append(_DIVIDER)
                 lines.append(f"{icon}  {display_name}{spec_label}")
-                lines.append(f"       Status: {a.status or '-'}")
+                lines.append(f"       Status: {escape_html(a.status or '-')}")
         lines.append(_DIVIDER)
         return Reply("\n".join(lines), parse_mode="HTML")
     except Exception as e:
@@ -427,20 +432,32 @@ def cmd_session(args: str, ctx: Context) -> str:
       restart  -> metasphere-gateway restart-orchestrator (default)
       status   -> systemctl --user status metasphere-gateway
     """
-    sub = (args or "restart").strip().split(None, 1)[0] or "restart"
+    usage = "Usage: /session [restart|status]"
+    argv = (args or "").split()
+    sub = argv[0] if argv else "restart"
+    if sub not in ("restart", "status"):
+        return f"Unknown /session subcommand: {sub}\n{usage}"
+    if len(argv) > 1:
+        token = argv[1]
+        kind = "flag" if token.startswith("-") else "argument"
+        return f"{usage}\nunexpected {kind}: {token}"
     if sub == "status":
-        return _run(["systemctl", "--user", "status", "metasphere-gateway", "--no-pager"], timeout=5)
-    if sub == "restart":
-        try:
-            from metasphere.gateway.session import restart_session
-            from metasphere.paths import resolve
+        return _run(
+            [
+                "systemctl", "--user", "status", "metasphere-gateway",
+                "--no-pager",
+            ],
+            timeout=5,
+        )
+    try:
+        from metasphere.gateway.session import restart_session
+        from metasphere.paths import resolve
 
-            if restart_session("Telegram /session restart", resolve()):
-                return "Recreated orchestrator session and REPL."
-            return "(restart error: failed to recreate orchestrator session)"
-        except Exception as e:
-            return f"(restart error: {e})"
-    return f"Unknown /session subcommand: {sub}\nUsage: /session [restart|status]"
+        if restart_session("Telegram /session restart", resolve()):
+            return "Recreated orchestrator session and REPL."
+        return "(restart error: failed to recreate orchestrator session)"
+    except Exception as e:
+        return f"(restart error: {e})"
 
 
 _DIVIDER = "\u2014" * 25
@@ -456,9 +473,9 @@ def cmd_specs(args: str, ctx: Context) -> "Reply | str":
         lines = [f"<b>Agent Specs</b> ({len(specs)})\n"]
         for s in specs:
             lines.append(_DIVIDER)
-            lines.append(f"{s.name} ({s.role})")
-            lines.append(f"       {s.description}")
-            lines.append(f"       Sandbox: {s.sandbox}")
+            lines.append(f"{escape_html(str(s.name))} ({escape_html(str(s.role))})")
+            lines.append(f"       {escape_html(str(s.description))}")
+            lines.append(f"       Sandbox: {escape_html(str(s.sandbox))}")
         lines.append(_DIVIDER)
         return Reply("\n".join(lines), parse_mode="HTML")
     except Exception as e:
@@ -476,7 +493,10 @@ def cmd_questions(args: str, ctx: Context) -> str:
     try:
         from metasphere.cli.questions import render_questions
 
-        filter_ = (args or "").strip().split()[0] if args else None
+        # Pass the complete argument string through so the shared renderer can
+        # reject typos and surplus tokens instead of silently treating them as
+        # a valid first filter.
+        filter_ = (args or "").strip() or None
         body, _rc = render_questions(filter_)
         return body
     except Exception as e:  # noqa: BLE001
@@ -547,12 +567,13 @@ def cmd_team(args: str, ctx: Context) -> "Reply | str":
             agent_status = "woken" if agent else "not persistent"
             lines = [
                 f"\u2705 Task dispatched",
-                f"       Task: {task.id}",
-                f"       Agent: {target_agent.lstrip('@')} ({agent_status})",
-                f"       Title: {task_title}",
+                f"       Task: {escape_html(str(task.id))}",
+                f"       Agent: {escape_html(target_agent.lstrip('@'))} "
+                f"({escape_html(agent_status)})",
+                f"       Title: {escape_html(task_title)}",
             ]
             if project_name:
-                lines.append(f"       Project: {project_name}")
+                lines.append(f"       Project: {escape_html(project_name)}")
             return Reply("\n".join(lines), parse_mode="HTML")
         except Exception as e:
             return f"Dispatch failed: {e}"
@@ -573,11 +594,12 @@ def cmd_team(args: str, ctx: Context) -> "Reply | str":
                 return f"Spec '{spec_name}' not found. Try /team specs"
             d = seed_agent(agent_id, spec, project_name=project_name)
             lines = [
-                f"\u2705 Seeded {agent_id.lstrip('@')} from spec {spec_name}",
+                f"\u2705 Seeded {escape_html(agent_id.lstrip('@'))} from spec "
+                f"{escape_html(spec_name)}",
                 "",
-                f"       Dir: {d}",
+                f"       Dir: {escape_html(str(d))}",
                 f"       Files: SOUL.md, MISSION.md, persona-index.md",
-                f"       Wake: /team wake {agent_id}",
+                f"       Wake: /team wake {escape_html(agent_id)}",
             ]
             return Reply("\n".join(lines), parse_mode="HTML")
         except Exception as e:
@@ -615,7 +637,7 @@ def cmd_team(args: str, ctx: Context) -> "Reply | str":
             alive_count = sum(1 for a in persistent if _agents.session_alive(a.session_name))
             title = f"<b>Team Status</b> ({alive_count}/{len(persistent)} alive)"
             if project_filter:
-                title += f" — project: <b>{project_filter}</b>"
+                title += f" — project: <b>{escape_html(project_filter)}</b>"
             lines = [title + "\n"]
 
             # Group by project
@@ -627,16 +649,16 @@ def cmd_team(args: str, ctx: Context) -> "Reply | str":
             for proj_name in sorted(by_project.keys()):
                 agents = by_project[proj_name]
                 if len(by_project) > 1:
-                    lines.append(f"\n<b>{proj_name}</b>")
+                    lines.append(f"\n<b>{escape_html(proj_name)}</b>")
                 for a in agents:
                     spec_file = a.agent_dir / "spec" if a.agent_dir else None
                     spec_label = ""
                     if spec_file and spec_file.is_file():
-                        spec_label = f" ({spec_file.read_text().strip()})"
+                        spec_label = f" ({escape_html(spec_file.read_text().strip())})"
                     alive = _agents.session_alive(a.session_name)
                     icon = "\U0001f7e2" if alive else "\u26aa"
-                    status = a.status or "-"
-                    display_name = a.name.lstrip("@")
+                    status = escape_html(a.status or "-")
+                    display_name = escape_html(a.name.lstrip("@"))
                     lines.append(_DIVIDER)
                     lines.append(f"{icon}  {display_name}{spec_label}")
                     lines.append(f"       Status: {status}")

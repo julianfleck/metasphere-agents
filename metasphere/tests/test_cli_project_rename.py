@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -217,3 +218,45 @@ def test_cli_member_list_flag_shape_rejected(tmp_paths: Paths, capsys):
     _, err = capsys.readouterr()
     assert rc == 2
     assert "looks like a CLI flag" in err
+
+
+@pytest.mark.parametrize(
+    "argv, backend",
+    [
+        (["wake", "alpha", "extra"], "wake_members"),
+        (["topic", "create", "alpha", "extra"], "attach_topic"),
+        (["changelog", "alpha", "extra"], "project_changelog"),
+        (["learnings", "alpha", "--dry-run"], "project_learnings"),
+        (["rename", "alpha", "beta", "--dry-run"], "rename_project"),
+    ],
+)
+def test_stateful_project_commands_reject_surplus_before_effect(
+    argv, backend, tmp_paths, capsys,
+):
+    with patch(f"metasphere.project.{backend}") as effect:
+        rc = _cli_proj.main(argv)
+
+    assert rc == 2
+    effect.assert_not_called()
+    err = capsys.readouterr().err
+    assert "unexpected" in err.lower()
+    assert argv[-1] in err
+
+
+@pytest.mark.parametrize(
+    "argv, backend",
+    [
+        (["wake", "alpha", "--help"], "wake_members"),
+        (["topic", "create", "alpha", "-h"], "attach_topic"),
+        (["rename", "alpha", "beta", "--help"], "rename_project"),
+    ],
+)
+def test_stateful_project_nested_help_never_dispatches(
+    argv, backend, tmp_paths, capsys,
+):
+    with patch(f"metasphere.project.{backend}") as effect:
+        rc = _cli_proj.main(argv)
+
+    assert rc == 0
+    effect.assert_not_called()
+    assert "Usage:" in capsys.readouterr().out
