@@ -5,6 +5,28 @@ from __future__ import annotations
 from metasphere import status, tasks as t
 
 
+def test_summary_reports_runtime_identity(tmp_paths, monkeypatch):
+    monkeypatch.setattr(
+        "metasphere.cli.version.runtime_identity",
+        lambda: ("1.2.3", "abcdef123456"),
+    )
+
+    out = status.summary()
+
+    assert out.startswith("Runtime: 1.2.3 (abcdef123456)\n")
+
+
+def test_summary_surfaces_runtime_exception(tmp_paths, monkeypatch):
+    def boom():
+        raise RuntimeError("git unavailable")
+
+    monkeypatch.setattr("metasphere.cli.version.runtime_identity", boom)
+
+    out = status.summary()
+
+    assert "Runtime: (unavailable: RuntimeError: git unavailable)" in out
+
+
 def test_summary_reports_task_count(tmp_paths, monkeypatch):
     monkeypatch.setenv("METASPHERE_AGENT_ID", "@tester")
     t.create_task("Alpha", "!normal", tmp_paths.scope, tmp_paths.project_root)

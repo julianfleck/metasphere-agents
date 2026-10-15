@@ -76,6 +76,11 @@ def _resolve_version() -> str:
         return "0.0.0"
 
 
+def runtime_identity() -> tuple[str, str]:
+    """Return the loaded package version and installed source commit."""
+    return _resolve_version(), _head_hash()
+
+
 DESCRIPTION = "Print installed package version + installed source commit hash."
 
 USAGE = """\
@@ -100,8 +105,9 @@ def main(argv: list[str] | None = None) -> int:
             f"Usage: metasphere version (takes no arguments)\n"
         )
         return 2
-    print(f"metasphere {_resolve_version()}")
-    print(f"commit: {_head_hash()}")
+    version, commit = runtime_identity()
+    print(f"metasphere {version}")
+    print(f"commit: {commit}")
     return 0
 
 

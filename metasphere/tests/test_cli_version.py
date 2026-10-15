@@ -10,6 +10,12 @@ import pytest
 from metasphere.cli import version as V
 
 
+def test_runtime_identity_combines_version_and_installed_commit():
+    with mock.patch.object(V, "_resolve_version", return_value="1.2.3"), \
+            mock.patch.object(V, "_head_hash", return_value="abcdef123456"):
+        assert V.runtime_identity() == ("1.2.3", "abcdef123456")
+
+
 def test_version_prints_version_and_commit(capsys):
     with mock.patch.object(V, "_head_hash", return_value="abcdef123456"):
         rc = V.main([])
