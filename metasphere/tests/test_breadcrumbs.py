@@ -180,6 +180,53 @@ def test_count_user_messages_keeps_task_dispatch(tmp_path: Path):
     assert _bc.count_user_messages(p) == 2
 
 
+def test_count_user_messages_skips_task_notifications(tmp_path: Path):
+    """Background/workflow ``<task-notification>`` completion notices are
+    auto-injected via the same defer-if-busy tmux path as heartbeat/wake
+    nudges, so they can race a real user turn and land mid-window. They
+    must be skipped. NB: distinct from ``[task]`` scheduled-task wakes
+    (see ``test_count_user_messages_keeps_task_dispatch``), which ARE
+    counted."""
+    p = tmp_path / "t.jsonl"
+    notif = "<task-notification>\n<task-id>bs1f5z32n</task-id>\n<tool-use-id>toolu_x</tool-use-id>\nA background task completed."
+    p.write_text(
+        "\n".join([
+            json.dumps({"type": "user", "message": {"content": "real prompt"}}),
+            json.dumps({"type": "user", "message": {"content": notif}}),
+            json.dumps({"type": "user", "message": {"content": [{"type": "text", "text": notif}]}}),
+            json.dumps({"type": "user", "message": {"content": "follow up"}}),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    # Only the two real prompts count; both task-notification forms skipped.
+    assert _bc.count_user_messages(p) == 2
+
+
+def test_count_user_messages_skips_interrupt_sentinel(tmp_path: Path):
+    """Claude Code inserts a ``[Request interrupted by ...]`` record
+    whenever a turn is interrupted — e.g. an inbound Telegram message
+    that Escapes the live turn instead of queuing. A single mid-turn
+    interrupt adds the sentinel *plus* the real follow-up message,
+    pushing the Stop-time delta to ≥2 and tripping ``count-mismatch``.
+    The sentinel carries no context (the follow-up fires its own
+    UserPromptSubmit), so it must be skipped; the follow-up still
+    counts. Regression: residual @orchestrator suppressions during the
+    2026-08 grant crunch when rapid interrupt-driven replies raced the
+    breadcrumb window."""
+    p = tmp_path / "t.jsonl"
+    p.write_text(
+        "\n".join([
+            json.dumps({"type": "user", "message": {"content": "original prompt"}}),
+            json.dumps({"type": "user", "message": {"content": "[Request interrupted by user]"}}),
+            json.dumps({"type": "user", "message": {"content": [{"type": "text", "text": "[Request interrupted by user for tool use]"}]}}),
+            json.dumps({"type": "user", "message": {"content": "the real follow-up message"}}),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    # Two real prompts count; both interrupt-sentinel forms skipped.
+    assert _bc.count_user_messages(p) == 2
+
+
 def test_count_user_messages_handles_garbage_lines(tmp_path: Path):
     p = tmp_path / "t.jsonl"
     p.write_text(
