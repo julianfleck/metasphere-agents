@@ -59,6 +59,12 @@ def _runtime_command(
             "codex",
             "--no-alt-screen",
             "--dangerously-bypass-approvals-and-sandbox",
+            # Managed agent panes are non-interactive. Codex's shared
+            # background server can require an interactive feature-settings
+            # confirmation when a client has incompatible settings; in a
+            # managed pane that prompt exits with status 1 and triggers an
+            # endless restart loop. Keep each pane independent of that server.
+            "--no-daemon",
         ]
         if trust_hooks:
             parts.append("--dangerously-bypass-hook-trust")

@@ -1670,6 +1670,7 @@ def test_respawn_cmd_with_model_still_disables_feedback():
 def test_respawn_cmd_codex_runtime_uses_interactive_tmux_flags():
     cmd = gw_session._respawn_cmd("@orchestrator", runtime="codex")
     assert "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox" in cmd
+    assert "--no-daemon" in cmd
     assert "--dangerously-bypass-hook-trust" in cmd
     assert "claude --dangerously-skip-permissions" not in cmd
     assert "[gateway] codex exited" in cmd
